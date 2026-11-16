@@ -368,6 +368,14 @@ class App {
   AppData& host_data() { return data_; }
   std::vector<MusicTrack>& host_tracks() { return music_tracks_; }
   std::vector<Book>& host_books() { return books_; }
+  /** Open an in-memory book page for gallery/QA. */
+  void host_open_book(const std::string& text, int page = 0) {
+    book_index_ = 0;
+    reading_text_ = text;
+    reading_paginate();
+    reading_page_ = page;
+    focus_.index = 1;
+  }
 #endif
 
  private:

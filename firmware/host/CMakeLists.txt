@@ -26,6 +26,7 @@ set(POCKET_UI_SRCS
   ${POCKET_UI}/src/screens_update.cpp
   ${POCKET_UI}/src/cloud_client.cpp
   ${POCKET_UI}/src/screensaver.cpp
+  ${POCKET_UI}/src/ui.cpp
   ${POCKET_UI}/vendor/qrcodegen/qrcodegen.c
 )
 

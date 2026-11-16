@@ -1,4 +1,5 @@
 #include "pocket/app.hpp"
+#include "pocket/ui.hpp"
 #include <algorithm>
 #include <cstdint>
 #include <cstdio>
@@ -13,75 +14,33 @@ static const char* kAppLabels[kHomeGridSlots] = {
     "Reading", "",     "",      "",     "",        "",      "",         "",
 };
 
-#include "home_glyphs.inc"
-
-/** Map HomeApp → packed 1-bit bitmap index (Notes..Reading). */
-int home_glyph_index(HomeApp app) {
+/** Home tile icon for each app (vector set in ui.cpp — one stroke weight throughout). */
+ui::Icon app_icon(HomeApp app) {
   switch (app) {
     case HomeApp::Notes:
-      return 0;
+      return ui::Icon::Notes;
     case HomeApp::Ledger:
-      return 1;
+      return ui::Icon::Ledger;
     case HomeApp::Clock:
-      return 2;
+      return ui::Icon::Clock;
     case HomeApp::Pass:
-      return 3;
+      return ui::Icon::Pass;
     case HomeApp::Weather:
-      return 4;
+      return ui::Icon::Weather;
     case HomeApp::Music:
-      return 5;
+      return ui::Icon::Music;
     case HomeApp::Settings:
-      return 6;
+      return ui::Icon::Settings;
     case HomeApp::Update:
-      return 7;
+      return ui::Icon::Update;
     case HomeApp::Reading:
-      return 8;
     default:
-      return -1;
+      return ui::Icon::Reading;
   }
 }
 
-/** True if packed bit at (sx,sy) is ink. */
-bool glyph_ink(const uint8_t* bits, int sx, int sy) {
-  if (sx < 0 || sy < 0 || sx >= kHomeGlyphSize || sy >= kHomeGlyphSize) return false;
-  return (bits[sy * kHomeGlyphRowBytes + (sx >> 3)] &
-          static_cast<uint8_t>(1u << (7 - (sx & 7)))) != 0;
-}
-
-/**
- * Home app glyphs (v85): packed 1-bit reMarkable stroke marks
- * (tools/gen_remarkable_glyphs.py) — thin stationery e-ink lines, not SF fills.
- * Soft majority scale keeps thin strokes visible without filling cutouts shut.
- */
 void draw_app_glyph(Canvas& c, HomeApp app, int cx, int cy, int size, Gray g) {
-  const int idx = home_glyph_index(app);
-  if (idx < 0) return;
-  const uint8_t* bits = kHomeGlyphBits[idx];
-  // ~68% of tile — clearer presence on content-band focus moves; plate padding kept.
-  const int dest = std::max(24, size * 68 / 100);
-  const int src = kHomeGlyphSize;
-  const int x0 = cx - dest / 2;
-  const int y0 = cy - dest / 2;
-  for (int dy = 0; dy < dest; ++dy) {
-    const int sy0 = dy * src / dest;
-    const int sy1 = std::max(sy0 + 1, (dy + 1) * src / dest);
-    for (int dx = 0; dx < dest; ++dx) {
-      const int sx0 = dx * src / dest;
-      const int sx1 = std::max(sx0 + 1, (dx + 1) * src / dest);
-      int ink = 0;
-      int tot = 0;
-      for (int sy = sy0; sy < sy1; ++sy) {
-        for (int sx = sx0; sx < sx1; ++sx) {
-          ++tot;
-          if (glyph_ink(bits, sx, sy)) ++ink;
-        }
-      }
-      // Soft majority (~40%) — thin strokes survive; hubs/rules stay open.
-      if (ink * 5 >= tot * 2) {
-        c.set_pixel(x0 + dx, y0 + dy, g);
-      }
-    }
-  }
+  ui::icon(c, app_icon(app), cx, cy, size * 52 / 100, g);
 }
 
 /** Display order: real content apps, then Reading, then the always-on Settings/Update tiles —

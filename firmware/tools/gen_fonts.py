@@ -51,6 +51,7 @@ FACES = [
     Face("Body", "DMSans-Regular.ttf", 27, 33, 0.36, FULL),
     Face("BodyStrong", "DMSans-SemiBold.ttf", 27, 33, 0.45, FULL),
     Face("Title", "SourceSerif4-SemiBold.ttf", 40, 49, 0.45, FULL),
+    Face("Reading", "SourceSerif4-Regular.ttf", 24, 34, 0.40, FULL),
     Face("Pin", "SourceSerif4Display-Medium.ttf", 48, 64, 0.45, list("0123456789• ")),
     Face("Hero", "SourceSerif4Display-Regular.ttf", 92, 100, 0.45,
          list("0123456789:°-–. %ACFMP")),

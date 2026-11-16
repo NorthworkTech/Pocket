@@ -92,40 +92,40 @@ int main(int argc, char** argv) {
   app.host_tracks() = {{"t1", "Clair de Lune", "clair.mp3", "", 1}, {"t2", "Gymnopédie No.1", "g.mp3", "", 1}};
   app.host_books() = {{"b1", "Walden", "H. D. Thoreau", "epub", "w.txt", "", 1}};
 
-  struct Shot { const char* name; ScreenId s; int tab; };
-  const Shot shots[] = {
-      {"lock", ScreenId::Lock, 0},
-      {"pin", ScreenId::Pin, 0},
-      {"home", ScreenId::Home, 0},
-      {"notes", ScreenId::NotesList, 0},
-      {"lists", ScreenId::ListsList, 1},
-      {"clock", ScreenId::ClockFace, 0},
-      {"weather", ScreenId::WeatherMain, 0},
-      {"music", ScreenId::MusicList, 0},
-      {"reading", ScreenId::ReadingList, 0},
-      {"settings", ScreenId::SettingsRoot, 0},
-      {"display", ScreenId::SettingsDisplay, 0},
-      {"update", ScreenId::SettingsUpdate, 0},
-      {"welcome", ScreenId::OnboardingWelcome, 0},
-      {"get-app", ScreenId::OnboardingCompanionDownload, 0},
-      {"pair-qr", ScreenId::OnboardingCompanionQr, 0},
-      {"timezone", ScreenId::OnboardingTimezone, 0},
-      {"done", ScreenId::OnboardingDone, 0},
-      {"note", ScreenId::NotesDetail, 0},
-      {"list", ScreenId::ListsDetail, 1},
-      {"alarms", ScreenId::ClockAlarms, 1},
-      {"pass", ScreenId::PassList, 0},
-      {"now-playing", ScreenId::MusicNowPlaying, 0},
-      {"wifi", ScreenId::SettingsWifi, 0},
-      {"about", ScreenId::SettingsAbout, 0},
-      {"ledger", ScreenId::LedgerComingSoon, 0},
-  };
+  // Every screen, in ScreenId order (names mirror nav.hpp).
+  static const char* kNames[] = {
+      "lock", "pin", "ob-welcome", "ob-get-app", "ob-sd", "ob-wifi-list", "ob-softap", "ob-connecting",
+      "ob-pair-qr", "ob-pin-length", "ob-pin-set", "ob-pin-confirm", "ob-timezone", "ob-mic", "ob-done",
+      "sd-gate", "home", "notes", "note", "lists", "list", "ledger", "clock", "alarms", "alarm-edit",
+      "timers", "timer-run", "pass", "pass-detail", "weather", "weather-city", "music", "now-playing",
+      "reading", "book", "settings", "security", "wifi", "display", "sound", "home-apps", "units", "about",
+      "cloud", "update", "update-progress", "update-result"};
+  const int n_screens = static_cast<int>(ScreenId::SettingsUpdateResult) + 1;
   int i = 0;
-  for (const auto& sh : shots) {
-    app.host_goto(sh.s, sh.tab);
+  for (int sidx = 0; sidx < n_screens; ++sidx) {
+    const ScreenId id = static_cast<ScreenId>(sidx);
+    if (id == ScreenId::OnboardingWifiConnecting) continue;
+    int tab = 0;
+    if (id == ScreenId::ListsList || id == ScreenId::ListsDetail) tab = 1;
+    if (id == ScreenId::ClockAlarms || id == ScreenId::ClockAlarmEdit) tab = 1;
+    if (id == ScreenId::ClockTimers || id == ScreenId::ClockTimerRun) tab = 2;
+    app.host_goto(id, tab);
     app.redraw(true);
     char path[512];
-    std::snprintf(path, sizeof(path), "%s/%02d-%s.ppm", out.c_str(), i++, sh.name);
+    std::snprintf(path, sizeof(path), "%s/%02d-%s.ppm", out.c_str(), i++, kNames[sidx]);
+    if (!write_ppm(path, app.canvas())) return 1;
+  }
+  {
+    std::string text;
+    for (int k = 0; k < 6; ++k)
+      text += "When I wrote the following pages, or rather the bulk of them, I lived alone, in the woods, a mile "
+              "from any neighbor, in a house which I had built myself, on the shore of Walden Pond, and earned my "
+              "living by the labor of my hands only. I lived there two years and two months.\n\n";
+    app.host_goto(ScreenId::ReadingBook);
+    app.host_open_book(text, 2);
+    app.redraw(true);
+    char path[512];
+    std::snprintf(path, sizeof(path), "%s/%02d-book-page.ppm", out.c_str(), i++);
     if (!write_ppm(path, app.canvas())) return 1;
   }
   for (int m = 1; m < kLockMotifCount; ++m) {

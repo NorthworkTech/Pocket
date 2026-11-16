@@ -1,4 +1,5 @@
 #include "pocket/app.hpp"
+#include "pocket/ui.hpp"
 #include <cctype>
 #include <cstdio>
 #include <cstring>
@@ -181,68 +182,64 @@ void App::music_sync_from_cloud() {
 
 void App::render_music() {
   draw_status_bar();
+  using ui::Icon;
+  using ui::Row;
+  using ui::RowKind;
   const ScreenId s = nav_.current();
   if (s == ScreenId::MusicNowPlaying) {
-    canvas_.draw_text(kSideMargin, kContentTop, "Now playing", Canvas::TextRole::ScreenTitle, Gray::G0);
+    ui::header(canvas_, "Now playing", true);
+    // Sleeve: half-toned square with the note mark on a paper disc.
+    constexpr int kArt = 232;
+    const int ax = (kCanvasW - kArt) / 2;
+    const int ay = kListTop + 4;
+    canvas_.fill_round_rect(ax, ay, kArt, kArt, 18, Gray::G0);
+    for (int y = ay + 10; y < ay + kArt - 10; y += 6)
+      for (int x = ax + 10 + ((y / 6) % 2) * 3; x < ax + kArt - 10; x += 6) canvas_.set_pixel(x, y, Gray::G3);
+    canvas_.fill_disc(kCanvasW / 2, ay + kArt / 2, 56, Gray::G3);
+    ui::icon(canvas_, Icon::Music, kCanvasW / 2, ay + kArt / 2, 60, Gray::G0);
+    int ty = ay + kArt + 24;
     if (music_index_ >= 0 && music_index_ < static_cast<int>(music_tracks_.size())) {
-      const auto& t = music_tracks_[music_index_];
-      canvas_.draw_text_wrapped(kSideMargin, kContentTop + kTitleToBody, kContentW, kWrapGap, t.title,
-                                Canvas::TextRole::Body, Gray::G0);
-      canvas_.draw_text(kSideMargin, kContentTop + kTitleToBody + 2 * kBodyLinePitch,
-                        music_playing_ ? "Playing…" : "Stopped", Canvas::TextRole::Secondary, Gray::G1);
+      const auto& t = music_tracks_[static_cast<size_t>(music_index_)];
+      const int tw = std::min(kContentW, canvas_.text_width(t.title, Canvas::TextRole::ScreenTitle));
+      canvas_.draw_text_fit((kCanvasW - tw) / 2, ty, kContentW, t.title, Canvas::TextRole::ScreenTitle, Gray::G0);
+      ty += 54;
     }
+    const char* st = music_playing_ ? "Playing" : "Stopped";
+    const int sw = canvas_.text_width(st, Canvas::TextRole::Caption);
+    canvas_.draw_text((kCanvasW - sw) / 2, ty, st, Canvas::TextRole::Caption, Gray::G0);
     focus_.count = 2;
-    const char* acts[] = {"Stop", "Back"};
-    for (int i = 0; i < 2; ++i) {
-      const int y = kBottomCtaY - (1 - i) * kRowPitch;
-      if (i == focus_.index)
-        canvas_.draw_focus_tile(kSideMargin, y, kFocusRowW, kFocusRowH, acts[i], Canvas::TextRole::Body);
-      else
-        canvas_.draw_text(kSideMargin + kRowLabelInset, y + kRowTextPad, acts[i], Canvas::TextRole::Body, Gray::G0);
-    }
+    ui::row(canvas_, kBottomCtaY - kRowPitch,
+            Row{"Stop", RowKind::Action, {}, false, Icon::Stop, true},
+            focus_.index == 0);
+    ui::row(canvas_, kBottomCtaY, Row{"Back", RowKind::Back}, focus_.index == 1);
     return;
   }
 
-  canvas_.draw_text(kSideMargin, kContentTop, "Music", Canvas::TextRole::ScreenTitle, Gray::G0);
+  ui::header(canvas_, "Music", true);
   if (!music_status_.empty()) {
-    canvas_.draw_text_fit(kSideMargin, below_title(kContentTop) - 16, kContentW, music_status_, Canvas::TextRole::Secondary,
-                          Gray::G1);
+    canvas_.draw_text_fit(kSideMargin, below_title(kContentTop) - 12, kContentW, music_status_,
+                          Canvas::TextRole::Caption, Gray::G0);
   }
   const int list_top = kListTopWithMeta;
   const int n = static_cast<int>(music_tracks_.size());
-  focus_.count = n + 2;  // tracks + Sync + Back
+  focus_.count = n + 2;
   if (n == 0) {
-    canvas_.draw_text_centered(kCanvasW / 2, kEmptyCenterY, "No music yet", Canvas::TextRole::Body,
-                               Gray::G0);
-    canvas_.draw_text_wrapped(
-        kSideMargin, kEmptyHintY, kContentW, kWrapGap,
-        wifi_.connected() ? "Select Sync below to pull tracks from Companion."
-                          : "Offline — local tracks still play. Sync needs Wi‑Fi.",
-        Canvas::TextRole::Secondary, Gray::G1);
+    ui::empty_state(canvas_, Icon::Music, "No music yet",
+                    wifi_.connected() ? "Add tracks in Companion, then Sync."
+                                      : "Local tracks still play offline. Sync needs Wi-Fi.",
+                    340);
   }
   for (int i = 0; i < n && i < 8; ++i) {
-    const int y = list_top + i * kRowPitch;
-    const char* label = music_tracks_[i].title.c_str();
-    if (i == focus_.index)
-      canvas_.draw_focus_tile(kSideMargin, y, kFocusRowW, kFocusRowH, label, Canvas::TextRole::Body);
-    else
-      canvas_.draw_text_fit(kSideMargin + kRowLabelInset, y + kRowTextPad, kRowLabelW, label, Canvas::TextRole::Body, Gray::G0);
+    ui::row(canvas_, list_top + i * kRowPitch,
+            Row{music_tracks_[static_cast<size_t>(i)].title, RowKind::Plain, {}, false, Icon::Music, true},
+            i == focus_.index);
   }
-  {
-    // Keep Sync / Back near the bottom when the library is empty so they don't collide with copy.
-    const int y = n == 0 ? kBottomCtaY - kRowPitch : list_top + std::min(n, 8) * kRowPitch;
-    const char* sync_label = wifi_.connected() ? "Sync from Companion" : "Sync (needs Wi‑Fi)";
-    if (focus_.index == n)
-      canvas_.draw_focus_tile(kSideMargin, y, kFocusRowW, kFocusRowH, sync_label, Canvas::TextRole::Body);
-    else
-      canvas_.draw_text(kSideMargin + kRowLabelInset, y + kRowTextPad, sync_label, Canvas::TextRole::Body,
-                        Gray::G0);
-    const int y2 = y + kRowPitch;
-    if (focus_.index == n + 1)
-      canvas_.draw_focus_tile(kSideMargin, y2, kFocusRowW, kFocusRowH, "Back", Canvas::TextRole::Body);
-    else
-      canvas_.draw_text(kSideMargin + kRowLabelInset, y2 + 12, "Back", Canvas::TextRole::Body, Gray::G0);
-  }
+  const int y = n == 0 ? kBottomCtaY - kRowPitch : list_top + std::min(n, 8) * kRowPitch;
+  ui::row(canvas_, y,
+          Row{wifi_.connected() ? "Sync from Companion" : "Sync", RowKind::Value, wifi_.connected() ? "" : "Needs Wi-Fi",
+              false, Icon::Update, true},
+          focus_.index == n);
+  ui::row(canvas_, y + kRowPitch, Row{"Back", RowKind::Back}, focus_.index == n + 1);
 }
 
 void App::handle_music(InputEvent e) {

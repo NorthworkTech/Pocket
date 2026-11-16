@@ -1,4 +1,5 @@
 #include "pocket/app.hpp"
+#include "pocket/ui.hpp"
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -1311,8 +1312,12 @@ void App::render_pin() {
   // through PIN chrome (partial enters used to leave motif ink in undirtied bands).
   canvas_.fill_rect(0, kStatusBarH, kCanvasW, kCanvasH - kStatusBarH, Gray::G3);
   draw_status_bar();
-  canvas_.draw_text_centered(kCanvasW / 2, kContentTop + 8, "Enter PIN", Canvas::TextRole::ScreenTitle,
-                             Gray::G0);
+  {
+    const int tw = canvas_.text_width("Enter PIN", Canvas::TextRole::ScreenTitle);
+    const int x = (kCanvasW - tw - 40) / 2;
+    ui::icon(canvas_, ui::Icon::Lock, x + 14, kContentTop + 8 + 24, 28, Gray::G0);
+    canvas_.draw_text(x + 40, kContentTop + 8, "Enter PIN", Canvas::TextRole::ScreenTitle, Gray::G0);
+  }
   draw_pin_entry(/*mask_completed=*/true, 200);
   if (now_ms_ < error_until_ms_) {
     canvas_.draw_text_centered(kCanvasW / 2, 420, error_msg_.c_str(), Canvas::TextRole::Body, Gray::G0);

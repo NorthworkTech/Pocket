@@ -39,6 +39,7 @@ class Canvas {
     Caption,      // DM Sans Medium 19 — labels, meta
     BodyStrong,   // DM Sans SemiBold 27 — emphasis
     Hero,         // Source Serif 4 Display 92 (digits, °, AM/PM)
+    Reading,      // Source Serif 4 24 — long-form book text
   };
 
   void draw_text(int x, int y, std::string_view text, TextRole role, Gray g);

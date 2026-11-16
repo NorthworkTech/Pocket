@@ -1,4 +1,5 @@
 #include "pocket/app.hpp"
+#include "pocket/ui.hpp"
 #include <algorithm>
 #include <cctype>
 #include <cstdio>
@@ -8,6 +9,14 @@
 #include <sys/stat.h>
 
 namespace pocket {
+
+namespace {
+/** Book page geometry — shared by render and pagination so pages never run under controls. */
+constexpr int kReadTop = kContentTop + 40;
+constexpr int kReadBottom = kBottomCtaY - 52;
+constexpr int kReadGap = 6;
+}  // namespace
+
 namespace {
 
 bool write_bytes(const std::string& path, const std::vector<uint8_t>& data) {
@@ -176,9 +185,9 @@ void App::reading_paginate() {
   if (n == 0) return;
 
   const int max_w = kContentW;
-  const int line_h = canvas_.text_height(Canvas::TextRole::Body) + 8;
-  const int top = kContentTop + kTitleToBody;
-  const int bottom = kBottomCtaY - kRowPitch - 8;
+  const int line_h = canvas_.text_height(Canvas::TextRole::Reading) + kReadGap;
+  const int top = kReadTop;
+  const int bottom = kReadBottom;
   const int lines_per_page = std::max(1, (bottom - top) / std::max(1, line_h));
 
   size_t i = 0;
@@ -208,7 +217,7 @@ void App::reading_paginate() {
         ++word_end;
       }
       const std::string_view candidate(text.data() + line_start, word_end - line_start);
-      if (canvas_.text_width(candidate, Canvas::TextRole::Body) <= max_w) {
+      if (canvas_.text_width(candidate, Canvas::TextRole::Reading) <= max_w) {
         last_break = word_end;
         j = word_end;
         while (j < n && (text[j] == ' ' || text[j] == '\t')) ++j;
@@ -216,7 +225,7 @@ void App::reading_paginate() {
         size_t cut = line_start + 1;
         while (cut < word_end &&
               canvas_.text_width(std::string_view(text.data() + line_start, cut - line_start),
-                                  Canvas::TextRole::Body) <= max_w) {
+                                  Canvas::TextRole::Reading) <= max_w) {
           ++cut;
         }
         if (cut > line_start + 1) --cut;
@@ -271,82 +280,92 @@ void App::reading_open_book(int index) {
 
 void App::render_reading() {
   draw_status_bar();
+  using ui::Icon;
+  using ui::Row;
+  using ui::RowKind;
   const ScreenId s = nav_.current();
 
   if (s == ScreenId::ReadingBook) {
     if (book_index_ < 0 || book_index_ >= static_cast<int>(books_.size()) || reading_pages_.empty()) {
-      canvas_.draw_text(kSideMargin, kContentTop, "Reading", Canvas::TextRole::ScreenTitle, Gray::G0);
-      focus_.count = 1;
-      canvas_.draw_focus_tile(kSideMargin, kBottomCtaY, kFocusRowW, kFocusRowH, "Back",
-                              Canvas::TextRole::Body);
+      ui::header(canvas_, "Reading", true);
+      ui::empty_state(canvas_, Icon::Reading, "Can't open this book", "Try syncing it again from Companion.", 360);
+      focus_.count = 3;
+      ui::button(canvas_, kBottomCtaY, "Back", true, Icon::ChevronLeft, true);
       return;
     }
-    const auto& b = books_[book_index_];
-    canvas_.draw_text_fit(kSideMargin, kContentTop, kContentW, b.title, Canvas::TextRole::ScreenTitle,
-                          Gray::G0);
+    const auto& b = books_[static_cast<size_t>(book_index_)];
+    // Running head.
+    canvas_.draw_text_fit(kSideMargin, kContentTop - 6, kContentW, b.title, Canvas::TextRole::Caption, Gray::G0);
+    canvas_.dotted_hline(kSideMargin, kContentTop + 24, kContentW, Gray::G0, 3);
     const size_t start = reading_pages_[static_cast<size_t>(reading_page_)];
     const size_t stop = (static_cast<size_t>(reading_page_) + 1 < reading_pages_.size())
                             ? reading_pages_[static_cast<size_t>(reading_page_) + 1]
                             : reading_text_.size();
-    const std::string page_text = reading_text_.substr(start, stop - start);
-    canvas_.draw_text_wrapped(kSideMargin, kContentTop + kTitleToBody, kContentW, kWrapGap, page_text,
-                              Canvas::TextRole::Body, Gray::G0);
-    char pg[48];
-    std::snprintf(pg, sizeof(pg), "Page %d of %d", reading_page_ + 1, static_cast<int>(reading_pages_.size()));
-    canvas_.draw_text(kSideMargin, kBottomCtaY - kRowPitch - 28, pg, Canvas::TextRole::Secondary, Gray::G1);
-
+    canvas_.draw_text_wrapped(kSideMargin, kReadTop, kContentW, kReadGap,
+                              reading_text_.substr(start, stop - start), Canvas::TextRole::Reading, Gray::G0);
+    // Page indicator + progress hairline.
+    const int total = static_cast<int>(reading_pages_.size());
+    char pg[32];
+    std::snprintf(pg, sizeof(pg), "%d of %d", reading_page_ + 1, total);
+    const int py = kBottomCtaY - 40;
+    const int pw = canvas_.text_width(pg, Canvas::TextRole::Caption);
+    canvas_.draw_text(kCanvasW - kSideMargin - pw, py, pg, Canvas::TextRole::Caption, Gray::G0);
+    const int bar_w = kContentW - pw - 16;
+    canvas_.hline(kSideMargin, py + 13, bar_w, Gray::G0);
+    const int done = bar_w * (reading_page_ + 1) / std::max(1, total);
+    canvas_.fill_rect(kSideMargin, py + 11, std::max(4, done), 5, Gray::G0);
+    // Compact control bar: Prev · Next · Close.
     focus_.count = 3;
-    const char* acts[] = {"Prev page", "Next page", "Back"};
+    static const char* kActs[3] = {"Prev", "Next", "Close"};
+    static const Icon kIcons[3] = {Icon::ChevronLeft, Icon::ChevronRight, Icon::ChevronLeft};
+    const int seg = (kFocusRowW - 16) / 3;
     for (int i = 0; i < 3; ++i) {
-      const int y = kBottomCtaY - (2 - i) * kRowPitch;
-      if (i == focus_.index)
-        canvas_.draw_focus_tile(kSideMargin, y, kFocusRowW, kFocusRowH, acts[i], Canvas::TextRole::Body);
-      else
-        canvas_.draw_text(kSideMargin + kRowLabelInset, y + kRowTextPad, acts[i], Canvas::TextRole::Body, Gray::G0);
+      const int x = kSideMargin + i * (seg + 8);
+      const bool f = focus_.index == i;
+      if (f) canvas_.fill_round_rect(x, kBottomCtaY, seg, kFocusRowH, kFocusRowH / 2, Gray::G0);
+      else canvas_.stroke_round_rect(x, kBottomCtaY, seg, kFocusRowH, kFocusRowH / 2, Gray::G0, 2, Gray::G3);
+      const Gray ink = f ? Gray::G3 : Gray::G0;
+      const int lw = canvas_.text_width(kActs[i], Canvas::TextRole::BodyStrong);
+      const bool icon_after = i == 1;
+      const int total_w = lw + (i == 2 ? 0 : 26);
+      int lx = x + (seg - total_w) / 2;
+      if (i == 0) {
+        ui::icon(canvas_, kIcons[i], lx + 8, kBottomCtaY + kFocusRowH / 2, 18, ink);
+        lx += 26;
+      }
+      canvas_.draw_text(lx, kBottomCtaY + (kFocusRowH - canvas_.text_height(Canvas::TextRole::BodyStrong)) / 2,
+                        kActs[i], Canvas::TextRole::BodyStrong, ink);
+      if (icon_after) ui::icon(canvas_, kIcons[i], lx + lw + 16, kBottomCtaY + kFocusRowH / 2, 18, ink);
     }
     return;
   }
 
-  canvas_.draw_text(kSideMargin, kContentTop, "Reading", Canvas::TextRole::ScreenTitle, Gray::G0);
+  ui::header(canvas_, "Reading", true);
   if (!reading_status_.empty()) {
-    canvas_.draw_text_fit(kSideMargin, below_title(kContentTop) - 16, kContentW, reading_status_, Canvas::TextRole::Secondary,
-                          Gray::G1);
+    canvas_.draw_text_fit(kSideMargin, below_title(kContentTop) - 12, kContentW, reading_status_,
+                          Canvas::TextRole::Caption, Gray::G0);
   }
   const int list_top = kListTopWithMeta;
   const int n = static_cast<int>(books_.size());
-  focus_.count = n + 2;  // books + Sync + Back
+  focus_.count = n + 2;
   if (n == 0) {
-    canvas_.draw_text_centered(kCanvasW / 2, kEmptyCenterY, "No books yet", Canvas::TextRole::Body,
-                               Gray::G0);
-    canvas_.draw_text_wrapped(
-        kSideMargin, kEmptyHintY, kContentW, kWrapGap,
-        wifi_.connected() ? "Select Sync below to pull books from Companion."
-                          : "Offline — local books still open. Sync needs Wi‑Fi.",
-        Canvas::TextRole::Secondary, Gray::G1);
+    ui::empty_state(canvas_, Icon::Reading, "No books yet",
+                    wifi_.connected() ? "Add EPUB or text files in Companion, then Sync."
+                                      : "Local books still open offline. Sync needs Wi-Fi.",
+                    340);
   }
   for (int i = 0; i < n && i < 8; ++i) {
-    const int y = list_top + i * kRowPitch;
-    std::string label = books_[i].title;
-    if (!books_[i].format.empty()) label += " · " + books_[i].format;
-    if (i == focus_.index)
-      canvas_.draw_focus_tile(kSideMargin, y, kFocusRowW, kFocusRowH, label, Canvas::TextRole::Body);
-    else
-      canvas_.draw_text_fit(kSideMargin + kRowLabelInset, y + kRowTextPad, kRowLabelW, label, Canvas::TextRole::Body, Gray::G0);
+    const auto& bk = books_[static_cast<size_t>(i)];
+    ui::row(canvas_, list_top + i * kRowPitch,
+            Row{bk.title, RowKind::Value, bk.author.empty() ? bk.format : bk.author, false, Icon::Reading, true},
+            i == focus_.index);
   }
-  {
-    const int y = n == 0 ? kBottomCtaY - kRowPitch : list_top + std::min(n, 8) * kRowPitch;
-    const char* sync_label = wifi_.connected() ? "Sync from Companion" : "Sync (needs Wi‑Fi)";
-    if (focus_.index == n)
-      canvas_.draw_focus_tile(kSideMargin, y, kFocusRowW, kFocusRowH, sync_label, Canvas::TextRole::Body);
-    else
-      canvas_.draw_text(kSideMargin + kRowLabelInset, y + kRowTextPad, sync_label, Canvas::TextRole::Body,
-                        Gray::G0);
-    const int y2 = y + kRowPitch;
-    if (focus_.index == n + 1)
-      canvas_.draw_focus_tile(kSideMargin, y2, kFocusRowW, kFocusRowH, "Back", Canvas::TextRole::Body);
-    else
-      canvas_.draw_text(kSideMargin + kRowLabelInset, y2 + 12, "Back", Canvas::TextRole::Body, Gray::G0);
-  }
+  const int y = n == 0 ? kBottomCtaY - kRowPitch : list_top + std::min(n, 8) * kRowPitch;
+  ui::row(canvas_, y,
+          Row{wifi_.connected() ? "Sync from Companion" : "Sync", RowKind::Value, wifi_.connected() ? "" : "Needs Wi-Fi",
+              false, Icon::Update, true},
+          focus_.index == n);
+  ui::row(canvas_, y + kRowPitch, Row{"Back", RowKind::Back}, focus_.index == n + 1);
 }
 
 void App::handle_reading(InputEvent e) {
@@ -372,7 +391,8 @@ void App::handle_reading(InputEvent e) {
       const int prev = focus_.index;
       focus_.move(e == InputEvent::Down ? 1 : -1);
       if (focus_.index == prev) return;
-      mark_list_focus_dirty(kBottomCtaY - 2 * kRowPitch, prev, focus_.index);
+      // Single-row control bar.
+      mark_region_dirty(0, kBottomCtaY - 6, kCanvasW, kFocusRowH + 12);
     } else if (e == InputEvent::Select) {
       if (focus_.index == 0) {
         if (reading_page_ > 0) {

@@ -1,4 +1,5 @@
 #include "pocket/app.hpp"
+#include "pocket/ui.hpp"
 #include <algorithm>
 #include <cstdio>
 #include <string>
@@ -9,17 +10,6 @@ namespace {
 
 constexpr int kTitleY = kContentTop;
 
-void draw_focus_rows(Canvas& c, FocusModel& focus, const char* const* rows, int count, int top_y) {
-  focus.count = count;
-  for (int i = 0; i < count; ++i) {
-    const int y = row_y(top_y, i);
-    if (i == focus.index)
-      c.draw_focus_tile(kSideMargin, y, kFocusRowW, kFocusRowH, rows[i], Canvas::TextRole::Body);
-    else
-      c.draw_text_fit(kSideMargin + kRowLabelInset, y + kRowTextPad, kRowLabelW, rows[i],
-                      Canvas::TextRole::Body, Gray::G0);
-  }
-}
 
 }  // namespace
 
@@ -83,300 +73,287 @@ static const char* kSettingsRows[] = {
 
 void App::render_settings() {
   draw_status_bar();
-  ScreenId s = nav_.current();
+  const ScreenId s = nav_.current();
+  using ui::Icon;
+  using ui::Row;
+  using ui::RowKind;
 
   if (s == ScreenId::SettingsRoot) {
-    canvas_.draw_text(kSideMargin, kTitleY, "Settings", Canvas::TextRole::ScreenTitle, Gray::G0);
-    draw_focus_rows(canvas_, focus_, kSettingsRows, 9, kListTop);
+    ui::header(canvas_, "Settings");
+    const char* wifi_val = wifi_.connected() ? cfg_.wifi_ssid.c_str() : "Off";
+    const char* cloud_val = cfg_.cloud_status == "active"     ? "Active"
+                            : cfg_.cloud_status == "trialing" ? "Trial"
+                                                              : "";
+    struct Item { const char* label; Icon icon; const char* value; };
+    const Item items[9] = {
+        {"PIN & security", Icon::Lock, ""},     {"Wi-Fi", Icon::Wifi, wifi_val},
+        {"Display", Icon::Display, ""},         {"Sound & mic", Icon::Sound, ""},
+        {"Home apps", Icon::Home, ""},          {"Units", Icon::Weather, cfg_.weather_units ? "\xC2\xB0" "C" : "\xC2\xB0" "F"},
+        {"Pocket Cloud", Icon::Cloud, cloud_val}, {"Software update", Icon::Update, kConsumerVersion},
+        {"About", Icon::Info, ""},
+    };
+    focus_.count = 9;
+    for (int i = 0; i < 9; ++i) {
+      Row r{items[i].label, RowKind::Nav, items[i].value, false, items[i].icon, true};
+      ui::row(canvas_, row_y(kListTop, i), r, i == focus_.index);
+    }
     return;
   }
 
   if (s == ScreenId::SettingsAbout) {
-    canvas_.draw_text(kSideMargin, kTitleY, "About", Canvas::TextRole::ScreenTitle, Gray::G0);
-    canvas_.draw_text(kSideMargin, kListTop, kProductName, Canvas::TextRole::WordMark, Gray::G0);
-    char ver[48];
-    std::snprintf(ver, sizeof(ver), "Version %s", kConsumerVersion);
-    canvas_.draw_text(kSideMargin, kListTop + kTitleToBody, ver, Canvas::TextRole::Body, Gray::G0);
-    canvas_.draw_text_fit(kSideMargin, kListTop + kTitleToBody + kBodyLinePitch, kContentW, cfg_.device_name,
-                          Canvas::TextRole::Secondary, Gray::G1);
-    canvas_.draw_text(kSideMargin, kListTop + kTitleToBody + 2 * kBodyLinePitch + 8, "What's new",
-                      Canvas::TextRole::Body, Gray::G0);
-    canvas_.draw_text_wrapped(
-        kSideMargin, kListTop + kTitleToBody + 3 * kBodyLinePitch + 8, kContentW, kWrapGap,
-        "A new look: crisp type, a calmer Home, and seven generative screensavers. Pick one in Display.",
-        Canvas::TextRole::Secondary, Gray::G1);
-    canvas_.draw_text(kSideMargin, kListTop + kTitleToBody + 6 * kBodyLinePitch + 16, "Pocket Cloud",
-                      Canvas::TextRole::Body, Gray::G0);
-    canvas_.draw_text(kSideMargin, kListTop + kTitleToBody + 7 * kBodyLinePitch + 16,
-                      cfg_.cloud_entitled ? "Subscribed" : "Not subscribed", Canvas::TextRole::Secondary, Gray::G1);
-    canvas_.draw_text(kSideMargin, kListTop + kTitleToBody + 8 * kBodyLinePitch + 16,
-                      cfg_.companion_linked ? "Companion: Linked" : "Companion: Not linked",
-                      Canvas::TextRole::Secondary, Gray::G1);
-    const char* acts[] = {"Controls tips", "Reset Pocket…", "Back"};
-    draw_focus_rows(canvas_, focus_, acts, 3, 560);
+    ui::header(canvas_, "About", true);
+    char ver[32];
+    std::snprintf(ver, sizeof(ver), "%s", kConsumerVersion);
+    int y = kListTop + 4;
+    y = ui::kv(canvas_, y, "Model", kProductName);
+    y = ui::kv(canvas_, y, "Name", cfg_.device_name);
+    y = ui::kv(canvas_, y, "Version", ver);
+    y = ui::kv(canvas_, y, "Pocket Cloud", cfg_.cloud_entitled ? "Subscribed" : "Not subscribed");
+    y = ui::kv(canvas_, y, "Companion", cfg_.companion_linked ? "Linked" : "Not linked");
+    ui::section(canvas_, y + 2, "What's new");
+    canvas_.draw_text_wrapped(kSideMargin, y + 34, kContentW, kWrapGap,
+                              "A complete redesign: one icon set, clearer settings, and generative screensavers.",
+                              Canvas::TextRole::Secondary, Gray::G0);
+    focus_.count = 3;
+    const Row acts[3] = {{"Controls tips", RowKind::Nav},
+                         {"Reset Pocket\xE2\x80\xA6", RowKind::Plain},
+                         {"Back", RowKind::Back}};
+    for (int i = 0; i < 3; ++i) ui::row(canvas_, row_y(560, i), acts[i], i == focus_.index);
     return;
   }
 
   if (s == ScreenId::SettingsCloud) {
-    canvas_.draw_text(kSideMargin, kTitleY, "Pocket Cloud", Canvas::TextRole::ScreenTitle, Gray::G0);
-    int sync_y = canvas_.draw_text_wrapped(
-        kSideMargin, kListTop, kContentW, kWrapGap,
-        wifi_.connected() ? "Sync Notes to your phone with Pocket Cloud."
-                          : "Offline — Notes stay on device. Cloud sync and Link need Wi‑Fi.",
-        Canvas::TextRole::Secondary, Gray::G1);
+    ui::header(canvas_, "Pocket Cloud", true);
     const char* status = "Not subscribed";
-    if (cfg_.cloud_status == "trialing")
-      status = "Trial";
-    else if (cfg_.cloud_status == "active")
-      status = "Subscribed";
-    else if (cfg_.cloud_status == "past_due")
-      status = "Payment issue";
-    canvas_.draw_text(kSideMargin, sync_y + 16, status, Canvas::TextRole::Body, Gray::G0);
-    if (cfg_.companion_linked) {
-      canvas_.draw_text(kSideMargin, sync_y + 52, "Companion: Linked", Canvas::TextRole::Secondary, Gray::G1);
-    } else {
-      canvas_.draw_text(kSideMargin, sync_y + 52, "Companion: Not linked", Canvas::TextRole::Secondary, Gray::G1);
-    }
-    const char* acts[] = {"Start free trial", "Subscribe $3.99/mo", "Link companion app"};
-    draw_focus_rows(canvas_, focus_, acts, 3, sync_y + 100);
-    canvas_.draw_text_wrapped(kSideMargin, sync_y + 100 + 3 * kRowPitch + 16, kContentW, kWrapGap,
-                              "Link opens a QR for the Pocket app.", Canvas::TextRole::Secondary, Gray::G1);
-    if (now_ms_ < error_until_ms_) {
-      canvas_.draw_text_wrapped(kSideMargin, sync_y + 100 + 3 * kRowPitch + 52, kContentW, kWrapGap, error_msg_,
-                                Canvas::TextRole::Body, Gray::G0);
-    }
+    if (cfg_.cloud_status == "trialing") status = "Trial";
+    else if (cfg_.cloud_status == "active") status = "Subscribed";
+    else if (cfg_.cloud_status == "past_due") status = "Payment issue";
+    int y = ui::kv(canvas_, kListTop + 4, "Plan", status);
+    y = ui::kv(canvas_, y, "Companion", cfg_.companion_linked ? "Linked" : "Not linked");
+    canvas_.draw_text_wrapped(kSideMargin, y, kContentW, kWrapGap,
+                              wifi_.connected() ? "Sync Notes, Lists, Music and Reading with your phone."
+                                                : "Offline \xE2\x80\x94 everything stays on Pocket until Wi-Fi returns.",
+                              Canvas::TextRole::Secondary, Gray::G0);
+    const int top = kListTop + 180;
+    focus_.count = 3;
+    const Row acts[3] = {{"Start free trial", RowKind::Action},
+                         {"Subscribe", RowKind::Value, "$3.99 / month"},
+                         {"Link Companion", RowKind::Nav, {}, false, Icon::Phone, true}};
+    for (int i = 0; i < 3; ++i) ui::row(canvas_, row_y(top, i), acts[i], i == focus_.index);
+    canvas_.draw_text_wrapped(kSideMargin, row_y(top, 3) + 8, kContentW, kWrapGap,
+                              "7-day free trial. Cancel anytime in Companion. Link shows a QR for the Pocket app.",
+                              Canvas::TextRole::Caption, Gray::G0);
+    if (now_ms_ < error_until_ms_ && !error_msg_.empty()) ui::toast(canvas_, error_msg_);
     return;
   }
 
   if (s == ScreenId::SettingsDisplay) {
-    canvas_.draw_text(kSideMargin, kTitleY, "Display", Canvas::TextRole::ScreenTitle, Gray::G0);
-    char idle[48];
-    std::snprintf(idle, sizeof(idle), "Idle lock: %ds", cfg_.idle_lock_s);
-    std::string lockmsg =
-        cfg_.lock_message.empty() ? "Lock message: Off" : "Lock message: " + cfg_.lock_message;
-    const char* bright_label = cfg_.brightness_percent < 34 ? "Brightness: Darker"
-                               : cfg_.brightness_percent < 67 ? "Brightness: Normal"
-                                                               : "Brightness: Lighter";
-    const char* ghost_label =
-        cfg_.ghosting_frequent ? "Ghosting control: Frequent" : "Ghosting control: Normal";
-    std::string saver = "Screensaver: ";
-    if (cfg_.screensaver == kScreensaverPlain) saver += "Plain";
+    ui::header(canvas_, "Display", true);
+    char idle[16];
+    if (cfg_.idle_lock_s >= 60) std::snprintf(idle, sizeof(idle), "%d min", cfg_.idle_lock_s / 60);
+    else std::snprintf(idle, sizeof(idle), "%d sec", cfg_.idle_lock_s);
+    std::string saver;
+    if (cfg_.screensaver == kScreensaverPlain) saver = "Plain";
     else if (cfg_.screensaver >= 1 && cfg_.screensaver <= kScreensaverCount)
-      saver += screensaver_name(cfg_.screensaver - 1);
-    else saver += "Rotate";
-    const char* rows[] = {idle,
-                          cfg_.show_batt_pct ? "Show battery %: On" : "Show battery %: Off",
-                          lockmsg.c_str(), saver.c_str(), bright_label, "Full refresh: Now", ghost_label,
-                          "Back"};
-    draw_focus_rows(canvas_, focus_, rows, 8, kListTop);
-    canvas_.draw_text_wrapped(kSideMargin, kListTop + 8 * kRowPitch + 16, kContentW, kWrapGap,
-                              "Set a custom lock message in Pocket Companion.",
-                              Canvas::TextRole::Secondary, Gray::G1);
+      saver = screensaver_name(cfg_.screensaver - 1);
+    else saver = "Rotate";
+    const char* bright = cfg_.brightness_percent < 34   ? "Darker"
+                         : cfg_.brightness_percent < 67 ? "Normal"
+                                                        : "Lighter";
+    const std::string lockmsg = cfg_.lock_message.empty() ? "Off" : cfg_.lock_message;
+    const Row rows[8] = {
+        {"Auto-lock", RowKind::Value, idle},
+        {"Battery percentage", RowKind::Toggle, {}, cfg_.show_batt_pct},
+        {"Lock message", RowKind::Value, lockmsg},
+        {"Screensaver", RowKind::Value, saver},
+        {"Contrast", RowKind::Value, bright},
+        {"Refresh screen", RowKind::Plain},
+        {"Deep refresh", RowKind::Toggle, {}, cfg_.ghosting_frequent},
+        {"Back", RowKind::Back},
+    };
+    focus_.count = 8;
+    for (int i = 0; i < 8; ++i) ui::row(canvas_, row_y(kListTop, i), rows[i], i == focus_.index);
+    canvas_.draw_text_wrapped(kSideMargin, row_y(kListTop, 8) + 4, kContentW, kWrapGap,
+                              "Deep refresh clears ghosting more often. Set a custom lock message in Companion.",
+                              Canvas::TextRole::Caption, Gray::G0);
     return;
   }
 
   if (s == ScreenId::SettingsSound) {
-    canvas_.draw_text(kSideMargin, kTitleY, "Sound & mic", Canvas::TextRole::ScreenTitle, Gray::G0);
-    char vol[24];
-    std::snprintf(vol, sizeof(vol), "Volume: %d%%", cfg_.volume_percent);
-    std::string mic_line;
-    if (ptt_active_) {
-      mic_line = "Listening…";
-    } else if (mic_last_level_ >= 0) {
-      mic_line = mic_last_ok_ ? "Mic OK — picked up sound" : "No sound detected — check mic";
-    } else {
-      mic_line = "Hold the side button to test the mic.";
+    ui::header(canvas_, "Sound & mic", true);
+    char vol[16];
+    std::snprintf(vol, sizeof(vol), "%d%%", cfg_.volume_percent);
+    const Row rows[3] = {{"Volume", RowKind::Value, vol, false, Icon::Sound, true},
+                         {"Mic test", RowKind::Plain, {}, false, Icon::Mic, true},
+                         {"Back", RowKind::Back}};
+    focus_.count = 3;
+    for (int i = 0; i < 3; ++i) ui::row(canvas_, row_y(kListTop, i), rows[i], i == focus_.index);
+    const char* mic = ptt_active_                ? "Listening\xE2\x80\xA6 release to finish."
+                      : mic_last_level_ < 0      ? "Hold the side button to test the microphone."
+                      : mic_last_ok_             ? "Microphone OK \xE2\x80\x94 sound picked up."
+                                                 : "No sound detected \xE2\x80\x94 check the microphone.";
+    ui::section(canvas_, row_y(kListTop, 3) + 8, "Microphone");
+    canvas_.draw_text_wrapped(kSideMargin, row_y(kListTop, 3) + 42, kContentW, kWrapGap, mic,
+                              Canvas::TextRole::Secondary, Gray::G0);
+    if (mic_last_level_ >= 0 && !ptt_active_) {
+      // Level meter from the last test.
+      const int my = row_y(kListTop, 3) + 110;
+      canvas_.stroke_round_rect(kSideMargin, my, kContentW, 14, 7, Gray::G0, 2, Gray::G3);
+      const int fill = (kContentW - 8) * std::clamp(mic_last_level_, 0, 100) / 100;
+      if (fill > 0) canvas_.fill_round_rect(kSideMargin + 4, my + 4, std::max(6, fill), 6, 3, Gray::G0);
     }
-    const char* rows[] = {vol, "Mic test", "Back"};
-    draw_focus_rows(canvas_, focus_, rows, 3, kListTop);
-    canvas_.draw_text_wrapped(kSideMargin, kListTop + 3 * kRowPitch + 16, kContentW, kWrapGap, mic_line,
-                              Canvas::TextRole::Secondary, Gray::G1);
     return;
   }
 
   if (s == ScreenId::SettingsUnits) {
-    canvas_.draw_text(kSideMargin, kTitleY, "Units", Canvas::TextRole::ScreenTitle, Gray::G0);
+    ui::header(canvas_, "Units", true);
     focus_.count = 2;
-    const char* rows[] = {"Fahrenheit °F", "Celsius °C"};
+    const char* names[2] = {"Fahrenheit (\xC2\xB0" "F)", "Celsius (\xC2\xB0" "C)"};
     for (int i = 0; i < 2; ++i) {
-      const int y = kListTop + i * kRowPitch;
-      bool sel = (cfg_.weather_units == i);
-      if (i == focus_.index)
-        canvas_.draw_focus_tile(kSideMargin, y, kFocusRowW, kFocusRowH, rows[i], Canvas::TextRole::Body);
-      else
-        canvas_.draw_text(kSideMargin + kRowLabelInset, y + kRowTextPad, rows[i], Canvas::TextRole::Body,
-                          sel ? Gray::G0 : Gray::G1);
+      Row r{names[i], RowKind::Radio, {}, cfg_.weather_units == i};
+      ui::row(canvas_, row_y(kListTop, i), r, i == focus_.index);
     }
+    canvas_.draw_text_wrapped(kSideMargin, row_y(kListTop, 2) + 4, kContentW, kWrapGap,
+                              "Used by Weather. Back to return.", Canvas::TextRole::Caption, Gray::G0);
     return;
   }
 
   if (s == ScreenId::SettingsHomeApps) {
-    canvas_.draw_text(kSideMargin, kTitleY, "Home apps", Canvas::TextRole::ScreenTitle, Gray::G0);
-    canvas_.draw_text(kSideMargin, kListTop - 8, "Choose what to show on Home.", Canvas::TextRole::Secondary,
-                      Gray::G1);
-    // Settings + Update always visible on Home; not toggleable here. Reading (index 8) toggles
-    // alongside the other real apps.
+    ui::header(canvas_, "Home apps", true);
+    canvas_.draw_text(kSideMargin, kListTop - 6, "Choose what appears on Home.", Canvas::TextRole::Caption,
+                      Gray::G0);
     static const int kOrder[] = {0, 1, 2, 3, 4, 5, 8, 6, 7};
-    static const char* names[] = {"Notes",   "Ledger",   "Clock",   "Pass",   "Weather",
-                                  "Music",   "Reading",  "Settings (always on)", "Update (always on)"};
+    static const char* names[] = {"Notes", "Ledger", "Clock", "Pass", "Weather", "Music", "Reading", "Settings",
+                                  "Update"};
+    static const Icon icons[] = {Icon::Notes, Icon::Ledger, Icon::Clock,    Icon::Pass,  Icon::Weather,
+                                 Icon::Music, Icon::Reading, Icon::Settings, Icon::Update};
     focus_.count = 9;
     for (int i = 0; i < 9; ++i) {
-      const int y = kListTop + 28 + i * kRowPitch;
       const HomeApp a = static_cast<HomeApp>(kOrder[i]);
-      bool on = home_app_visible(cfg_, a);
-      std::string label = std::string(names[i]);
-      if (i < 7) label += on ? ": On" : ": Off";
-      if (i == focus_.index)
-        canvas_.draw_focus_tile(kSideMargin, y, kFocusRowW, kFocusRowH, label, Canvas::TextRole::Body);
-      else
-        canvas_.draw_text_fit(kSideMargin + kRowLabelInset, y + kRowTextPad, kRowLabelW, label, Canvas::TextRole::Body,
-                              Gray::G0);
+      Row r{names[i], i < 7 ? RowKind::Toggle : RowKind::Value, i < 7 ? "" : "Always on",
+            home_app_visible(cfg_, a), icons[i], true};
+      ui::row(canvas_, row_y(kListTop + 28, i), r, i == focus_.index);
     }
     return;
   }
 
   if (s == ScreenId::SettingsUpdate) {
-    canvas_.draw_text(kSideMargin, kTitleY, "Software update", Canvas::TextRole::ScreenTitle, Gray::G0);
-    canvas_.draw_text(kSideMargin, kListTop, kProductName, Canvas::TextRole::Body, Gray::G0);
-    char ver[48];
-    std::snprintf(ver, sizeof(ver), "Version %s", kConsumerVersion);
-    canvas_.draw_text(kSideMargin, kListTop + kBodyLinePitch, ver, Canvas::TextRole::Secondary, Gray::G1);
-    canvas_.draw_text_wrapped(
-        kSideMargin, kListTop + 2 * kBodyLinePitch, kContentW, kWrapGap,
-        wifi_.connected() ? "Check for the latest Pocket Classic software."
-                          : "Connect to Wi‑Fi to check for software updates.",
-        Canvas::TextRole::Secondary, Gray::G1);
-    const char* rows[] = {"Update Pocket", "Back"};
-    draw_focus_rows(canvas_, focus_, rows, 2, kListTop + 72 + 2 * kBodyLinePitch);
+    ui::header(canvas_, "Software update", true);
+    int y = ui::kv(canvas_, kListTop + 4, "Installed", kConsumerVersion);
+    y = ui::kv(canvas_, y, "Channel", cfg_.fw_channel == "stable" ? "Stable" : cfg_.fw_channel);
+    (void)y;
+    canvas_.draw_text_fit(kSideMargin, kListTop + 106, kContentW,
+                          wifi_.connected() ? "Signed updates install over Wi-Fi." : "Connect to Wi-Fi to check.",
+                          Canvas::TextRole::Caption, Gray::G0);
+    focus_.count = 2;
+    const Row rows[2] = {{"Check for update", RowKind::Action, {}, false, Icon::Update, true},
+                         {"Back", RowKind::Back}};
+    for (int i = 0; i < 2; ++i) ui::row(canvas_, row_y(kListTop + 72 + 2 * kBodyLinePitch, i), rows[i], i == focus_.index);
     return;
   }
 
   if (s == ScreenId::SettingsUpdateProgress) {
-    canvas_.draw_text(kSideMargin, kTitleY, "Updating", Canvas::TextRole::ScreenTitle, Gray::G0);
-    canvas_.draw_text_wrapped(kSideMargin, kListTop, kContentW, kWrapGap,
-                              ota_status_.empty() ? "Working…" : ota_status_, Canvas::TextRole::Body, Gray::G0);
-    canvas_.draw_text(kSideMargin, kBottomCtaY, "Keep Pocket plugged in", Canvas::TextRole::Secondary, Gray::G1);
+    ui::header(canvas_, "Updating");
+    ui::empty_state(canvas_, Icon::Update, ota_status_.empty() ? "Working\xE2\x80\xA6" : ota_status_,
+                    "Keep Pocket plugged in. It restarts when the update is installed.", 360);
     return;
   }
 
   if (s == ScreenId::SettingsUpdateResult) {
-    canvas_.draw_text(kSideMargin, kTitleY, "Update", Canvas::TextRole::ScreenTitle, Gray::G0);
-    canvas_.draw_text_wrapped(kSideMargin, kListTop, kContentW, kWrapGap,
-                              ota_status_.empty() ? "Done." : ota_status_, Canvas::TextRole::Body, Gray::G0);
+    ui::header(canvas_, "Software update");
+    const bool ok = ota_status_.empty() || ota_status_.find("up to date") != std::string::npos ||
+                    ota_status_.find("Up to date") != std::string::npos;
+    ui::empty_state(canvas_, ok ? Icon::Check : Icon::Info, ok ? "You're up to date" : "Update",
+                    ota_status_.empty() ? "Done." : ota_status_, 360);
     focus_.count = 1;
-    canvas_.draw_focus_tile(kSideMargin, kBottomCtaY, kFocusRowW, kFocusRowH, "OK", Canvas::TextRole::Body);
+    ui::button(canvas_, kBottomCtaY, "OK", true);
     return;
   }
 
   if (s == ScreenId::SettingsWifi) {
-    canvas_.draw_text(kSideMargin, kTitleY, "Wi-Fi", Canvas::TextRole::ScreenTitle, Gray::G0);
+    ui::header(canvas_, "Wi-Fi", true);
 
     if (wifi_ui_page_ == 1) {
-      // Add network — SoftAP credentials next (phone finishes the password).
       canvas_.draw_text_wrapped(kSideMargin, kListTop, kContentW, kWrapGap,
-                                "Add a network from your phone. Choose Personal Hotspot or another Wi‑Fi.",
+                                "Add a network from your phone \xE2\x80\x94 your Personal Hotspot or another Wi-Fi.",
                                 Canvas::TextRole::Body, Gray::G0);
-      canvas_.draw_text_wrapped(
-          kSideMargin, kListTop + 120, kContentW, kWrapGap,
-          "Pocket opens a short setup network and stays unlocked until you finish or Cancel.",
-          Canvas::TextRole::Secondary, Gray::G1);
-      const char* acts[] = {"Personal Hotspot", "Another Wi‑Fi", "Back"};
+      canvas_.draw_text_wrapped(kSideMargin, kListTop + 120, kContentW, kWrapGap,
+                                "Pocket opens a short setup network and stays unlocked until you finish or cancel.",
+                                Canvas::TextRole::Secondary, Gray::G0);
       focus_.count = 3;
-      draw_focus_rows(canvas_, focus_, acts, 3, kListTop + 240);
+      const Row acts[3] = {{"Personal Hotspot", RowKind::Nav, {}, false, Icon::Phone, true},
+                           {"Another Wi-Fi", RowKind::Nav, {}, false, Icon::Wifi, true},
+                           {"Back", RowKind::Back}};
+      for (int i = 0; i < 3; ++i) ui::row(canvas_, row_y(kListTop + 240, i), acts[i], i == focus_.index);
       return;
     }
 
     if (wifi_ui_page_ == 2) {
-      canvas_.draw_text(kSideMargin, kListTop, "Remove a saved network", Canvas::TextRole::Body, Gray::G0);
+      ui::section(canvas_, kListTop, "Remove a saved network");
       const int n_known = static_cast<int>(cfg_.wifi_known.size());
       focus_.count = std::max(1, n_known + 1);
       int y = below_title(kListTop) - 8;
       for (int i = 0; i < n_known; ++i) {
-        const auto& net = cfg_.wifi_known[static_cast<size_t>(i)];
-        if (i == focus_.index)
-          canvas_.draw_focus_tile(kSideMargin, y, kFocusRowW, kFocusRowH, net.ssid, Canvas::TextRole::Body);
-        else
-          canvas_.draw_text_fit(kSideMargin + kRowLabelInset, y + kRowTextPad, kRowLabelW, net.ssid,
-                                Canvas::TextRole::Body, Gray::G0);
+        Row r{cfg_.wifi_known[static_cast<size_t>(i)].ssid, RowKind::Plain, {}, false, Icon::Trash, true};
+        ui::row(canvas_, y, r, i == focus_.index);
         y += kRowPitch;
       }
-      if (focus_.index == n_known)
-        canvas_.draw_focus_tile(kSideMargin, y, kFocusRowW, kFocusRowH, "Back", Canvas::TextRole::Body);
-      else
-        canvas_.draw_text(kSideMargin + kRowLabelInset, y + kRowTextPad, "Back", Canvas::TextRole::Body, Gray::G0);
+      ui::row(canvas_, y, Row{"Back", RowKind::Back}, focus_.index == n_known);
       return;
     }
 
-    // Page 0 — known / connected list.
     const bool online = wifi_.connected();
-    char status[96];
-    if (online) {
-      std::snprintf(status, sizeof(status), "Connected · %s", cfg_.wifi_ssid.c_str());
-    } else if (wifi_sta_connecting_) {
-      std::snprintf(status, sizeof(status), "Connecting…");
-    } else {
-      std::snprintf(status, sizeof(status), "Not connected");
+    // Status card.
+    {
+      const int cy = kListTop + 22;
+      ui::icon(canvas_, Icon::Wifi, kSideMargin + 14, cy, 28, Gray::G0);
+      const char* st = online ? "Connected" : (wifi_sta_connecting_ ? "Connecting\xE2\x80\xA6" : "Not connected");
+      canvas_.draw_text(kSideMargin + 42, cy - 17, st, Canvas::TextRole::BodyStrong, Gray::G0);
+      if (online && !cfg_.wifi_ssid.empty()) {
+        canvas_.draw_text_fit(kSideMargin + 42, cy + 14, kContentW - 42, cfg_.wifi_ssid, Canvas::TextRole::Caption,
+                              Gray::G0);
+      }
     }
-    canvas_.draw_text_fit(kSideMargin, kListTop, kContentW, status, Canvas::TextRole::Body, Gray::G0);
-
     const int n_known = static_cast<int>(cfg_.wifi_known.size());
-    const int n_actions = n_known > 0 ? 3 : 2;  // Add · [Remove] · Back
+    const int n_actions = n_known > 0 ? 3 : 2;
     focus_.count = std::max(1, n_known + n_actions);
     int y = below_title(kListTop) - 8;
     if (n_known == 0) {
       canvas_.draw_text_wrapped(kSideMargin, y, kContentW, kWrapGap,
-                                "No saved networks yet — Add network… uses Companion on your phone.",
-                                Canvas::TextRole::Secondary, Gray::G1);
+                                "No saved networks yet. Add one from the Pocket app on your phone.",
+                                Canvas::TextRole::Secondary, Gray::G0);
       y += kRowPitch + 16;
     }
     for (int i = 0; i < n_known; ++i) {
       const auto& net = cfg_.wifi_known[static_cast<size_t>(i)];
-      std::string label = net.ssid;
-      if (online && net.ssid == cfg_.wifi_ssid) label += " · now";
-      if (i == focus_.index)
-        canvas_.draw_focus_tile(kSideMargin, y, kFocusRowW, kFocusRowH, label, Canvas::TextRole::Body);
-      else
-        canvas_.draw_text_fit(kSideMargin + kRowLabelInset, y + kRowTextPad, kRowLabelW, label, Canvas::TextRole::Body,
-                              Gray::G0);
+      const bool cur = online && net.ssid == cfg_.wifi_ssid;
+      Row r{net.ssid, cur ? RowKind::Value : RowKind::Plain, cur ? "Connected" : "", false, Icon::Wifi, true};
+      ui::row(canvas_, y, r, i == focus_.index);
       y += kRowPitch;
     }
-    const char* add_label = "Add network…";
-    const char* rem_label = "Remove network…";
-    int a0 = n_known;
-    if (a0 == focus_.index)
-      canvas_.draw_focus_tile(kSideMargin, y, kFocusRowW, kFocusRowH, add_label, Canvas::TextRole::Body);
-    else
-      canvas_.draw_text(kSideMargin + kRowLabelInset, y + kRowTextPad, add_label, Canvas::TextRole::Body, Gray::G0);
+    ui::row(canvas_, y, Row{"Add network", RowKind::Nav, {}, false, Icon::Plus, true}, focus_.index == n_known);
     y += kRowPitch;
     if (n_known > 0) {
-      if (a0 + 1 == focus_.index)
-        canvas_.draw_focus_tile(kSideMargin, y, kFocusRowW, kFocusRowH, rem_label, Canvas::TextRole::Body);
-      else
-        canvas_.draw_text(kSideMargin + kRowLabelInset, y + kRowTextPad, rem_label, Canvas::TextRole::Body, Gray::G0);
+      ui::row(canvas_, y, Row{"Remove network", RowKind::Nav, {}, false, Icon::Trash, true},
+              focus_.index == n_known + 1);
       y += kRowPitch;
     }
-    const int back_i = n_known + n_actions - 1;
-    if (back_i == focus_.index)
-      canvas_.draw_focus_tile(kSideMargin, y, kFocusRowW, kFocusRowH, "Back", Canvas::TextRole::Body);
-    else
-      canvas_.draw_text(kSideMargin + kRowLabelInset, y + kRowTextPad, "Back", Canvas::TextRole::Body, Gray::G0);
-
-    if (now_ms_ < error_until_ms_ && !error_msg_.empty()) {
-      canvas_.draw_text_wrapped(kSideMargin, y + kRowPitch + 8, kContentW, kWrapGap, error_msg_,
-                                Canvas::TextRole::Secondary, Gray::G0);
-    }
+    ui::row(canvas_, y, Row{"Back", RowKind::Back}, focus_.index == n_known + n_actions - 1);
+    if (now_ms_ < error_until_ms_ && !error_msg_.empty()) ui::toast(canvas_, error_msg_);
     return;
   }
 
   if (s == ScreenId::SettingsSecurity) {
-    canvas_.draw_text(kSideMargin, kTitleY, "PIN & security", Canvas::TextRole::ScreenTitle, Gray::G0);
-    const char* rows[] = {"Change PIN", "Lock now", "Back"};
-    draw_focus_rows(canvas_, focus_, rows, 3, kListTop);
+    ui::header(canvas_, "PIN & security", true);
+    focus_.count = 3;
+    const Row rows[3] = {{"Change PIN", RowKind::Nav, {}, false, Icon::Lock, true},
+                         {"Lock now", RowKind::Action},
+                         {"Back", RowKind::Back}};
+    for (int i = 0; i < 3; ++i) ui::row(canvas_, row_y(kListTop, i), rows[i], i == focus_.index);
     return;
   }
 
-  // Fallback
-  canvas_.draw_text(kSideMargin, kTitleY, "Settings", Canvas::TextRole::ScreenTitle, Gray::G0);
+  ui::header(canvas_, "Settings");
 }
 
 void App::handle_settings(InputEvent e) {

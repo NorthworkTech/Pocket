@@ -23,6 +23,8 @@ Companion PWA, and Pocket Cloud API. See README.md and each package README.
 - The panel is **1-bit**: `epd.cpp` thresholds G0/G1 → black, G2/G3 → white. Never rely on
   mid grays; use dithering (`Canvas::fill_tone`, `screensaver.cpp`). Preview what the device
   shows with `host/dump_gallery` + `tools/gallery.py` (1-bit by default).
+- Draw screens with the UI kit (`pocket/ui.hpp`): `ui::header`, `ui::row`, `ui::button`,
+  `ui::tabs`, `ui::empty_state`, `ui::icon`. Don't hand-roll rows or focus tiles.
 - Fonts: `tools/gen_fonts.py` → `src/font_ui.inc` (DM Sans + Source Serif 4, 1bpp).
 - OTA app slot is 0x1E0000 (~1.9 MB); keep an eye on image size. The partition table
   cannot change over OTA.

@@ -56,6 +56,8 @@ const FontFace& face_for(Canvas::TextRole r) {
       return kFontPin;
     case Canvas::TextRole::Hero:
       return kFontHero;
+    case Canvas::TextRole::Reading:
+      return kFontReading;
     case Canvas::TextRole::HugeClock:
       return kFontHuge;
     case Canvas::TextRole::Body:
