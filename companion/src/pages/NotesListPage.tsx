@@ -1,11 +1,13 @@
 import { useEffect, useState } from 'react'
-import { Link, useNavigate } from 'react-router-dom'
+import { useNavigate } from 'react-router-dom'
 import { api, isNetworkError, nowIso } from '../lib/api'
 import { enqueueMutation } from '../lib/queue'
 import type { Note } from '../lib/types'
 import { relativeTime } from '../lib/utils'
 import { ErrorState } from '../components/ErrorState'
 import { useDocumentTitle } from '../components/useDocumentTitle'
+import { Icon } from '../components/Icon'
+import { EmptyState, PageHeader, Row, SkeletonList } from '../components/ui'
 
 export function NotesListPage() {
   useDocumentTitle('Notes')
@@ -64,31 +66,42 @@ export function NotesListPage() {
 
   return (
     <div className="page stack">
-      <div className="row-between">
-        <h1>Notes</h1>
-        <button type="button" className="btn btn-primary" disabled={creating} onClick={() => void onNew()}>
-          New note
-        </button>
-      </div>
+      <PageHeader
+        title="Notes"
+        subtitle={notes.length ? `${notes.length} ${notes.length === 1 ? 'note' : 'notes'} · synced with Pocket` : undefined}
+        action={
+          <button type="button" className="btn btn-primary btn-sm" disabled={creating} onClick={() => void onNew()}>
+            <Icon name="plus" size={16} stroke={2.4} /> New
+          </button>
+        }
+      />
 
       {error ? <ErrorState message={error} onRetry={() => void load()} /> : null}
 
       {loading ? (
-        <p className="muted">Loading…</p>
+        <SkeletonList rows={4} />
       ) : notes.length === 0 && !error ? (
-        <div className="empty panel">
-          <h2>No notes yet</h2>
-          <p className="muted">Notes you dictate on Pocket will show up here.</p>
-        </div>
+        <EmptyState
+          icon="notes"
+          title="No notes yet"
+          action={
+            <button type="button" className="btn btn-primary" disabled={creating} onClick={() => void onNew()}>
+              Write a note
+            </button>
+          }
+        >
+          Hold the side button on Pocket to dictate. Notes sync here automatically.
+        </EmptyState>
       ) : (
-        <ul className="list">
+        <ul className="group__list">
           {notes.map((n) => (
-            <li key={n.id}>
-              <Link className="list-link" to={`/notes/${n.id}`}>
-                <div className="list-title">{n.title || 'Untitled'}</div>
-                <div className="list-meta">{relativeTime(n.updated_at)}</div>
-              </Link>
-            </li>
+            <Row
+              key={n.id}
+              to={`/notes/${n.id}`}
+              title={n.title || 'Untitled'}
+              detail={n.body ? n.body.replace(/\s+/g, ' ').slice(0, 90) : 'No text yet'}
+              value={relativeTime(n.updated_at)}
+            />
           ))}
         </ul>
       )}

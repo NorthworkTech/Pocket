@@ -5,6 +5,8 @@ import { enqueueMutation } from '../lib/queue'
 import type { ListItem } from '../lib/types'
 import { ErrorState } from '../components/ErrorState'
 import { useDocumentTitle } from '../components/useDocumentTitle'
+import { Icon } from '../components/Icon'
+import { Group, Row } from '../components/ui'
 
 export function ListDetailPage() {
   const { id = '' } = useParams()
@@ -108,53 +110,65 @@ export function ListDetailPage() {
     }
   }
 
+  const done = items.filter((i) => i.checked).length
+
   return (
     <div className="page stack">
-      <div className="row-between">
-        <Link to="/lists" className="btn btn-ghost">
-          Back
-        </Link>
-        <button type="button" className="btn btn-danger" onClick={() => setConfirmDelete(true)}>
-          Delete
-        </button>
-      </div>
+      <Link to="/lists" className="back-link">
+        <Icon name="chevron-left" size={20} stroke={2.2} />
+        Lists
+      </Link>
 
       {error ? <ErrorState message={error} onRetry={() => void load()} /> : null}
 
-      <form className="field" onSubmit={onSaveTitle}>
-        <label htmlFor="list-title">Title</label>
-        <input id="list-title" value={title} onChange={(e) => setTitle(e.target.value)} />
+      <form className="editor" onSubmit={onSaveTitle}>
+        <label htmlFor="list-title" className="sr-only">
+          Title
+        </label>
+        <input id="list-title" value={title} onChange={(e) => setTitle(e.target.value)} placeholder="List name" />
       </form>
 
-      <div className="panel">
+      {items.length ? (
+        <p className="eyebrow" style={{ padding: '0 1rem' }}>
+          {done} of {items.length} done
+        </p>
+      ) : null}
+
+      <div className="list">
         {items.map((it) => (
           <label key={it.id} className="check-row">
             <input type="checkbox" checked={it.checked} onChange={() => toggle(it.id)} />
-            <span style={{ textDecoration: it.checked ? 'line-through' : undefined, color: it.checked ? 'var(--muted)' : undefined }}>
-              {it.text}
-            </span>
+            <span>{it.text}</span>
           </label>
         ))}
-        <form className="row" style={{ marginTop: '1rem' }} onSubmit={onAdd}>
+        <form className="check-row" onSubmit={onAdd}>
+          <Icon name="plus" size={20} stroke={2.2} className="cell__chevron" />
           <input
-            style={{ flex: 1 }}
+            className="input"
+            style={{ flex: 1, border: 0, padding: 0, minHeight: '2rem', boxShadow: 'none' }}
             value={newItem}
             onChange={(e) => setNewItem(e.target.value)}
-            placeholder="Add item"
+            placeholder="Add an item"
             aria-label="Add item"
           />
-          <button type="submit" className="btn btn-secondary">
-            Add item
-          </button>
+          {newItem.trim() ? (
+            <button type="submit" className="btn btn-primary btn-sm">
+              Add
+            </button>
+          ) : null}
         </form>
       </div>
 
+      <Group>
+        <Row icon="trash" tone="danger" title="Delete list" onClick={() => setConfirmDelete(true)} />
+      </Group>
+
       {confirmDelete ? (
-        <div className="panel stack">
-          <p>Delete this list on Pocket and in Pocket Cloud?</p>
+        <div className="panel stack" role="alertdialog" aria-label="Delete list">
+          <p>Delete this list on Pocket and in Pocket Cloud? This can't be undone.</p>
           <div className="actions-row">
             <button type="button" className="btn btn-danger" onClick={() => void onDelete()}>
-              Delete
+              Delete list
             </button>
             <button type="button" className="btn btn-secondary" onClick={() => setConfirmDelete(false)}>
               Cancel

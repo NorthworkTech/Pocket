@@ -6,24 +6,14 @@ import { WordMark } from './WordMark'
 
 export function AppLayout({ bare = false }: { bare?: boolean }) {
   const { pathname } = useLocation()
-  const isMarketing =
-    bare &&
-    (pathname === '/' ||
-      pathname === '' ||
-      pathname === '/get-companion' ||
-      pathname.startsWith('/get-companion/') ||
-      pathname === '/developer' ||
-      pathname.startsWith('/developer/'))
 
   return (
     <div className={bare ? 'app-shell app-shell--bare' : 'app-shell'}>
-      {!isMarketing ? <A2HSBanner /> : null}
+      {pathname === '/home' ? <A2HSBanner /> : null}
       {!bare ? (
-        <header className="page" style={{ paddingBottom: 0 }}>
-          <div className="topbar" style={{ marginBottom: 0 }}>
-            <WordMark />
-            <DesktopNav />
-          </div>
+        <header className="app-topbar">
+          <WordMark />
+          <DesktopNav />
         </header>
       ) : null}
       <Outlet />
@@ -38,8 +28,8 @@ export function RequireAuth() {
 
   if (loading) {
     return (
-      <div className="page">
-        <p className="muted">Loading…</p>
+      <div className="page page--center">
+        <div className="spinner" aria-label="Loading" />
       </div>
     )
   }
@@ -58,8 +48,8 @@ export function RequireEntitlement() {
 
   if (loading) {
     return (
-      <div className="page">
-        <p className="muted">Loading…</p>
+      <div className="page page--center">
+        <div className="spinner" aria-label="Loading" />
       </div>
     )
   }

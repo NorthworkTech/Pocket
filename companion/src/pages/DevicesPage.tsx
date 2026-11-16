@@ -5,6 +5,9 @@ import type { Device } from '../lib/types'
 import { relativeTime } from '../lib/utils'
 import { ErrorState } from '../components/ErrorState'
 import { useDocumentTitle } from '../components/useDocumentTitle'
+import { Icon } from '../components/Icon'
+import { EmptyState, PageHeader, SkeletonList } from '../components/ui'
+import { PocketMark } from '../components/WordMark'
 
 export function DevicesPage() {
   useDocumentTitle('Devices')
@@ -31,14 +34,20 @@ export function DevicesPage() {
     void load()
   }, [])
 
+  const isOnline = (d: (typeof devices)[number]) =>
+    !!d.last_seen_at && Date.now() - new Date(d.last_seen_at).getTime() < 1000 * 60 * 15
+
   return (
     <div className="page stack">
-      <div className="row-between">
-        <h1>Devices</h1>
-        <button type="button" className="btn btn-primary" onClick={() => setShowHelp(true)}>
-          Link a Pocket
-        </button>
-      </div>
+      <PageHeader
+        title="Your Pocket"
+        subtitle="Name, sound, display and Wi-Fi for each linked device."
+        action={
+          <Link className="btn btn-secondary btn-sm" to="/link">
+            <Icon name="plus" size={16} stroke={2.4} /> Link
+          </Link>
+        }
+      />
 
       {error ? <ErrorState message={error} onRetry={() => void load()} /> : null}
 
@@ -57,36 +66,39 @@ export function DevicesPage() {
       ) : null}
 
       {loading ? (
-        <p className="muted">Loading…</p>
+        <SkeletonList rows={1} />
       ) : devices.length === 0 ? (
-        <div className="empty panel stack">
-          <h2>No Pocket linked yet</h2>
-          <p className="muted">
-            On Pocket Classic, open Link. Enter Wi‑Fi in this Companion app, then enter the pairing
-            code shown on the device.
-          </p>
-          <Link className="btn btn-primary" to="/link">
-            Link a Pocket
-          </Link>
-        </div>
+        <EmptyState
+          icon="device"
+          title="No Pocket linked yet"
+          action={
+            <Link className="btn btn-primary" to="/link">
+              Link a Pocket
+            </Link>
+          }
+        >
+          On Pocket, open Link. You'll share Wi-Fi from this phone, then confirm the code on the device.
+        </EmptyState>
       ) : (
-        <ul className="list">
-          {devices.map((d) => (
-            <li key={d.id}>
-              <Link className="list-link" to={`/devices/${d.id}`}>
-                <div className="list-title">{d.device_name || 'Pocket'}</div>
-                <div className="list-meta">
-                  {d.last_seen_at &&
-                  Date.now() - new Date(d.last_seen_at).getTime() < 1000 * 60 * 15
-                    ? `Online · last seen ${relativeTime(d.last_seen_at)}`
-                    : d.last_seen_at
-                      ? `Offline · last seen ${relativeTime(d.last_seen_at)}`
-                      : 'Waiting to check in'}
-                </div>
-              </Link>
-            </li>
-          ))}
-        </ul>
+        devices.map((d) => (
+          <Link key={d.id} to={`/devices/${d.id}`} className="device-card">
+            <div className="device-card__art">
+              <PocketMark size={22} />
+            </div>
+            <div className="device-card__body">
+              <span className="device-card__name">{d.device_name || 'Pocket'}</span>
+              <span className="device-card__meta">
+                <span className={isOnline(d) ? 'dot online' : 'dot'} />
+                {isOnline(d)
+                  ? `Online · ${relativeTime(d.last_seen_at!)}`
+                  : d.last_seen_at
+                    ? `Last seen ${relativeTime(d.last_seen_at)}`
+                    : 'Waiting to check in'}
+              </span>
+            </div>
+            <Icon name="chevron-right" size={18} />
+          </Link>
+        ))
       )}
     </div>
   )

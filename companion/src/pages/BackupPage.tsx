@@ -4,6 +4,7 @@ import type { BackupMeta } from '../lib/types'
 import { formatDate } from '../lib/utils'
 import { ErrorState } from '../components/ErrorState'
 import { useDocumentTitle } from '../components/useDocumentTitle'
+import { EmptyState, Group, PageHeader, Row } from '../components/ui'
 
 export function BackupPage() {
   useDocumentTitle('Backup & restore')
@@ -77,41 +78,36 @@ export function BackupPage() {
 
   return (
     <div className="page stack">
-      <h1>Backup &amp; restore</h1>
+      <PageHeader
+        title="Backup"
+        back={{ to: '/account', label: 'Account' }}
+        subtitle="Snapshots of your Notes and Lists in Pocket Cloud. Restore any time."
+      />
 
       {error ? <ErrorState message={error} onRetry={() => void load()} /> : null}
-      {msg ? <p className="muted">{msg}</p> : null}
+      {msg ? <p className="badge badge--accent">{msg}</p> : null}
 
-      <div className="actions">
-        <button type="button" className="btn btn-primary btn-block" disabled={busy} onClick={() => void onCreate()}>
-          Create backup
-        </button>
-        <button type="button" className="btn btn-secondary btn-block" disabled={busy || !latest} onClick={() => void onDownload()}>
-          Download latest backup
-        </button>
-        {latest ? (
-          <button type="button" className="btn btn-secondary btn-block" disabled={busy} onClick={() => setConfirmId(latest.id)}>
-            Restore…
-          </button>
-        ) : null}
-      </div>
+      <Group>
+        <Row icon="backup" tone="accent" title="Back up now" onClick={() => void onCreate()} disabled={busy} chevron />
+        <Row icon="download" title="Download latest" onClick={() => void onDownload()} disabled={busy || !latest} chevron />
+        {latest ? <Row icon="sync" title="Restore latest…" onClick={() => setConfirmId(latest.id)} disabled={busy} chevron /> : null}
+      </Group>
 
       {backups.length > 0 ? (
-        <ul className="list">
+        <Group title="History">
           {backups.map((b) => (
-            <li key={b.id} className="list-item">
-              <div className="list-title">{formatDate(b.created_at)}</div>
-              <div className="list-meta">
-                {b.note_count} notes · {b.list_count} lists
-              </div>
-            </li>
+            <Row key={b.id} title={formatDate(b.created_at)} detail={`${b.note_count} notes · ${b.list_count} lists`} />
           ))}
-        </ul>
-      ) : null}
+        </Group>
+      ) : (
+        <EmptyState icon="backup" title="No backups yet">
+          Your first backup captures every Note and List in Pocket Cloud.
+        </EmptyState>
+      )}
 
       {confirmId ? (
-        <div className="panel stack">
-          <p>Restore replaces Cloud Notes &amp; Lists with the backup. Your device will sync after restore.</p>
+        <div className="panel stack" role="alertdialog" aria-label="Restore backup">
+          <p>Restore replaces Cloud Notes &amp; Lists with this backup. Pocket syncs after the restore.</p>
           <div className="actions-row">
             <button type="button" className="btn btn-primary" disabled={busy} onClick={() => void onRestore(confirmId)}>
               Restore

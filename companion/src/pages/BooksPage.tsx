@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState } from 'react'
 import { api, isNetworkError } from '../lib/api'
 import type { Book } from '../lib/types'
-import { relativeTime } from '../lib/utils'
 import { ErrorState } from '../components/ErrorState'
 import { useDocumentTitle } from '../components/useDocumentTitle'
+import { Icon } from '../components/Icon'
+import { EmptyState, Group, PageHeader, Row, SkeletonList } from '../components/ui'
 
 const MAX_UPLOAD_BYTES = 20 * 1024 * 1024
 
@@ -104,59 +105,58 @@ export function BooksPage() {
 
   return (
     <div className="page stack">
-      <div className="row-between">
-        <h1>Reading</h1>
-        <button
-          type="button"
-          className="btn btn-primary"
-          disabled={uploading}
-          onClick={() => inputRef.current?.click()}
-        >
-          {uploading ? 'Uploading…' : 'Upload book'}
-        </button>
-        <input
-          ref={inputRef}
-          type="file"
-          accept=".epub,.txt,application/epub+zip,text/plain"
-          hidden
-          onChange={(e) => void onPick(e.target.files?.[0] ?? null)}
-        />
+      <PageHeader
+        title="Reading"
+        back={{ to: '/home', label: 'Home' }}
+        action={
+          <button type="button" className="btn btn-primary btn-sm" disabled={uploading} onClick={() => inputRef.current?.click()}>
+            <Icon name="upload" size={16} stroke={2.2} /> {uploading ? 'Uploading…' : 'Upload'}
+          </button>
+        }
+      />
+      <input
+        ref={inputRef}
+        type="file"
+        accept=".epub,.txt,application/epub+zip,text/plain"
+        hidden
+        onChange={(e) => void onPick(e.target.files?.[0] ?? null)}
+      />
+
+      <div className="panel row" style={{ padding: '0.875rem 1rem', alignItems: 'flex-start' }}>
+        <span className="cell__icon">
+          <Icon name="info" size={18} stroke={2} />
+        </span>
+        <p className="muted" style={{ fontSize: '0.875rem' }}>
+          EPUB or plain text up to {formatBytes(MAX_UPLOAD_BYTES)}. Pocket sets books in a serif face, paginated for
+          e-ink. Big libraries sync best with a microSD card.
+        </p>
       </div>
 
-      <p className="muted">
-        EPUB or plain text, up to {formatBytes(MAX_UPLOAD_BYTES)}. Pocket reads a plain-text
-        version of your EPUBs — pagination stays crisp on e-ink. Large libraries sync best with a
-        microSD card in Pocket.
-      </p>
-
-      {msg ? <p className="muted">{msg}</p> : null}
+      {msg ? <p className="badge badge--accent">{msg}</p> : null}
       {error ? <ErrorState message={error} onRetry={() => void load()} /> : null}
 
       {loading ? (
-        <p className="muted">Loading…</p>
+        <SkeletonList rows={3} />
       ) : books.length === 0 && !error ? (
-        <div className="empty panel">
-          <h2>No books yet</h2>
-          <p className="muted">Upload an EPUB or TXT to read on Pocket.</p>
-        </div>
+        <EmptyState icon="reading" title="No books yet">
+          Upload an EPUB or TXT, then Sync on Pocket to start reading.
+        </EmptyState>
       ) : (
-        <ul className="list">
+        <Group title={`${books.length} ${books.length === 1 ? 'book' : 'books'}`}>
           {books.map((b) => (
-            <li key={b.id} className="row-between" style={{ alignItems: 'flex-start', gap: '1rem' }}>
-              <div>
-                <div className="list-title">{b.title || b.filename}</div>
-                <div className="list-meta">
-                  {b.author ? `${b.author} · ` : ''}
-                  {(b.format || 'txt').toUpperCase()} · {formatBytes(b.size_bytes || b.size || 0)}
-                  {b.created_at ? ` · ${relativeTime(b.created_at)}` : null}
-                </div>
-              </div>
-              <button type="button" className="btn" onClick={() => void onDelete(b.id, b.title || b.filename)}>
-                Remove
-              </button>
-            </li>
+            <Row
+              key={b.id}
+              icon="reading"
+              title={b.title || b.filename}
+              detail={`${b.author ? `${b.author} · ` : ''}${(b.format || 'txt').toUpperCase()} · ${formatBytes(b.size_bytes || b.size || 0)}`}
+              value={
+                <button type="button" className="btn btn-ghost btn-sm" onClick={() => void onDelete(b.id, b.title || b.filename)}>
+                  Remove
+                </button>
+              }
+            />
           ))}
-        </ul>
+        </Group>
       )}
     </div>
   )

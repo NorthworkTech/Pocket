@@ -4,6 +4,8 @@ import type { MusicTrack } from '../lib/types'
 import { relativeTime } from '../lib/utils'
 import { ErrorState } from '../components/ErrorState'
 import { useDocumentTitle } from '../components/useDocumentTitle'
+import { Icon } from '../components/Icon'
+import { EmptyState, Group, PageHeader, Row, SkeletonList } from '../components/ui'
 
 const FALLBACK_INTERNAL = 2 * 1024 * 1024
 const FALLBACK_SD = 80 * 1024 * 1024
@@ -119,58 +121,53 @@ export function MusicPage() {
 
   return (
     <div className="page stack">
-      <div className="row-between">
-        <h1>Music</h1>
-        <button
-          type="button"
-          className="btn btn-primary"
-          disabled={uploading}
-          onClick={() => inputRef.current?.click()}
-        >
-          {uploading ? 'Uploading…' : 'Upload WAV'}
-        </button>
-        <input
-          ref={inputRef}
-          type="file"
-          accept="audio/wav,.wav"
-          hidden
-          onChange={(e) => void onPick(e.target.files?.[0] ?? null)}
-        />
+      <PageHeader
+        title="Music"
+        back={{ to: '/home', label: 'Home' }}
+        action={
+          <button type="button" className="btn btn-primary btn-sm" disabled={uploading} onClick={() => inputRef.current?.click()}>
+            <Icon name="upload" size={16} stroke={2.2} /> {uploading ? 'Uploading…' : 'Upload'}
+          </button>
+        }
+      />
+      <input ref={inputRef} type="file" accept="audio/wav,.wav" hidden onChange={(e) => void onPick(e.target.files?.[0] ?? null)} />
+
+      <div className="panel row" style={{ padding: '0.875rem 1rem', alignItems: 'flex-start' }}>
+        <span className="cell__icon">
+          <Icon name="info" size={18} stroke={2} />
+        </span>
+        <p className="muted" style={{ fontSize: '0.875rem' }}>
+          {sdPresent
+            ? `microSD detected — WAV uploads up to ${formatBytes(maxBytes)}. Sync on Pocket saves them to the card.`
+            : `WAV files under ${formatBytes(FALLBACK_INTERNAL)} fit internal storage. Add a microSD card and Sync once for up to ${formatBytes(FALLBACK_SD)}.`}
+        </p>
       </div>
 
-      <p className="muted">
-        {sdPresent
-          ? `Pocket has reported a microSD card — uploads up to ${formatBytes(maxBytes)}. Sync saves to the card.`
-          : `Without an SD card, keep tracks under ${formatBytes(FALLBACK_INTERNAL)} (internal storage). Insert a card in Pocket and Sync once to unlock larger uploads (up to ${formatBytes(FALLBACK_SD)}).`}
-      </p>
-
-      {msg ? <p className="muted">{msg}</p> : null}
+      {msg ? <p className="badge badge--accent">{msg}</p> : null}
       {error ? <ErrorState message={error} onRetry={() => void load()} /> : null}
 
       {loading ? (
-        <p className="muted">Loading…</p>
+        <SkeletonList rows={3} />
       ) : tracks.length === 0 && !error ? (
-        <div className="empty panel">
-          <h2>No tracks yet</h2>
-          <p className="muted">Upload a WAV to play through Pocket’s speaker.</p>
-        </div>
+        <EmptyState icon="music" title="No tracks yet">
+          Upload a WAV, then Sync on Pocket to play it through the speaker.
+        </EmptyState>
       ) : (
-        <ul className="list">
+        <Group title={`${tracks.length} ${tracks.length === 1 ? 'track' : 'tracks'}`}>
           {tracks.map((t) => (
-            <li key={t.id} className="row-between" style={{ alignItems: 'flex-start', gap: '1rem' }}>
-              <div>
-                <div className="list-title">{t.title || t.filename}</div>
-                <div className="list-meta">
-                  {formatBytes(t.size_bytes || t.size || 0)}
-                  {t.created_at ? ` · ${relativeTime(t.created_at)}` : null}
-                </div>
-              </div>
-              <button type="button" className="btn" onClick={() => void onDelete(t.id, t.title || t.filename)}>
-                Remove
-              </button>
-            </li>
+            <Row
+              key={t.id}
+              icon="music"
+              title={t.title || t.filename}
+              detail={`${formatBytes(t.size_bytes || t.size || 0)}${t.created_at ? ` · ${relativeTime(t.created_at)}` : ''}`}
+              value={
+                <button type="button" className="btn btn-ghost btn-sm" onClick={() => void onDelete(t.id, t.title || t.filename)}>
+                  Remove
+                </button>
+              }
+            />
           ))}
-        </ul>
+        </Group>
       )}
     </div>
   )

@@ -3,6 +3,7 @@ import { api, isNetworkError } from '../lib/api'
 import type { Connector, ConnectorProvider } from '../lib/types'
 import { ErrorState } from '../components/ErrorState'
 import { useDocumentTitle } from '../components/useDocumentTitle'
+import { Group, PageHeader, Row } from '../components/ui'
 
 const LABELS: Record<ConnectorProvider, string> = {
   drive: 'Google Drive',
@@ -68,48 +69,49 @@ export function ConnectorsPage() {
 
   return (
     <div className="page stack">
-      <div className="stack-sm">
-        <h1>Keep a copy where you already work</h1>
-        <p className="muted">
-          Export and sync copies of your Notes &amp; Lists to Google Drive, Dropbox, or OneDrive. This is not a
-          document library inside Pocket.
-        </p>
-      </div>
+      <PageHeader
+        title="Connectors"
+        back={{ to: '/account', label: 'Account' }}
+        subtitle="Keep a copy of your Notes and Lists where you already work."
+      />
 
       {error ? <ErrorState message={error} onRetry={() => void load()} /> : null}
 
-      <ul className="list">
+      <Group footer="Pocket exports copies — your originals stay in Pocket Cloud.">
         {ORDER.map((provider) => {
           const connected = statusFor(provider) === 'connected'
           return (
-            <li key={provider} className="list-item row-between">
-              <div>
-                <div className="list-title">{LABELS[provider]}</div>
-                <div className="list-meta">{connected ? 'Connected' : 'Not connected'}</div>
-              </div>
-              {connected ? (
-                <button
-                  type="button"
-                  className="btn btn-secondary"
-                  disabled={busy === provider}
-                  onClick={() => void onDisconnect(provider)}
-                >
-                  Disconnect
-                </button>
-              ) : (
-                <button
-                  type="button"
-                  className="btn btn-primary"
-                  disabled={busy === provider}
-                  onClick={() => void onConnect(provider)}
-                >
-                  Connect
-                </button>
-              )}
-            </li>
+            <Row
+              key={provider}
+              icon="cloud"
+              tone={connected ? 'accent' : 'default'}
+              title={LABELS[provider]}
+              detail={connected ? 'Connected' : 'Not connected'}
+              value={
+                connected ? (
+                  <button
+                    type="button"
+                    className="btn btn-secondary btn-sm"
+                    disabled={busy === provider}
+                    onClick={() => void onDisconnect(provider)}
+                  >
+                    Disconnect
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    className="btn btn-primary btn-sm"
+                    disabled={busy === provider}
+                    onClick={() => void onConnect(provider)}
+                  >
+                    Connect
+                  </button>
+                )
+              }
+            />
           )
         })}
-      </ul>
+      </Group>
     </div>
   )
 }

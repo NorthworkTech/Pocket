@@ -1,10 +1,11 @@
-import { Link, useNavigate } from 'react-router-dom'
+import { useNavigate } from 'react-router-dom'
 import { useAuth } from '../lib/auth'
 import { useDocumentTitle } from '../components/useDocumentTitle'
+import { Group, PageHeader, Row } from '../components/ui'
 
 export function AccountPage() {
   useDocumentTitle('Account')
-  const { user, logout } = useAuth()
+  const { user, logout, entitlement } = useAuth()
   const navigate = useNavigate()
 
   async function onSignOut() {
@@ -12,45 +13,43 @@ export function AccountPage() {
     navigate('/login', { replace: true })
   }
 
+  const initial = (user?.email ?? '?').trim().charAt(0).toUpperCase()
+  const status = entitlement?.status
+  const plan =
+    status === 'active' ? 'Active' : status === 'trialing' ? 'Trial' : status === 'past_due' ? 'Payment issue' : 'Free'
+
   return (
     <div className="page stack">
-      <h1>Account</h1>
+      <PageHeader title="Account" />
 
-      <div className="panel stack">
-        <div className="field">
-          <label>Email</label>
-          <p>{user?.email ?? '—'}</p>
+      <div className="panel row" style={{ padding: '1rem' }}>
+        <span className="avatar" aria-hidden="true">
+          {initial}
+        </span>
+        <div className="stack-sm" style={{ gap: 0, minWidth: 0 }}>
+          <span style={{ fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis' }}>{user?.email ?? '—'}</span>
+          <span className="muted" style={{ fontSize: '0.875rem' }}>
+            Pocket Cloud · {plan}
+          </span>
         </div>
-        <button type="button" className="btn btn-secondary" onClick={() => void onSignOut()}>
-          Sign out
-        </button>
       </div>
 
-      <div className="actions-row">
-        <Link className="btn btn-ghost" to="/devices">
-          Devices
-        </Link>
-        <Link className="btn btn-primary" to="/link">
-          Link a Pocket
-        </Link>
-        <Link className="btn btn-ghost" to="/billing">
-          Billing
-        </Link>
-        <Link className="btn btn-ghost" to="/connectors">
-          Connectors
-        </Link>
-        <Link className="btn btn-ghost" to="/backup">
-          Backup
-        </Link>
-        <Link className="btn btn-ghost" to="/developer">
-          Developer
-        </Link>
-        {user?.is_admin || user?.role === 'admin' ? (
-          <Link className="btn btn-secondary" to="/admin/">
-            Pocket Cloud Admin
-          </Link>
-        ) : null}
-      </div>
+      <Group title="Pocket">
+        <Row icon="device" to="/devices" title="Devices" />
+        <Row icon="link" to="/link" title="Link a Pocket" />
+      </Group>
+
+      <Group title="Pocket Cloud">
+        <Row icon="cloud" tone="accent" to="/billing" title="Subscription" value={plan} />
+        <Row icon="backup" to="/backup" title="Backup & restore" />
+        <Row icon="external" to="/connectors" title="Connectors" detail="Google Drive, Dropbox, OneDrive" />
+      </Group>
+
+      <Group title="More">
+        <Row icon="code" to="/developer" title="Developer" />
+        {user?.is_admin || user?.role === 'admin' ? <Row icon="settings" to="/admin/" title="Pocket Cloud Admin" /> : null}
+        <Row icon="logout" tone="danger" title="Sign out" onClick={() => void onSignOut()} />
+      </Group>
     </div>
   )
 }

@@ -1,4 +1,5 @@
 import { useDocumentTitle } from '../components/useDocumentTitle'
+import { EmptyState, PageHeader } from '../components/ui'
 
 /** Spec §6.6 — Coming soon placeholder (Passes never sync in Cloud v1). */
 export function PassesPage() {
@@ -6,11 +7,10 @@ export function PassesPage() {
 
   return (
     <div className="page stack">
-      <h1>Passes</h1>
-      <div className="empty panel stack-sm">
-        <h2>Coming soon</h2>
-        <p className="muted">View passes from your Pocket on this phone in a free update.</p>
-      </div>
+      <PageHeader title="Passes" back={{ to: '/home', label: 'Home' }} />
+      <EmptyState icon="pass" title="Coming soon">
+        Boarding passes and tickets from your Pocket will show here in a free update.
+      </EmptyState>
     </div>
   )
 }

@@ -4,6 +4,7 @@ import { api, isNetworkError } from '../lib/api'
 import { useAuth } from '../lib/auth'
 import { ErrorState } from '../components/ErrorState'
 import { useDocumentTitle } from '../components/useDocumentTitle'
+import { Group, PageHeader, Row } from '../components/ui'
 
 export function UpgradePage() {
   useDocumentTitle("Pocket Cloud isn't active")
@@ -44,7 +45,8 @@ export function UpgradePage() {
     return (
       <div className="page stack">
         <div className="panel stack">
-          <h1>Update your payment to keep syncing.</h1>
+          <span className="badge badge--warn">Payment issue</span>
+          <h1>Update your payment to keep syncing</h1>
           {error ? <ErrorState message={error} onRetry={() => void openPortal()} /> : null}
           <button type="button" className="btn btn-primary" disabled={busy} onClick={() => void openPortal()}>
             Update payment
@@ -59,33 +61,36 @@ export function UpgradePage() {
 
   return (
     <div className="page stack">
-      <div className="panel stack">
-        <h1>Pocket Cloud isn&apos;t active</h1>
+      <PageHeader title="Pocket Cloud" back={{ to: '/home', label: 'Home' }} />
+      <section className="promo">
+        <span className="eyebrow" style={{ color: 'rgba(255,255,255,0.7)' }}>
+          Not active
+        </span>
+        <h2 style={{ fontSize: '1.5rem' }}>Sync Pocket with your phone</h2>
         <p className="muted">
-          Your Notes still live on your Pocket device. Subscribe to sync to your phone, back up, and keep copies
-          where you already work.
+          Your Notes still live on Pocket. Subscribe to edit them here, back them up, and keep copies where you
+          already work.
         </p>
         {error ? <ErrorState message={error} onRetry={() => void startCheckout()} /> : null}
         <div className="actions">
-          <button type="button" className="btn btn-primary btn-block" disabled={busy} onClick={() => void startCheckout()}>
-            Subscribe — $3.99/mo
-          </button>
           {trialAvailable ? (
-            <button type="button" className="btn btn-secondary btn-block" disabled={busy} onClick={() => void startCheckout()}>
-              Start free trial
-            </button>
-          ) : null}
-          {entitlement?.has_customer ? (
-            <button type="button" className="btn btn-ghost btn-block" disabled={busy} onClick={() => void openPortal()}>
-              Manage billing
+            <button type="button" className="btn btn-primary btn-block" disabled={busy} onClick={() => void startCheckout()}>
+              Start 7-day free trial
             </button>
           ) : (
-            <Link className="btn btn-ghost btn-block" to="/billing">
-              Manage billing
-            </Link>
+            <button type="button" className="btn btn-primary btn-block" disabled={busy} onClick={() => void startCheckout()}>
+              Subscribe — $3.99 / month
+            </button>
           )}
         </div>
-      </div>
+      </section>
+      <Group>
+        {entitlement?.has_customer ? (
+          <Row icon="card" title="Manage billing" onClick={() => void openPortal()} disabled={busy} chevron />
+        ) : (
+          <Row icon="card" title="Plans & billing" to="/billing" />
+        )}
+      </Group>
     </div>
   )
 }

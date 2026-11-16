@@ -1,11 +1,13 @@
 import { useEffect, useState } from 'react'
-import { Link, useNavigate } from 'react-router-dom'
+import { useNavigate } from 'react-router-dom'
 import { api, isNetworkError, nowIso } from '../lib/api'
 import { enqueueMutation } from '../lib/queue'
 import type { PocketList } from '../lib/types'
 import { relativeTime } from '../lib/utils'
 import { ErrorState } from '../components/ErrorState'
 import { useDocumentTitle } from '../components/useDocumentTitle'
+import { Icon } from '../components/Icon'
+import { EmptyState, PageHeader, Row, SkeletonList } from '../components/ui'
 
 export function ListsListPage() {
   useDocumentTitle('Lists')
@@ -59,33 +61,47 @@ export function ListsListPage() {
 
   return (
     <div className="page stack">
-      <div className="row-between">
-        <h1>Lists</h1>
-        <button type="button" className="btn btn-primary" onClick={() => void onNew()}>
-          New list
-        </button>
-      </div>
+      <PageHeader
+        title="Lists"
+        subtitle={lists.length ? 'Checklists shared with Pocket' : undefined}
+        action={
+          <button type="button" className="btn btn-primary btn-sm" onClick={() => void onNew()}>
+            <Icon name="plus" size={16} stroke={2.4} /> New
+          </button>
+        }
+      />
 
       {error ? <ErrorState message={error} onRetry={() => void load()} /> : null}
 
       {loading ? (
-        <p className="muted">Loading…</p>
+        <SkeletonList rows={3} />
       ) : lists.length === 0 && !error ? (
-        <div className="empty panel">
-          <h2>No lists yet</h2>
-        </div>
+        <EmptyState
+          icon="lists"
+          title="No lists yet"
+          action={
+            <button type="button" className="btn btn-primary" onClick={() => void onNew()}>
+              Start a list
+            </button>
+          }
+        >
+          Groceries, packing, to-dos — tick items off on Pocket or here.
+        </EmptyState>
       ) : (
-        <ul className="list">
-          {lists.map((l) => (
-            <li key={l.id}>
-              <Link className="list-link" to={`/lists/${l.id}`}>
-                <div className="list-title">{l.title || 'Untitled'}</div>
-                <div className="list-meta">
-                  {l.items.length} items · {relativeTime(l.updated_at)}
-                </div>
-              </Link>
-            </li>
-          ))}
+        <ul className="group__list">
+          {lists.map((l) => {
+            const done = l.items.filter((i) => i.checked).length
+            return (
+              <Row
+                key={l.id}
+                icon="lists"
+                to={`/lists/${l.id}`}
+                title={l.title || 'Untitled'}
+                detail={l.items.length ? `${done} of ${l.items.length} done` : 'Empty'}
+                value={relativeTime(l.updated_at)}
+              />
+            )
+          })}
         </ul>
       )}
     </div>

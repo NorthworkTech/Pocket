@@ -69,7 +69,7 @@ export function LoginPage() {
   }
 
   return (
-    <div className="page stack" style={{ maxWidth: '24rem', paddingTop: '3rem' }}>
+    <div className="page stack auth-page">
       <WordMark to="/" />
       <div className="stack-sm">
         <h1>{mode === 'signup' ? 'Create your account' : 'Sign in to Pocket'}</h1>
@@ -98,10 +98,12 @@ export function LoginPage() {
         </div>
       ) : null}
 
-      <div className="actions-row" style={{ gap: '0.5rem' }}>
+      <div className="segmented" role="tablist" aria-label="Account">
         <button
           type="button"
-          className={mode === 'signin' ? 'btn btn-primary' : 'btn btn-ghost'}
+          role="tab"
+          aria-selected={mode === 'signin'}
+          className={mode === 'signin' ? 'segmented__item active' : 'segmented__item'}
           onClick={() => {
             setMode('signin')
             setState('idle')
@@ -112,7 +114,9 @@ export function LoginPage() {
         </button>
         <button
           type="button"
-          className={mode === 'signup' ? 'btn btn-primary' : 'btn btn-ghost'}
+          role="tab"
+          aria-selected={mode === 'signup'}
+          className={mode === 'signup' ? 'segmented__item active' : 'segmented__item'}
           onClick={() => {
             setMode('signup')
             setState('idle')
@@ -123,7 +127,7 @@ export function LoginPage() {
         </button>
       </div>
 
-      <form className="stack" onSubmit={(e) => void onSubmit(e)}>
+      <form className="panel stack" onSubmit={(e) => void onSubmit(e)}>
         <div className="field">
           <label htmlFor="email">Email</label>
           <input
@@ -156,7 +160,7 @@ export function LoginPage() {
           error.includes('unreachable') || error.includes('unavailable') ? (
             <ErrorState message={error} onRetry={() => setError(null)} />
           ) : (
-            <p className="muted" role="alert">
+            <p className="error-box" role="alert">
               {error}
             </p>
           )

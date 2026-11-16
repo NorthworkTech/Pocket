@@ -4,6 +4,8 @@ import { api, isNetworkError, nowIso } from '../lib/api'
 import { enqueueMutation } from '../lib/queue'
 import { ErrorState } from '../components/ErrorState'
 import { useDocumentTitle } from '../components/useDocumentTitle'
+import { Icon } from '../components/Icon'
+import { Group, Row } from '../components/ui'
 
 export function NoteDetailPage() {
   const { id = '' } = useParams()
@@ -120,62 +122,64 @@ export function NoteDetailPage() {
     }
   }
 
+  const syncLabel =
+    sync === 'saving' ? 'Saving…' : sync === 'synced' ? 'Synced with Pocket' : sync === 'retry' ? "Couldn't sync — will retry" : null
+
   return (
     <div className="page stack">
       <div className="row-between">
-        <Link to="/notes" className="btn btn-ghost">
-          Back
+        <Link to="/notes" className="back-link">
+          <Icon name="chevron-left" size={20} stroke={2.2} />
+          Notes
         </Link>
-        <span className="muted" style={{ fontSize: '0.875rem' }}>
-          {sync === 'saving' ? 'Saving…' : sync === 'synced' ? 'Synced with Pocket' : sync === 'retry' ? "Couldn't sync. Will retry." : null}
-        </span>
+        {syncLabel ? (
+          <span className="sync-status">
+            {sync === 'synced' ? <Icon name="check" size={14} stroke={2.4} /> : <Icon name="sync" size={14} stroke={2.2} />}
+            {syncLabel}
+          </span>
+        ) : null}
       </div>
 
       {error ? (
         error.includes('unreachable') || error.includes('retry') ? (
-          <ErrorState message={error.includes('retry') ? error : error} onRetry={() => void onSave()} />
+          <ErrorState message={error} onRetry={() => void onSave()} />
         ) : (
-          <p role="alert" className="muted">
+          <p role="alert" className="error-box">
             {error}
           </p>
         )
       ) : null}
 
       <form className="stack" onSubmit={(e) => void onSave(e)}>
-        <div className="field">
+        <div className="editor">
           <label htmlFor="title" className="sr-only">
             Title
           </label>
           <input id="title" value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Title" />
-        </div>
-        <div className="field">
           <label htmlFor="body" className="sr-only">
             Body
           </label>
-          <textarea id="body" value={body} onChange={(e) => setBody(e.target.value)} placeholder="Write…" />
+          <textarea id="body" value={body} onChange={(e) => setBody(e.target.value)} placeholder="Start writing…" />
         </div>
-        <div className="actions-row">
-          <button type="submit" className="btn btn-primary">
-            Save
-          </button>
-          <button type="button" className="btn btn-secondary" onClick={() => void onShare()}>
-            Share link
-          </button>
-          <button type="button" className="btn btn-danger" onClick={() => setConfirmDelete(true)}>
-            Delete
-          </button>
-        </div>
+        <button type="submit" className="btn btn-primary btn-block">
+          Save
+        </button>
       </form>
+
+      <Group>
+        <Row icon="share" title="Share a read-only link" onClick={() => void onShare()} chevron />
+        <Row icon="trash" tone="danger" title="Delete note" onClick={() => setConfirmDelete(true)} />
+      </Group>
 
       {shareMsg ? (
         <div className="panel stack-sm">
           <p>{shareMsg}</p>
           {shareUrl ? (
             <div className="actions-row">
-              <button type="button" className="btn btn-secondary" onClick={() => void onCopy()}>
+              <button type="button" className="btn btn-secondary btn-sm" onClick={() => void onCopy()}>
                 Copy link
               </button>
-              <button type="button" className="btn btn-ghost" onClick={() => void onRevoke()}>
+              <button type="button" className="btn btn-ghost btn-sm" onClick={() => void onRevoke()}>
                 Revoke link
               </button>
             </div>
@@ -184,11 +188,11 @@ export function NoteDetailPage() {
       ) : null}
 
       {confirmDelete ? (
-        <div className="panel stack">
-          <p>Delete this note on Pocket and in Pocket Cloud?</p>
+        <div className="panel stack" role="alertdialog" aria-label="Delete note">
+          <p>Delete this note on Pocket and in Pocket Cloud? This can't be undone.</p>
           <div className="actions-row">
             <button type="button" className="btn btn-danger" onClick={() => void onDelete()}>
-              Delete
+              Delete note
             </button>
             <button type="button" className="btn btn-secondary" onClick={() => setConfirmDelete(false)}>
               Cancel

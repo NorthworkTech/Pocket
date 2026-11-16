@@ -190,8 +190,10 @@ export const api = {
   listNotes() {
     return request<{ notes: Note[] }>('/v1/notes')
   },
-  getNote(id: string) {
-    return request<Note>(`/v1/notes/${id}`)
+  async getNote(id: string) {
+    // Production returns the note itself; the local TS server wraps it as { note }.
+    const r = await request<Note | { note: Note }>(`/v1/notes/${id}`)
+    return 'note' in r && r.note ? r.note : (r as Note)
   },
   createNote(payload: Partial<Note> & { title: string; body: string; updated_at: string; updated_by_device_id: string }) {
     return request<Note>('/v1/notes', { method: 'POST', body: payload })
@@ -213,8 +215,10 @@ export const api = {
   listLists() {
     return request<{ lists: PocketList[] }>('/v1/lists')
   },
-  getList(id: string) {
-    return request<PocketList>(`/v1/lists/${id}`)
+  async getList(id: string) {
+    // Production returns the list itself; the local TS server wraps it as { list }.
+    const r = await request<PocketList | { list: PocketList }>(`/v1/lists/${id}`)
+    return 'list' in r && r.list ? r.list : (r as PocketList)
   },
   createList(payload: Partial<PocketList> & { title: string; updated_at: string; updated_by_device_id: string }) {
     return request<PocketList>('/v1/lists', { method: 'POST', body: payload })

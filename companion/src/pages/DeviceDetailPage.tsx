@@ -6,6 +6,8 @@ import type { Device } from '../lib/types'
 import { relativeTime, sanitizeDeviceName, sanitizeLockMessage, validateDeviceName } from '../lib/utils'
 import { ErrorState } from '../components/ErrorState'
 import { useDocumentTitle } from '../components/useDocumentTitle'
+import { PageHeader, SkeletonList } from '../components/ui'
+import { PocketMark } from '../components/WordMark'
 
 const PARENTAL_APPS: { id: string; label: string }[] = [
   { id: 'notes', label: 'Notes' },
@@ -196,12 +198,7 @@ export function DeviceDetailPage() {
 
   return (
     <div className="page stack">
-      <div className="row-between">
-        <h1>{device?.device_name || 'Pocket'}</h1>
-        <Link to="/devices" className="btn btn-ghost">
-          Back
-        </Link>
-      </div>
+      <PageHeader title={device?.device_name || 'Pocket'} back={{ to: '/devices', label: 'Your Pocket' }} />
 
       {error ? (
         error.includes('unreachable') ? (
@@ -212,18 +209,25 @@ export function DeviceDetailPage() {
           </p>
         )
       ) : null}
-      {msg ? <p className="muted">{msg}</p> : null}
+      {msg ? <p className="badge badge--accent">{msg}</p> : null}
 
       {!device ? (
-        <p className="muted">Loading…</p>
+        <SkeletonList rows={2} />
       ) : (
         <>
-          <p className="chip">{statusLabel}</p>
-          {device.last_seen_at ? (
-            <p className="muted">Last seen {relativeTime(device.last_seen_at)}</p>
-          ) : (
-            <p className="muted">Waiting for Pocket to check in over Wi‑Fi.</p>
-          )}
+          <div className="device-card">
+            <div className="device-card__art">
+              <PocketMark size={22} />
+            </div>
+            <div className="device-card__body">
+              <span className="device-card__name">{statusLabel}</span>
+              <span className="device-card__meta">
+                {device.last_seen_at
+                  ? `Last seen ${relativeTime(device.last_seen_at)}`
+                  : 'Waiting for Pocket to check in over Wi‑Fi'}
+              </span>
+            </div>
+          </div>
 
           <form className="panel stack" onSubmit={(e) => void onSave(e)}>
             <div className="field">

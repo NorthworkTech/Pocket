@@ -46,6 +46,15 @@ VITE_API_BASE=http://localhost:8787
 
 All API calls use `credentials: 'include'` (httpOnly session cookie).
 
+## Design system
+
+- Tokens in `src/styles/tokens.css`; components and utilities in `src/styles/global.css`.
+- Shared components: `components/Icon.tsx` (icon set on the same 24-unit grid as the device
+  icons), `components/ui.tsx` (`PageHeader`, `Group`/`Row` grouped lists, `EmptyState`,
+  `Badge`, `SkeletonList`), `components/Nav.tsx` (icon tab bar: Home · Notes · Lists · Pocket ·
+  Account).
+- Build new screens from these rather than ad-hoc panels and buttons.
+
 ## Brand
 
 - Word mark: **Pocket**

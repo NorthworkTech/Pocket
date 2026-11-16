@@ -5,6 +5,7 @@ import { useAuth } from '../lib/auth'
 import { formatDate } from '../lib/utils'
 import { ErrorState } from '../components/ErrorState'
 import { useDocumentTitle } from '../components/useDocumentTitle'
+import { EmptyState, Group, PageHeader, Row } from '../components/ui'
 
 export function BillingPage() {
   useDocumentTitle('Billing')
@@ -57,39 +58,48 @@ export function BillingPage() {
 
   return (
     <div className="page stack">
-      <h1>Pocket Cloud</h1>
+      <PageHeader title="Pocket Cloud" back={{ to: '/account', label: 'Account' }} />
 
       {error ? <ErrorState message={error} onRetry={() => void refresh()} /> : null}
 
-      <section className="panel stack">
-        <p className="hero-price">$3.99/mo</p>
-        {trialAvailable ? <p className="muted">7 days free</p> : null}
-        {statusLine ? <p className="chip chip-accent">{statusLine}</p> : null}
-
-        <div className="row-between disabled-row" aria-disabled="true">
-          <span>Yearly</span>
-          <span className="muted">Coming soon</span>
+      <section className="promo">
+        <div className="row-between">
+          <span className="eyebrow" style={{ color: 'rgba(255,255,255,0.7)' }}>
+            Monthly
+          </span>
+          {statusLine ? (
+            <span className="badge" style={{ background: 'rgba(255,255,255,0.16)', color: '#fff' }}>
+              {statusLine}
+            </span>
+          ) : null}
         </div>
-
-        <p className="muted">Cancel anytime. USD.</p>
-
+        <p className="hero-price">
+          $3.99<span style={{ fontSize: '1rem', fontWeight: 500, opacity: 0.8 }}> / month</span>
+        </p>
+        {trialAvailable ? <p className="muted">7 days free, then $3.99 a month. Cancel anytime.</p> : <p className="muted">Cancel anytime. Prices in USD.</p>}
         <div className="actions">
           {!isEntitled || isLapsed || trialAvailable ? (
             <button type="button" className="btn btn-primary btn-block" disabled={busy} onClick={() => void startCheckout()}>
               {primaryLabel}
             </button>
           ) : null}
-          {entitlement?.has_customer || isEntitled ? (
-            <button type="button" className="btn btn-secondary btn-block" disabled={busy} onClick={() => void openPortal()}>
-              Manage billing
-            </button>
-          ) : null}
         </div>
       </section>
 
-      <Link to="/account" className="muted">
-        Account
-      </Link>
+      <Group title="Included">
+        <Row icon="notes" title="Notes & Lists sync" detail="Edit on Pocket or phone" />
+        <Row icon="music" title="Music & Reading library" detail="Send tracks and books to Pocket" />
+        <Row icon="backup" title="Backup & restore" />
+        <Row icon="external" title="Connectors" detail="Drive, Dropbox, OneDrive" />
+      </Group>
+
+      {entitlement?.has_customer || isEntitled ? (
+        <Group>
+          <Row icon="card" title="Manage billing" onClick={() => void openPortal()} disabled={busy} chevron />
+        </Group>
+      ) : null}
+
+      <p className="footer-note">Yearly plan coming soon.</p>
     </div>
   )
 }
@@ -98,13 +108,17 @@ export function BillingSuccessPage() {
   useDocumentTitle("You're all set")
   return (
     <div className="page stack">
-      <div className="panel stack">
-        <h1>You&apos;re all set</h1>
-        <p>Pocket Cloud is active.</p>
-        <Link className="btn btn-primary" to="/notes">
-          Go to Notes
-        </Link>
-      </div>
+      <EmptyState
+        icon="check"
+        title="You're all set"
+        action={
+          <Link className="btn btn-primary" to="/notes">
+            Go to Notes
+          </Link>
+        }
+      >
+        Pocket Cloud is active. Your Notes and Lists now sync with Pocket.
+      </EmptyState>
     </div>
   )
 }
@@ -113,13 +127,17 @@ export function BillingCancelPage() {
   useDocumentTitle('Checkout canceled')
   return (
     <div className="page stack">
-      <div className="panel stack">
-        <h1>Checkout canceled.</h1>
-        <p className="muted">You can subscribe anytime.</p>
-        <Link className="btn btn-primary" to="/billing">
-          Back to billing
-        </Link>
-      </div>
+      <EmptyState
+        icon="card"
+        title="Checkout canceled"
+        action={
+          <Link className="btn btn-secondary" to="/billing">
+            Back to Pocket Cloud
+          </Link>
+        }
+      >
+        Nothing was charged. You can subscribe anytime.
+      </EmptyState>
     </div>
   )
 }
