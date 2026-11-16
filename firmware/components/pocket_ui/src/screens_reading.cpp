@@ -19,12 +19,6 @@ constexpr int kReadGap = 6;
 
 namespace {
 
-bool write_bytes(const std::string& path, const std::vector<uint8_t>& data) {
-  std::ofstream out(path, std::ios::binary | std::ios::trunc);
-  if (!out) return false;
-  out.write(reinterpret_cast<const char*>(data.data()), static_cast<std::streamsize>(data.size()));
-  return static_cast<bool>(out);
-}
 
 /** Minimal JSON array parse for [{id,title,author,format,filename,size},...] — tolerant of spacing. */
 void parse_books_list(const std::string& json, std::vector<Book>& out) {
@@ -132,6 +126,10 @@ void App::reading_sync_from_cloud() {
   }
   const std::string root = storage_->book_root();
   const std::string json = cloud_.books_list_json(cfg_.device_id);
+  if (json.empty()) {
+    reading_status_ = "Couldn't reach Pocket Cloud \xC2\xB7 showing books on Pocket";
+    return;
+  }
   std::vector<Book> remote;
   parse_books_list(json, remote);
   if (remote.empty() && json.find('[') != std::string::npos) {
@@ -160,17 +158,13 @@ void App::reading_sync_from_cloud() {
       local.push_back(b);
       continue;
     }
-    auto bytes = cloud_.book_download(cfg_.device_id, b.id);
-    if (bytes.empty()) {
+    int64_t got = 0;
+    if (!cloud_.download_to_file("book", cfg_.device_id, b.id, path, 8LL * 1024 * 1024, &got)) {
       reading_status_ = "Download failed for " + b.title;
       continue;
     }
-    if (!write_bytes(path, bytes)) {
-      reading_status_ = "Couldn't write " + fname;
-      continue;
-    }
     b.local_path = path;
-    b.size_bytes = static_cast<int>(bytes.size());
+    b.size_bytes = static_cast<int>(got);
     local.push_back(b);
   }
   books_ = std::move(local);
@@ -269,7 +263,11 @@ void App::reading_open_book(int index) {
   reading_text_ = std::move(text);
   reading_paginate();
   reading_page_ = 0;
-  if (cfg_.reading_last_book_id == b.id && cfg_.reading_last_page < static_cast<int>(reading_pages_.size())) {
+  // Resume key is the on-device filename: stable whether the library came from local
+  // storage (id = filename) or a cloud sync (id = cloud uuid).
+  const std::string resume_key = b.filename.empty() ? b.id : b.filename;
+  if ((cfg_.reading_last_book_id == resume_key || cfg_.reading_last_book_id == b.id) &&
+      cfg_.reading_last_page < static_cast<int>(reading_pages_.size())) {
     reading_page_ = cfg_.reading_last_page;
   }
   book_index_ = index;
@@ -354,13 +352,20 @@ void App::render_reading() {
                                       : "Local books still open offline. Sync needs Wi-Fi.",
                     340);
   }
-  for (int i = 0; i < n && i < 8; ++i) {
+  constexpr int kVisible = 9;
+  const int total = n + 2;
+  const int start = n == 0 ? 0 : ui::window_start(focus_.index, total, kVisible);
+  for (int k = 0; k < kVisible && start + k < n; ++k) {
+    const int i = start + k;
     const auto& bk = books_[static_cast<size_t>(i)];
-    ui::row(canvas_, list_top + i * kRowPitch,
+    ui::row(canvas_, list_top + k * kRowPitch,
             Row{bk.title, RowKind::Value, bk.author.empty() ? bk.format : bk.author, false, Icon::Reading, true},
             i == focus_.index);
   }
-  const int y = n == 0 ? kBottomCtaY - kRowPitch : list_top + std::min(n, 8) * kRowPitch;
+  if (n > 0) ui::scrollbar(canvas_, list_top, kVisible * kRowPitch - 8, start, kVisible, total);
+  const int sync_slot = n - start;
+  const int y = n == 0 ? kBottomCtaY - kRowPitch : list_top + sync_slot * kRowPitch;
+  if (n > 0 && sync_slot + 1 >= kVisible + 1) return;  // actions scrolled out of view
   ui::row(canvas_, y,
           Row{wifi_.connected() ? "Sync from Companion" : "Sync", RowKind::Value, wifi_.connected() ? "" : "Needs Wi-Fi",
               false, Icon::Update, true},
@@ -376,7 +381,8 @@ void App::handle_reading(InputEvent e) {
     // Persist progress on any exit from the book so a reboot resumes here.
     auto save_progress = [&]() {
       if (book_index_ >= 0 && book_index_ < static_cast<int>(books_.size())) {
-        cfg_.reading_last_book_id = books_[book_index_].id;
+        cfg_.reading_last_book_id =
+            books_[book_index_].filename.empty() ? books_[book_index_].id : books_[book_index_].filename;
         cfg_.reading_last_page = reading_page_;
         store_.save(cfg_);
       }
@@ -427,8 +433,7 @@ void App::handle_reading(InputEvent e) {
     focus_.move(e == InputEvent::Down ? 1 : -1);
     if (focus_.index == prev) return;
     // Empty library parks Sync/Back at the bottom CTA band — not list_top.
-    const int dirty_top = (n == 0) ? (kBottomCtaY - kRowPitch) : kListTopWithMeta;
-    mark_list_focus_dirty(dirty_top, prev, focus_.index);
+    mark_content_dirty();  // windowed list: rows move when it scrolls
   } else if (e == InputEvent::Select) {
     if (focus_.index < n) {
       reading_open_book(focus_.index);

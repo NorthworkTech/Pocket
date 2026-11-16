@@ -109,6 +109,15 @@ void footer(Canvas& c, std::string_view text);
 /** Inverted toast just above the footer for transient errors. */
 void toast(Canvas& c, std::string_view msg);
 
+/**
+ * First visible index of a list window so `focus` stays on screen with one row of
+ * look-ahead. Pure function of (focus, count, visible) — no scroll state to desync.
+ */
+int window_start(int focus, int count, int visible);
+
+/** Slim scrollbar on the right gutter for a list window (no-op when it all fits). */
+void scrollbar(Canvas& c, int top, int height, int start, int visible, int count);
+
 /** Key/value line for detail pages: muted key left, value right. Returns next y. */
 int kv(Canvas& c, int y, std::string_view key, std::string_view value);
 

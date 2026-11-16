@@ -5,6 +5,8 @@
 #include "pocket/nav.hpp"
 #include "pocket/refresh.hpp"
 #include "pocket/screensaver.hpp"
+#include <functional>
+#include <map>
 #include <memory>
 #include <string>
 #include <vector>
@@ -69,6 +71,14 @@ struct PlatformCloud {
                                               const std::string& /*track_id*/) {
     return {};
   }
+  /**
+   * Download a track ("music") or book text ("book") straight to `path`, never holding
+   * the whole file in RAM. Writes path.part and renames on success, so an interrupted
+   * download can't masquerade as complete. Fails if the body exceeds `max_bytes` (>0).
+   * Default: buffer through music_download/book_download (host builds and tests).
+   */
+  virtual bool download_to_file(const char* kind, const std::string& device_id, const std::string& id,
+                                const std::string& path, int64_t max_bytes, int64_t* bytes_out);
   /** List Reading library metadata JSON (id/title/author/format/filename/size). Empty on failure. */
   virtual std::string books_list_json(const std::string& /*device_id*/) { return "[]"; }
   /** Download the normalized plain-text body of a book by id. Empty on failure. */
@@ -101,8 +111,11 @@ struct FirmwareUpdateInfo {
 
 struct PlatformOta {
   virtual ~PlatformOta() = default;
-  /** Download `url` into the inactive OTA slot and set boot partition. Blocking. */
-  virtual bool apply_https_ota(const std::string& url, std::string* status_out) {
+  /** Download `url` into the inactive OTA slot and set boot partition. Blocking.
+   * `progress` (optional) receives 0–100 as the image downloads. */
+  virtual bool apply_https_ota(const std::string& url, std::string* status_out,
+                               const std::function<void(int)>& progress = {}) {
+    (void)progress;
     if (status_out) *status_out = "OTA not available.";
     return false;
   }
@@ -174,6 +187,8 @@ struct PlatformAudio {
   /** Play a PCM/WAV file from local path (best-effort; may block). */
   virtual bool play_file(const std::string& /*path*/) { return false; }
   virtual void stop() {}
+  /** True while play_file() audio is still playing (playback runs in the background). */
+  virtual bool is_playing() { return false; }
   /** DAC output level, 0–100. Applied immediately when the codec is ready. */
   virtual void set_volume(int /*percent*/) {}
   /** True when this board exposes a real mic capture path (onboard PDM/I2S mic + codec ADC). */
@@ -266,6 +281,8 @@ struct WeatherCache {
   std::vector<WeatherDay> days;
   int today_temp = 0;
   std::string today_condition;
+  /** Local minutes-of-day of the last fetch (-1 = unknown) for "Updated 9:41". */
+  int fetched_hm = -1;
 };
 
 struct AppData {
@@ -368,6 +385,14 @@ class App {
   AppData& host_data() { return data_; }
   std::vector<MusicTrack>& host_tracks() { return music_tracks_; }
   std::vector<Book>& host_books() { return books_; }
+  /** Start a countdown (host QA / tests). */
+  void host_start_timer(uint32_t ms) {
+    timer_total_ms_ = ms;
+    timer_end_ms_ = now_ms_ + ms;
+    timer_running_ = true;
+    timer_paused_ = false;
+  }
+  bool ringing() const { return nav_.current() == ScreenId::ClockRinging; }
   /** Open an in-memory book page for gallery/QA. */
   void host_open_book(const std::string& text, int page = 0) {
     book_index_ = 0;
@@ -385,6 +410,8 @@ class App {
   void draw_status_bar();
   void go_home();
   void go_lock();
+  /** Abort an in-flight push-to-talk capture (navigation away, lock). */
+  void cancel_capture();
   /** SoftAP / Add-network screens — idle lock must not interrupt phone join. */
   bool wifi_add_flow_active() const;
   /** True during SoftAP RF settle window (Power/Back/Home suppressed). */
@@ -476,6 +503,14 @@ class App {
   void load_weather_cache();
   void save_weather_cache();
   void weather_refresh();
+  /** First Weather open: pick the city for the device's time zone so it works out of the box. */
+  void weather_ensure_city();
+  /** Convert a cached temperature to the currently selected unit. */
+  int weather_display_temp(int v) const;
+  bool weather_refresh_pending_ = false;
+  /** Lowest battery threshold already warned about (100 = none yet). */
+  int battery_warned_ = 100;
+  uint32_t last_battery_check_ms_ = 0;
   bool weather_geocode_city();
   bool weather_fetch_forecast();
   void music_load_local();
@@ -484,6 +519,15 @@ class App {
   void handle_ledger(InputEvent e);
   void render_clock();
   void handle_clock(InputEvent e);
+  void load_alarms();
+  void save_alarms();
+  /** Once per minute: fire due alarms / snooze; drive the active timer and ringing. */
+  void maybe_tick_clock_events();
+  void start_ringing(bool from_timer);
+  void stop_ringing(bool snooze);
+  void open_alarm_editor(int index);
+  /** Remaining timer ms (0 when idle or done). */
+  uint32_t timer_remaining_ms() const;
   void render_pass();
   void handle_pass(InputEvent e);
   void render_weather();
@@ -595,6 +639,25 @@ class App {
   std::string picker_buf_;
   int notes_tab_ = 0;  // 0 Notes 1 Lists
   int clock_tab_ = 0;
+  // Alarms editor
+  int alarm_edit_index_ = -1;  // -1 = new alarm
+  Alarm alarm_draft_{};
+  /** 0 = browsing rows, 1 = adjusting hour, 2 = adjusting minute. */
+  int alarm_adjust_ = 0;
+  // Timer
+  uint32_t timer_total_ms_ = 0;
+  uint32_t timer_end_ms_ = 0;
+  uint32_t timer_paused_left_ms_ = 0;
+  bool timer_running_ = false;
+  bool timer_paused_ = false;
+  int timer_shown_s_ = -1;
+  // Alerts
+  bool ring_from_timer_ = false;
+  uint32_t ring_next_beep_ms_ = 0;
+  uint32_t ring_until_ms_ = 0;
+  int last_alarm_minute_key_ = -1;
+  /** One-shot snooze alarm (minutes of day), -1 = none. */
+  int snooze_minutes_ = -1;
   int note_index_ = 0;
   int music_index_ = 0;
   std::vector<MusicTrack> music_tracks_;
@@ -635,12 +698,18 @@ class App {
   bool sd_gate_active_ = false;
   ScreenId sd_return_screen_ = ScreenId::Home;
   std::string ota_status_;
+  /** Download progress 0–100 while an OTA is in flight, -1 otherwise. */
+  int ota_progress_ = -1;
   std::string pending_build_id_;
   bool welcome_sound_played_ = false;
   uint32_t last_attest_ms_ = 0;
   /** After unlock PIN for a parental-gated app, allow launches until lock. */
   bool parental_session_unlocked_ = false;
   bool parental_pin_for_app_ = false;
+  /** Settings → Change PIN: verify current PIN, then OnboardingPinSet/Confirm, then back. */
+  bool pin_change_ = false;
+  /** Settings → About → Reset: second press confirms. */
+  bool reset_armed_ = false;
   HomeApp parental_pending_app_ = HomeApp::Notes;
   /** OnboardingDone / Tips pages (0=ready, 1=rotary, 2=side, 3=power). */
   int tips_page_ = 0;
@@ -664,6 +733,8 @@ class App {
   bool input_resync_pending_ = false;
   /** Last attempt to flush offline voice clips via cloud STT. */
   uint32_t last_pending_stt_ms_ = 0;
+  /** Empty-transcript count per pending clip; 3 strikes → give up (no endless retries). */
+  std::map<std::string, int> stt_failures_;
 };
 
 }  // namespace pocket

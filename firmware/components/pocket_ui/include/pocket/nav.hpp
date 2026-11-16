@@ -56,6 +56,8 @@ enum class ScreenId : uint16_t {
   SettingsUpdate,
   SettingsUpdateProgress,
   SettingsUpdateResult,
+  /** Alarm / timer alert — shown above any screen, including Lock. */
+  ClockRinging,
 };
 
 struct NavStack {
@@ -82,6 +84,17 @@ struct NavStack {
     if (depth > 0) stack[depth - 1] = s;
     else reset(s);
   }
+  /** Go back to `t`: pop to it if it is already below the top, else replace the top.
+   * Never grows the stack (replace-to-parent used to stack duplicates until push jammed). */
+  void return_to(ScreenId t) {
+    for (int i = depth - 2; i >= 0; --i) {
+      if (stack[i] == t) {
+        depth = i + 1;
+        return;
+      }
+    }
+    replace(t);
+  }
 };
 
 inline bool long_home_blocked(ScreenId s, bool onboarding_complete) {
@@ -107,6 +120,7 @@ inline bool long_home_blocked(ScreenId s, bool onboarding_complete) {
   }
   if (s == ScreenId::Lock || s == ScreenId::Pin || s == ScreenId::SdCardGate) return true;
   if (s == ScreenId::SettingsUpdateProgress) return true;
+  if (s == ScreenId::ClockRinging) return true;
   return false;
 }
 
@@ -121,6 +135,7 @@ inline bool screen_requires_full_enter(ScreenId s) {
     case ScreenId::OnboardingCompanionDownload:  // QR clarity
     case ScreenId::OnboardingCompanionQr:        // QR clarity
     case ScreenId::OnboardingWifiPassword:       // SoftAP Link QR
+    case ScreenId::ClockRinging:                 // alert over lock art
       return true;
     default:
       return false;

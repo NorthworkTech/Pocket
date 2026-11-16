@@ -95,6 +95,24 @@ class InputMapper {
 
   /** True and records the edge if this control hasn't fired within the debounce window. */
   static bool debounce(bool& seen, uint32_t& last_ms, uint32_t now_ms);
+
+  /**
+   * Edges rejected inside the debounce window are remembered, not dropped: the
+   * button poller only reports level *changes*, so a quick tap's release would
+   * otherwise never arrive (tap → Home / stuck PTT). tick() applies the latest
+   * pending level once it has been stable for the window.
+   */
+  struct Pending {
+    bool set = false;
+    bool pressed = false;
+    uint32_t ms = 0;
+  };
+  Pending fn_pending_{};
+  Pending boot_pending_{};
+  Pending pwr_pending_{};
+  bool fn_level_ = false;
+  bool boot_level_ = false;
+  bool pwr_level_ = false;
 };
 
 }  // namespace pocket

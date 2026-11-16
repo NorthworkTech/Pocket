@@ -112,16 +112,16 @@ pocket::DeviceConfig EspPersistentConfigStore::load() {
   pocket::DeviceConfig cfg;
   std::vector<uint8_t> blob;
 
-  // Prefer SD mirror when present (user may have moved the card), else NVS.
-  if (sd_load_blob(blob)) {
-    if (pocket::unpack_device_config(blob.data(), blob.size(), cfg)) {
-      ESP_LOGI(TAG, "loaded config from SD");
-      return cfg;
-    }
-  }
-  blob.clear();
+  // NVS is authoritative: an SD mirror can be stale (skipped write) or come from
+  // another Pocket, and must never restore an old PIN, Wi-Fi list or device token.
+  // The SD copy is only a recovery source when NVS is empty or unreadable.
   if (nvs_load_blob(blob) && pocket::unpack_device_config(blob.data(), blob.size(), cfg)) {
     ESP_LOGI(TAG, "loaded config from NVS");
+    return cfg;
+  }
+  blob.clear();
+  if (sd_load_blob(blob) && pocket::unpack_device_config(blob.data(), blob.size(), cfg)) {
+    ESP_LOGI(TAG, "NVS empty — recovered config from SD mirror");
     return cfg;
   }
   ESP_LOGI(TAG, "no persisted config — defaults");
@@ -134,10 +134,14 @@ void EspPersistentConfigStore::save(const pocket::DeviceConfig& cfg) {
     ESP_LOGW(TAG, "pack failed");
     return;
   }
+  // Flash wear: callers save liberally (attest loop, settings); skip identical writes.
+  static std::vector<uint8_t> last_saved;
+  if (blob == last_saved) return;
   if (!nvs_save_blob(blob)) {
     ESP_LOGW(TAG, "NVS save failed");
   } else {
     ESP_LOGI(TAG, "saved config to NVS (%u bytes)", static_cast<unsigned>(blob.size()));
+    last_saved = blob;
   }
   if (sd_save_blob(blob)) {
     ESP_LOGI(TAG, "mirrored config to SD");

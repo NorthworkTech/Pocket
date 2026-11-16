@@ -85,7 +85,8 @@ void App::render_onboarding() {
   using ui::RowKind;
   const ScreenId s = nav_.current();
   const int step = onboarding_step_of(s);
-  if (step > 0 && !(s == ScreenId::OnboardingDone && tips_page_ > 0)) ui::steps(canvas_, step, 9);
+  if (step > 0 && !cfg_.onboarding_complete && !(s == ScreenId::OnboardingDone && tips_page_ > 0))
+    ui::steps(canvas_, step, 9);
   const int ty = title_y(step);
   constexpr int kWrapW = kContentW;
   constexpr int kLineGap = kWrapGap;
@@ -250,7 +251,8 @@ void App::render_onboarding() {
     case ScreenId::OnboardingPinSet:
     case ScreenId::OnboardingPinConfirm: {
       const bool confirm = s == ScreenId::OnboardingPinConfirm;
-      title(confirm ? "Confirm your PIN" : "Create a PIN");
+      title(confirm ? (cfg_.onboarding_complete ? "Confirm new PIN" : "Confirm your PIN")
+                    : (cfg_.onboarding_complete ? "New PIN" : "Create a PIN"));
       lead(ty + 52, confirm ? "Enter the same digits again." : "Turn to pick a digit, press to set it.");
       draw_pin_entry(/*mask_completed=*/false, ty + 140);
       if (now_ms_ < error_until_ms_ && !error_msg_.empty()) ui::toast(canvas_, error_msg_);
@@ -338,6 +340,23 @@ void App::render_onboarding() {
 void App::handle_onboarding(InputEvent e) {
   ScreenId s = nav_.current();
 
+  // After setup, onboarding screens are only reachable as tools (Controls tour, Add
+  // Wi-Fi, Link, Change PIN). Back must leave them — never walk the setup chain, which
+  // would let anyone reach PIN Set without knowing the current PIN.
+  if (e == InputEvent::Back && cfg_.onboarding_complete && s != ScreenId::OnboardingPinSet &&
+      s != ScreenId::OnboardingPinConfirm && s != ScreenId::OnboardingWifiPassword &&
+      s != ScreenId::OnboardingWifiList && s != ScreenId::OnboardingCompanionQr) {
+    if (s == ScreenId::OnboardingDone && tips_page_ > 1) {
+      --tips_page_;
+      mark_content_dirty();
+      return;
+    }
+    tips_page_ = 0;
+    if (!nav_.pop()) nav_.reset(ScreenId::Home);
+    focus_.index = 0;
+    after_nav();
+    return;
+  }
   // PIN set/confirm: digit-level Back is handled in the PIN branch below.
   if (e == InputEvent::Back && s != ScreenId::OnboardingPinSet && s != ScreenId::OnboardingPinConfirm) {
     switch (s) {
@@ -353,7 +372,7 @@ void App::handle_onboarding(InputEvent e) {
         if (cfg_.onboarding_complete) {
           // Add-network SoftAP — return to Settings Wi‑Fi, not the setup list.
           wifi_ui_page_ = 0;
-          nav_.replace(ScreenId::SettingsWifi);
+          nav_.return_to(ScreenId::SettingsWifi);
         } else {
           nav_.replace(ScreenId::OnboardingSdCard);
         }
@@ -361,7 +380,7 @@ void App::handle_onboarding(InputEvent e) {
         break;
       case ScreenId::OnboardingWifiList:
         if (cfg_.onboarding_complete) {
-          nav_.replace(ScreenId::SettingsWifi);
+          nav_.return_to(ScreenId::SettingsWifi);
         } else {
           nav_.replace(ScreenId::OnboardingSdCard);
         }
@@ -378,7 +397,7 @@ void App::handle_onboarding(InputEvent e) {
         break;
       case ScreenId::OnboardingCompanionQr:
         if (cfg_.onboarding_complete) {
-          nav_.replace(ScreenId::SettingsCloud);
+          nav_.return_to(ScreenId::SettingsCloud);
         } else {
           // Re-enter Link SoftAP phase
           begin_softap_link();
@@ -545,7 +564,7 @@ void App::handle_onboarding(InputEvent e) {
         wifi_.stop_provision();
         if (cfg_.onboarding_complete) {
           wifi_ui_page_ = 0;
-          nav_.replace(ScreenId::SettingsWifi);
+          nav_.return_to(ScreenId::SettingsWifi);
           after_nav();
         } else if (mint_pair_session()) {
           play_sound(SoundId::Success);
@@ -565,7 +584,7 @@ void App::handle_onboarding(InputEvent e) {
         wifi_.stop_provision();
         if (cfg_.onboarding_complete) {
           wifi_ui_page_ = 0;
-          nav_.replace(ScreenId::SettingsWifi);
+          nav_.return_to(ScreenId::SettingsWifi);
         } else {
           nav_.replace(ScreenId::OnboardingSdCard);
         }
@@ -580,7 +599,7 @@ void App::handle_onboarding(InputEvent e) {
     if (pair_status_ == "claimed") {
       focus_.index = 0;
       if (cfg_.onboarding_complete) {
-        nav_.replace(ScreenId::SettingsCloud);
+        nav_.return_to(ScreenId::SettingsCloud);
       } else {
         nav_.replace(ScreenId::OnboardingPinLength);
       }
@@ -644,6 +663,12 @@ void App::handle_onboarding(InputEvent e) {
           pin_ignore_select_until_ms_ = 0;
           pin_enter_empty_slot();
           after_nav();
+        } else if (cfg_.onboarding_complete) {
+          // Change PIN cancelled — the old PIN stays.
+          pin_change_ = false;
+          pin_pending_.clear();
+          if (!nav_.pop()) nav_.reset(ScreenId::Home);
+          after_nav();
         } else {
           nav_.replace(ScreenId::OnboardingPinLength);
           after_nav();
@@ -674,9 +699,16 @@ void App::handle_onboarding(InputEvent e) {
             pin_pending_.clear();
             pin_ignore_select_until_ms_ = 0;
             pin_enter_empty_slot();
-            focus_.index = onboarding_tz_index_;
-            nav_.replace(ScreenId::OnboardingTimezone);
-            after_nav();
+            if (cfg_.onboarding_complete) {
+              pin_change_ = false;
+              play_sound(SoundId::Success);
+              if (!nav_.pop()) nav_.reset(ScreenId::Home);
+              after_nav();
+            } else {
+              focus_.index = onboarding_tz_index_;
+              nav_.replace(ScreenId::OnboardingTimezone);
+              after_nav();
+            }
           } else {
             error_msg_ = "Those didn't match. Try again.";
             error_until_ms_ = now_ms_ + 2500;

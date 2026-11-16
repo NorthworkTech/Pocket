@@ -11,6 +11,8 @@ struct EspCloud : pocket::PlatformCloud {
   std::vector<uint8_t> music_download(const std::string& device_id, const std::string& track_id) override;
   std::string books_list_json(const std::string& device_id) override;
   std::vector<uint8_t> book_download(const std::string& device_id, const std::string& book_id) override;
+  bool download_to_file(const char* kind, const std::string& device_id, const std::string& id, const std::string& path,
+                        int64_t max_bytes, int64_t* bytes_out) override;
   std::string firmware_latest_json() override;
   std::string device_attest_json(const std::string& device_id) override;
   bool push_device_settings(const std::string& device_id, int volume_percent, int brightness_percent) override;

@@ -205,7 +205,7 @@ int main() {
     // Display order: Notes…Music, Reading, Settings, Update — Settings at index 7.
     while (app.home_focus_index() > 0) app.apply_home_focus_delta(-1);
     settle(mapper, app, disp);
-    app.apply_home_focus_delta(7);
+    app.apply_home_focus_delta(5);  // Settings
     settle(mapper, app, disp);
     app.handle(InputEvent::Select);
     settle(mapper, app, disp);

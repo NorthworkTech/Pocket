@@ -83,6 +83,7 @@ int main(int argc, char** argv) {
   l.items = {{"i1", "Oat milk", true, 0, {}}, {"i2", "Lemons", false, 0, {}}, {"i3", "Basil", false, 0, {}}};
   d.lists = {l};
   d.alarms = {{"a1", 7 * 60, true, "Wake"}, {"a2", 22 * 60 + 30, false, "Wind down"}};
+  app.host_start_timer(5u * 60u * 1000u - 17000u);
   d.weather.city = "Lisbon";
   d.weather.fetched_at = 1;
   d.weather.today_temp = 19;
@@ -99,8 +100,8 @@ int main(int argc, char** argv) {
       "sd-gate", "home", "notes", "note", "lists", "list", "ledger", "clock", "alarms", "alarm-edit",
       "timers", "timer-run", "pass", "pass-detail", "weather", "weather-city", "music", "now-playing",
       "reading", "book", "settings", "security", "wifi", "display", "sound", "home-apps", "units", "about",
-      "cloud", "update", "update-progress", "update-result"};
-  const int n_screens = static_cast<int>(ScreenId::SettingsUpdateResult) + 1;
+      "cloud", "update", "update-progress", "update-result", "ringing"};
+  const int n_screens = static_cast<int>(ScreenId::ClockRinging) + 1;
   int i = 0;
   for (int sidx = 0; sidx < n_screens; ++sidx) {
     const ScreenId id = static_cast<ScreenId>(sidx);

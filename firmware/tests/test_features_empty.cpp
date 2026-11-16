@@ -82,7 +82,7 @@ static void unlock_home(App& app) {
 }
 
 /** Fresh app so Home focus starts at Notes (index 0). Display order:
- * Notes, Ledger, Clock, Pass, Weather, Music, Reading, Settings, Update. */
+ * Notes, Clock, Weather, Music, Reading, Settings, Update (Ledger/empty Pass hidden). */
 static void boot_unlocked(App& app) {
   app.boot();
   unlock_home(app);
@@ -126,7 +126,8 @@ int main() {
   {
     App app(store, clock, wifi, cloud, disp, &storage, nullptr);
     boot_unlocked(app);
-    open_home_index(app, 1);
+    // Ledger is not on Home (placeholder) — reach its screen directly.
+    app.host_goto(ScreenId::LedgerComingSoon);
     CHECK(app.screen() == ScreenId::LedgerComingSoon);
     app.redraw(true);
   }
@@ -135,7 +136,8 @@ int main() {
   {
     App app(store, clock, wifi, cloud, disp, &storage, nullptr);
     boot_unlocked(app);
-    open_home_index(app, 3);
+    // Pass appears on Home only once passes exist — reach its empty state directly.
+    app.host_goto(ScreenId::PassList);
     CHECK(app.screen() == ScreenId::PassList);
     app.redraw(true);
   }
@@ -144,7 +146,7 @@ int main() {
   {
     App app(store, clock, wifi, cloud, disp, &storage, nullptr);
     boot_unlocked(app);
-    open_home_index(app, 4);
+    open_home_index(app, 2);
     CHECK(app.screen() == ScreenId::WeatherMain);
     app.redraw(true);
   }
@@ -153,7 +155,7 @@ int main() {
   {
     App app(store, clock, wifi, cloud, disp, &storage, nullptr);
     boot_unlocked(app);
-    open_home_index(app, 5);
+    open_home_index(app, 3);
     CHECK(app.screen() == ScreenId::MusicList);
     app.redraw(true);
     app.handle(InputEvent::Select);  // Sync (needs Wi‑Fi)
@@ -167,7 +169,7 @@ int main() {
   {
     App app(store, clock, wifi, cloud, disp, &storage, nullptr);
     boot_unlocked(app);
-    open_home_index(app, 6);
+    open_home_index(app, 4);
     CHECK(app.screen() == ScreenId::ReadingList);
     app.redraw(true);
     app.handle(InputEvent::Select);  // Sync offline
@@ -178,7 +180,7 @@ int main() {
   {
     App app(store, clock, wifi, cloud, disp, &storage, nullptr);
     boot_unlocked(app);
-    open_home_index(app, 7);
+    open_home_index(app, 5);
     CHECK(app.screen() == ScreenId::SettingsRoot);
     app.redraw(true);
     // About is typically near the end of the settings root list.
@@ -191,7 +193,7 @@ int main() {
   {
     App app(store, clock, wifi, cloud, disp, &storage, nullptr);
     boot_unlocked(app);
-    open_home_index(app, 8);
+    open_home_index(app, 6);
     CHECK(app.screen() == ScreenId::SettingsUpdateResult);
     app.redraw(true);
   }
@@ -200,7 +202,7 @@ int main() {
   {
     App app(store, clock, wifi, cloud, disp, &storage, nullptr);
     boot_unlocked(app);
-    open_home_index(app, 7);
+    open_home_index(app, 5);
     CHECK(app.screen() == ScreenId::SettingsRoot);
     // Settings root order includes Update near the end (before About typically).
     for (int i = 0; i < 8; ++i) app.handle(InputEvent::Down);

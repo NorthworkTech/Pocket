@@ -572,6 +572,24 @@ void toast(Canvas& c, std::string_view msg) {
   }
 }
 
+int window_start(int focus, int count, int visible) {
+  if (visible <= 0 || count <= visible) return 0;
+  int start = focus - (visible - 2);
+  if (start < 0) start = 0;
+  if (start > count - visible) start = count - visible;
+  return start;
+}
+
+void scrollbar(Canvas& c, int top, int height, int start, int visible, int count) {
+  if (count <= visible || height <= 0) return;
+  const int x = kCanvasW - 7;
+  c.fill_rect(x, top, 3, height, Gray::G3);
+  for (int y = top; y < top + height; y += 4) c.set_pixel(x + 1, y, Gray::G0);  // dotted track
+  const int thumb_h = std::max(24, height * visible / count);
+  const int thumb_y = top + (height - thumb_h) * start / std::max(1, count - visible);
+  c.fill_round_rect(x, thumb_y, 3, thumb_h, 1, Gray::G0);
+}
+
 int kv(Canvas& c, int y, std::string_view key, std::string_view value) {
   c.draw_text(kSideMargin, y, key, Canvas::TextRole::Secondary, Gray::G0);
   const int vw = std::min(c.text_width(value, Canvas::TextRole::BodyStrong), kContentW * 3 / 5);

@@ -1,5 +1,7 @@
 #include "pocket/app.hpp"
 #include "pocket/ui.hpp"
+#include "pocket/json_lite.hpp"
+#include <functional>
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -63,6 +65,7 @@ void App::boot() {
   load_local_notes();
   load_local_lists();
   load_local_passes();
+  load_alarms();
   load_weather_cache();
   music_load_local();
   reading_load_local();
@@ -441,7 +444,10 @@ void App::maybe_wifi_auto_reconnect() {
     return;
   }
 
-  const uint32_t interval_ms = wifi_boot_reconnect_done_ ? 45000u : 800u;
+  // Away from known networks, scanning every 45 s froze the UI and drained the battery;
+  // on the lock face retry every 10 min (unlocking or a Wi-Fi tap retries immediately).
+  const uint32_t interval_ms =
+      !wifi_boot_reconnect_done_ ? 800u : (s == ScreenId::Lock ? 600000u : 45000u);
   if (last_wifi_reconnect_ms_ != 0 && now_ms_ - last_wifi_reconnect_ms_ < interval_ms) return;
   last_wifi_reconnect_ms_ = now_ms_;
   wifi_sta_connecting_ = true;
@@ -543,11 +549,40 @@ void App::after_nav(bool full_refresh) {
 
 void App::after_nav() { after_nav(screen_requires_full_enter(nav_.current())); }
 
+bool PlatformCloud::download_to_file(const char* kind, const std::string& device_id, const std::string& id,
+                                     const std::string& path, int64_t max_bytes, int64_t* bytes_out) {
+  const std::vector<uint8_t> bytes =
+      std::string(kind) == "music" ? music_download(device_id, id) : book_download(device_id, id);
+  if (bytes.empty()) return false;
+  if (max_bytes > 0 && static_cast<int64_t>(bytes.size()) > max_bytes) return false;
+  const std::string part = path + ".part";
+  FILE* f = std::fopen(part.c_str(), "wb");
+  if (!f) return false;
+  const bool ok = std::fwrite(bytes.data(), 1, bytes.size(), f) == bytes.size();
+  std::fclose(f);
+  if (!ok) {
+    std::remove(part.c_str());
+    return false;
+  }
+  std::remove(path.c_str());
+  if (std::rename(part.c_str(), path.c_str()) != 0) return false;
+  if (bytes_out) *bytes_out = static_cast<int64_t>(bytes.size());
+  return true;
+}
+
+void App::cancel_capture() {
+  if (!ptt_active_ && !mic_capturing_) return;
+  ptt_active_ = false;
+  mic_capturing_ = false;
+  if (audio_) (void)audio_->stop_capture();  // discard — the user left mid-recording
+}
+
 void App::go_home() {
   // Already on Home — keep focus; a remount flash feels like navigation jank.
   if (nav_.current() == ScreenId::Home && nav_.depth == 1) {
     return;
   }
+  cancel_capture();
   nav_.reset(ScreenId::Home);
   home_focus_spin_count_ = 0;
   list_focus_spin_count_ = 0;
@@ -562,6 +597,15 @@ void App::go_lock() {
     last_input_ms_ = now_ms_;
     return;
   }
+  cancel_capture();
+  // A pending SD prompt is abandoned by locking; re-arm hot-plug detection so the
+  // gate can appear again (it used to stay "active" until reboot).
+  if (sd_gate_active_) {
+    sd_gate_active_ = false;
+    sd_waiting_eject_ = false;
+  }
+  pin_change_ = false;
+  reset_armed_ = false;
   nav_.reset(ScreenId::Lock);
   pin_entry_.clear();
   parental_session_unlocked_ = false;
@@ -598,6 +642,12 @@ void App::launch_home_app(HomeApp launch) {
       nav_.push(ScreenId::PassList);
       break;
     case HomeApp::Weather:
+      weather_ensure_city();
+      focus_.index = 0;
+      // Fetch after the screen paints when the forecast is missing or over an hour old.
+      weather_refresh_pending_ =
+          wifi_.connected() && (data_.weather.days.empty() || data_.weather.fetched_at == 0 ||
+                                now_ms_ - static_cast<uint32_t>(data_.weather.fetched_at) > 3600u * 1000u);
       nav_.push(ScreenId::WeatherMain);
       break;
     case HomeApp::Music:
@@ -647,7 +697,10 @@ void App::maybe_cloud_attest() {
     return;
   }
   // ~20s so Companion “Online” / rename stay fresh after reconnect.
-  if (last_attest_ms_ != 0 && now_ms_ - last_attest_ms_ < 20000u) return;
+  // While locked nobody is looking: check in every 10 min instead of every 20 s
+  // (still picks up remote lock / Wi-Fi hand-offs, at a fraction of the radio time).
+  const uint32_t attest_every = nav_.current() == ScreenId::Lock ? 600000u : 20000u;
+  if (last_attest_ms_ != 0 && now_ms_ - last_attest_ms_ < attest_every) return;
   last_attest_ms_ = now_ms_;
   const std::string body = cloud_.device_attest_json(cfg_.device_id);
   if (body.empty()) {
@@ -655,28 +708,30 @@ void App::maybe_cloud_attest() {
     return;
   }
 
-  auto json_bool = [](const std::string& j, const char* key) -> int {
-    const std::string needle = std::string("\"") + key + "\"";
-    size_t p = j.find(needle);
-    if (p == std::string::npos) return -1;
-    p = j.find(':', p + needle.size());
-    if (p == std::string::npos) return -1;
-    while (p + 1 < j.size() && (j[p + 1] == ' ' || j[p + 1] == '\t')) ++p;
-    if (j.compare(p + 1, 4, "true") == 0) return 1;
-    if (j.compare(p + 1, 5, "false") == 0) return 0;
-    return -1;
+  // Parse once; look keys up depth-first in document order (same precedence as the
+  // old substring search, but quotes/escapes inside values can no longer break it).
+  JsonValue attest_root;
+  const bool attest_ok = json_parse(body, attest_root);
+  std::function<const JsonValue*(const JsonValue&, const char*)> deep = [&](const JsonValue& v,
+                                                                           const char* key) -> const JsonValue* {
+    if (v.is_object()) {
+      for (const auto& m : v.members) {
+        if (m.first == key) return &m.second;
+        if (const JsonValue* r = deep(m.second, key)) return r;
+      }
+    } else if (v.is_array()) {
+      for (const auto& it : v.items)
+        if (const JsonValue* r = deep(it, key)) return r;
+    }
+    return nullptr;
   };
-  auto json_str = [](const std::string& j, const char* key) -> std::string {
-    const std::string needle = std::string("\"") + key + "\"";
-    size_t p = j.find(needle);
-    if (p == std::string::npos) return {};
-    p = j.find(':', p + needle.size());
-    if (p == std::string::npos) return {};
-    p = j.find('"', p + 1);
-    if (p == std::string::npos) return {};
-    size_t end = j.find('"', p + 1);
-    if (end == std::string::npos) return {};
-    return j.substr(p + 1, end - p - 1);
+  auto json_bool = [&](const std::string&, const char* key) -> int {
+    const JsonValue* v = attest_ok ? deep(attest_root, key) : nullptr;
+    return (v && v->type == JsonValue::Type::Bool) ? (v->boolean ? 1 : 0) : -1;
+  };
+  auto json_str = [&](const std::string&, const char* key) -> std::string {
+    const JsonValue* v = attest_ok ? deep(attest_root, key) : nullptr;
+    return (v && v->type == JsonValue::Type::String) ? v->str : std::string();
   };
 
   const int entitled = json_bool(body, "cloud_entitled");
@@ -685,9 +740,15 @@ void App::maybe_cloud_attest() {
   if (!st.empty()) cfg_.cloud_status = st;
   // Successful attest → refresh offline grace clock (unix when wall clock trusted).
   if (clock_.time_trusted()) {
-    cfg_.cloud_last_ok_unix = static_cast<uint32_t>(std::time(nullptr));
+    {
+      const uint32_t t = static_cast<uint32_t>(std::time(nullptr));
+      if (t >= cfg_.cloud_last_ok_unix + 3600u || t < cfg_.cloud_last_ok_unix) cfg_.cloud_last_ok_unix = t;
+    }
   } else {
-    cfg_.cloud_last_ok_unix = static_cast<uint32_t>(now_ms_ / 1000u);
+    {
+      const uint32_t t = static_cast<uint32_t>(now_ms_ / 1000u);
+      if (t >= cfg_.cloud_last_ok_unix + 3600u || t < cfg_.cloud_last_ok_unix) cfg_.cloud_last_ok_unix = t;
+    }
   }
   const std::string dname = json_str(body, "device_name");
   if (!dname.empty() && dname != cfg_.device_name) {
@@ -701,15 +762,9 @@ void App::maybe_cloud_attest() {
   }
   // Volume / brightness — either side can change these (rotary on-device, Companion remotely);
   // whichever changed most recently wins on the next pull since the pusher writes through too.
-  auto json_int = [](const std::string& j, const char* key) -> int {
-    const std::string needle = std::string("\"") + key + "\"";
-    size_t p = j.find(needle);
-    if (p == std::string::npos) return -1;
-    p = j.find(':', p + needle.size());
-    if (p == std::string::npos) return -1;
-    ++p;
-    while (p < j.size() && (j[p] == ' ' || j[p] == '\t')) ++p;
-    return std::atoi(j.c_str() + p);
+  auto json_int = [&](const std::string&, const char* key) -> int {
+    const JsonValue* v = attest_ok ? deep(attest_root, key) : nullptr;
+    return (v && v->type == JsonValue::Type::Number) ? static_cast<int>(v->number) : -1;
   };
   const int remote_vol = json_int(body, "volume_percent");
   if (remote_vol >= 0 && remote_vol <= 100 && remote_vol != static_cast<int>(cfg_.volume_percent)) {
@@ -754,14 +809,10 @@ void App::maybe_cloud_attest() {
   // pending_wifi object nests ssid — look near pending_wifi key
   std::string wifi_ssid;
   std::string wifi_pass;
-  const size_t pw = body.find("\"pending_wifi\"");
-  if (pw != std::string::npos && body.find("null", pw) != pw + 16) {
-    const size_t obj = body.find('{', pw);
-    const size_t end = obj == std::string::npos ? std::string::npos : body.find('}', obj);
-    if (obj != std::string::npos && end != std::string::npos) {
-      const std::string chunk = body.substr(obj, end - obj + 1);
-      wifi_ssid = json_str(chunk, "ssid");
-      wifi_pass = json_str(chunk, "password");
+  if (attest_ok) {
+    if (const JsonValue* pw = attest_root.get("pending_wifi"); pw && pw->is_object()) {
+      wifi_ssid = pw->get_string("ssid");
+      wifi_pass = pw->get_string("password");
     }
   }
   (void)pending_ssid;
@@ -803,11 +854,38 @@ bool App::wifi_add_flow_active() const {
 void App::tick(uint32_t now_ms) {
   now_ms_ = now_ms;
   maybe_start_pending_softap_radio();
+  maybe_tick_clock_events();
+  // Track finished on its own → Now Playing shows Stopped.
+  if (music_playing_ && audio_ && !audio_->is_playing()) {
+    music_playing_ = false;
+    if (nav_.current() == ScreenId::MusicNowPlaying) mark_content_dirty();
+  }
+  // Low battery: warn once at 10% and again at 5% (re-arms after charging past 20%).
+  if (cfg_.onboarding_complete && (last_battery_check_ms_ == 0 || now_ms_ - last_battery_check_ms_ >= 60000u)) {
+    last_battery_check_ms_ = now_ms_;
+    const int b = clock_.battery_percent();
+    if (b >= 20) battery_warned_ = 100;
+    const int level = b <= 5 ? 5 : (b <= 10 ? 10 : 100);
+    if (b >= 0 && level < battery_warned_ && nav_.current() != ScreenId::Lock &&
+        nav_.current() != ScreenId::ClockRinging) {
+      battery_warned_ = level;
+      error_msg_ = level == 5 ? "Battery critically low \xE2\x80\x94 charge Pocket now."
+                              : "Battery low \xE2\x80\x94 charge Pocket soon.";
+      error_until_ms_ = now_ms_ + 5000;
+      transient_error_armed_ = true;
+      play_sound(SoundId::Attention);
+      mark_content_dirty();
+    }
+  }
+  if (weather_refresh_pending_ && nav_.current() == ScreenId::WeatherMain && !dirty_ && !display_.busy()) {
+    weather_refresh_pending_ = false;
+    weather_refresh();
+  }
   // Never idle-lock mid SoftAP / Add network — phone needs time to join Pocket Wi‑Fi.
   // Guard now_ms < last_input_ms_ (unsigned underflow): host pumps often tick(0) while
   // handle() samples the real clock, and a wrap must not force Lock.
   if (cfg_.onboarding_complete && nav_.current() != ScreenId::Lock && nav_.current() != ScreenId::Pin &&
-      !wifi_add_flow_active() && now_ms >= last_input_ms_ &&
+      nav_.current() != ScreenId::ClockRinging && !wifi_add_flow_active() && now_ms >= last_input_ms_ &&
       now_ms - last_input_ms_ >= static_cast<uint32_t>(cfg_.idle_lock_s) * 1000u) {
     go_lock();
     return;
@@ -832,7 +910,7 @@ void App::tick(uint32_t now_ms) {
           if (cfg_.onboarding_complete) {
             focus_.index = 0;
             wifi_ui_page_ = 0;
-            nav_.replace(ScreenId::SettingsWifi);
+            nav_.return_to(ScreenId::SettingsWifi);
             after_nav();
           } else if (mint_pair_session()) {
             play_sound(SoundId::Success);
@@ -907,7 +985,7 @@ void App::tick(uint32_t now_ms) {
   maybe_cloud_attest();
   // Retry queued offline voice clips (cloud STT) — notify_wifi covers the fast path.
   if (wifi_.connected() && notes_have_pending_dictation() &&
-      (last_pending_stt_ms_ == 0 || now_ms - last_pending_stt_ms_ >= 20000u)) {
+      (last_pending_stt_ms_ == 0 || now_ms - last_pending_stt_ms_ >= 60000u)) {
     last_pending_stt_ms_ = now_ms;
     flush_pending_dictation();
   }
@@ -1063,6 +1141,7 @@ void App::handle(InputEvent e) {
     case ScreenId::ClockAlarmEdit:
     case ScreenId::ClockTimers:
     case ScreenId::ClockTimerRun:
+    case ScreenId::ClockRinging:
       handle_clock(e);
       break;
     case ScreenId::PassList:
@@ -1134,6 +1213,7 @@ void App::render() {
     case ScreenId::ClockAlarmEdit:
     case ScreenId::ClockTimers:
     case ScreenId::ClockTimerRun:
+    case ScreenId::ClockRinging:
       render_clock();
       break;
     case ScreenId::PassList:
@@ -1320,7 +1400,7 @@ void App::render_pin() {
   }
   draw_pin_entry(/*mask_completed=*/true, 200);
   if (now_ms_ < error_until_ms_) {
-    canvas_.draw_text_centered(kCanvasW / 2, 420, error_msg_.c_str(), Canvas::TextRole::Body, Gray::G0);
+    canvas_.draw_text_centered(kCanvasW / 2, 392, error_msg_.c_str(), Canvas::TextRole::BodyStrong, Gray::G0);
   }
   if (now_ms_ < pin_lockout_until_ms_) {
     uint32_t rem = (pin_lockout_until_ms_ - now_ms_ + 999u) / 1000u;
@@ -1332,7 +1412,7 @@ void App::render_pin() {
       std::snprintf(lockbuf, sizeof(lockbuf), "Try again in %u seconds",
                     static_cast<unsigned>(rem));
     }
-    canvas_.draw_text_centered(kCanvasW / 2, 448, lockbuf, Canvas::TextRole::Body, Gray::G0);
+    canvas_.draw_text_centered(kCanvasW / 2, 426, lockbuf, Canvas::TextRole::Secondary, Gray::G0);
   }
 }
 
@@ -1340,10 +1420,11 @@ void App::handle_pin(InputEvent e) {
   // Lockout blocks digit entry — but Back still leaves so the user is never stuck.
   if (now_ms_ < pin_lockout_until_ms_) {
     if (e == InputEvent::Back) {
+      // Leaving keeps the lockout armed — re-entering the PIN screen must not reset it.
       parental_pin_for_app_ = false;
+      pin_change_ = false;
       pin_entry_.clear();
       pin_enter_empty_slot();
-      pin_lockout_until_ms_ = 0;
       error_msg_.clear();
       error_until_ms_ = 0;
       nav_.pop();
@@ -1354,6 +1435,7 @@ void App::handle_pin(InputEvent e) {
   if (e == InputEvent::Back) {
     if (pin_entry_.empty()) {
       parental_pin_for_app_ = false;
+      pin_change_ = false;
       nav_.pop();
       after_nav();
     } else {
@@ -1386,8 +1468,17 @@ void App::handle_pin(InputEvent e) {
         pin_fail_count_ = 0;
         pin_spin_count_ = 0;
         pin_ignore_select_until_ms_ = 0;
-        parental_session_unlocked_ = true;
+        if (pin_change_) {
+          // Verified the current PIN — now choose the new one.
+          pin_entry_.clear();
+          pin_pending_.clear();
+          pin_enter_empty_slot();
+          nav_.replace(ScreenId::OnboardingPinSet);
+          after_nav();
+          return;
+        }
         if (parental_pin_for_app_) {
+          parental_session_unlocked_ = true;
           parental_pin_for_app_ = false;
           const HomeApp pending = parental_pending_app_;
           pin_entry_.clear();

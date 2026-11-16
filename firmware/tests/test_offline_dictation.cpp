@@ -219,7 +219,8 @@ int main() {
       CHECK(body.find(kVoicePendingText) != std::string::npos);
       CHECK(body.find("\"pending\"") != std::string::npos);
     }
-    // Re-record while still pending: go offline briefly so queue path replaces the clip.
+    // Record again while offline: the first clip must survive (it used to be overwritten) —
+    // the new clip becomes its own note.
     wifi2.on = false;
     clock2.t += 500;
     app2.tick(clock2.t);  // advance now_ms_ so replace PCM gets a new name
@@ -232,14 +233,14 @@ int main() {
       const size_t marker_len = std::strlen(kVoicePendingText);
       for (size_t p = 0; (p = body.find(kVoicePendingText, p)) != std::string::npos; p += marker_len)
         ++count;
-      CHECK(count == 1);  // single placeholder — not stacked
+      CHECK(count == 2);  // both clips kept, one placeholder each
       CHECK(body.find("\"pending\"") != std::string::npos);
     }
     wifi2.on = true;
     cloud2.last_text = "second take";
     const int calls_before = cloud2.stt_calls;
     app2.notify_wifi_connected();
-    CHECK(cloud2.stt_calls == calls_before + 1);
+    CHECK(cloud2.stt_calls == calls_before + 2);  // both clips transcribed
     {
       std::ifstream in(storage2.root + "/notes/index.json");
       std::string body((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());

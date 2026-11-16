@@ -10,12 +10,6 @@
 namespace pocket {
 namespace {
 
-bool write_bytes(const std::string& path, const std::vector<uint8_t>& data) {
-  std::ofstream out(path, std::ios::binary | std::ios::trunc);
-  if (!out) return false;
-  out.write(reinterpret_cast<const char*>(data.data()), static_cast<std::streamsize>(data.size()));
-  return static_cast<bool>(out);
-}
 
 /** Minimal JSON array parse for [{id,title,filename,size},...] — tolerant of spacing. */
 void parse_music_list(const std::string& json, std::vector<MusicTrack>& out) {
@@ -122,6 +116,11 @@ void App::music_sync_from_cloud() {
   const bool on_sd = storage_->music_on_sd();
   constexpr int kInternalMax = 2 * 1024 * 1024;
   const std::string json = cloud_.music_list_json(cfg_.device_id, on_sd);
+  if (json.empty()) {
+    // Fetch failed — never let a network error hide the tracks already on Pocket.
+    music_status_ = "Couldn't reach Pocket Cloud \xC2\xB7 showing tracks on Pocket";
+    return;
+  }
   std::vector<MusicTrack> remote;
   parse_music_list(json, remote);
   if (remote.empty() && json.find('[') != std::string::npos) {
@@ -148,26 +147,20 @@ void App::music_sync_from_cloud() {
     }
     const std::string path = root + "/" + fname;
     struct stat st {};
-    if (stat(path.c_str(), &st) == 0 && st.st_size > 0) {
+    // Already synced only if complete: size must match when the cloud reports it.
+    if (stat(path.c_str(), &st) == 0 && st.st_size > 0 &&
+        (t.size_bytes <= 0 || st.st_size == static_cast<off_t>(t.size_bytes))) {
       t.local_path = path;
       local.push_back(t);
       continue;
     }
-    auto bytes = cloud_.music_download(cfg_.device_id, t.id);
-    if (bytes.empty()) {
+    int64_t got = 0;
+    if (!cloud_.download_to_file("music", cfg_.device_id, t.id, path, on_sd ? 0 : kInternalMax, &got)) {
       music_status_ = "Download failed for " + t.title;
       continue;
     }
-    if (!on_sd && static_cast<int>(bytes.size()) > kInternalMax) {
-      ++skipped_need_sd;
-      continue;
-    }
-    if (!write_bytes(path, bytes)) {
-      music_status_ = "Couldn't write " + fname;
-      continue;
-    }
     t.local_path = path;
-    t.size_bytes = static_cast<int>(bytes.size());
+    t.size_bytes = static_cast<int>(got);
     local.push_back(t);
   }
   music_tracks_ = std::move(local);
@@ -229,12 +222,20 @@ void App::render_music() {
                                       : "Local tracks still play offline. Sync needs Wi-Fi.",
                     340);
   }
-  for (int i = 0; i < n && i < 8; ++i) {
-    ui::row(canvas_, list_top + i * kRowPitch,
+  // Tracks + Sync + Back scroll as one window so every row is reachable and visible.
+  constexpr int kVisible = 9;
+  const int total = n + 2;
+  const int start = n == 0 ? 0 : ui::window_start(focus_.index, total, kVisible);
+  for (int k = 0; k < kVisible && start + k < n; ++k) {
+    const int i = start + k;
+    ui::row(canvas_, list_top + k * kRowPitch,
             Row{music_tracks_[static_cast<size_t>(i)].title, RowKind::Plain, {}, false, Icon::Music, true},
             i == focus_.index);
   }
-  const int y = n == 0 ? kBottomCtaY - kRowPitch : list_top + std::min(n, 8) * kRowPitch;
+  if (n > 0) ui::scrollbar(canvas_, list_top, kVisible * kRowPitch - 8, start, kVisible, total);
+  const int sync_slot = n - start;
+  const int y = n == 0 ? kBottomCtaY - kRowPitch : list_top + sync_slot * kRowPitch;
+  if (n > 0 && sync_slot + 1 >= kVisible + 1) return;  // actions scrolled out of view
   ui::row(canvas_, y,
           Row{wifi_.connected() ? "Sync from Companion" : "Sync", RowKind::Value, wifi_.connected() ? "" : "Needs Wi-Fi",
               false, Icon::Update, true},
@@ -278,8 +279,7 @@ void App::handle_music(InputEvent e) {
     focus_.move(e == InputEvent::Down ? 1 : -1);
     if (focus_.index == prev) return;
     // Empty library parks Sync/Back at the bottom CTA band — not list_top.
-    const int dirty_top = (n == 0) ? (kBottomCtaY - kRowPitch) : kListTopWithMeta;
-    mark_list_focus_dirty(dirty_top, prev, focus_.index);
+    mark_content_dirty();  // windowed list: rows move when it scrolls
   } else if (e == InputEvent::Select) {
     if (focus_.index < n) {
       music_index_ = focus_.index;

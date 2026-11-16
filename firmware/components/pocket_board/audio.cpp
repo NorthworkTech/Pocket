@@ -32,6 +32,9 @@ i2c_master_dev_handle_t es_dev_ = nullptr;
 i2s_chan_handle_t tx_ = nullptr;
 i2s_chan_handle_t rx_ = nullptr;
 bool ready_ = false;
+/** Background playback state — the UI loop never blocks on a track. */
+volatile bool play_stop_ = false;
+volatile bool playing_ = false;
 bool capturing_ = false;
 std::vector<uint8_t> capture_buf_;
 constexpr size_t kMaxCaptureBytes = 16000 * 2 * 2 * 5;  // ~5 s stereo @16 kHz
@@ -233,6 +236,7 @@ bool audio_init() {
 
 void audio_play(SoundId id) {
   if (!ready_ && !audio_init()) return;
+  if (playing_) return;  // a track owns the I2S channel
   switch (id) {
     case SoundId::Click:
       write_tone(880.f, 45, 0.22f);
@@ -254,59 +258,143 @@ void audio_play(SoundId id) {
   }
 }
 
+namespace {
+
+
+struct PlayJob {
+  FILE* f = nullptr;
+  uint16_t channels = 1;
+  uint32_t rate = kSampleRate;
+  uint32_t data_left = 0;
+};
+
+/** Read up to `frames` frames as interleaved stereo int16 (mono duplicated). */
+size_t read_frames(PlayJob& job, std::vector<int16_t>& dst, size_t frames) {
+  const size_t frame_bytes = sizeof(int16_t) * job.channels;
+  size_t want = std::min(frames, static_cast<size_t>(job.data_left / frame_bytes));
+  if (want == 0) return 0;
+  std::vector<int16_t> raw(want * job.channels);
+  const size_t got = std::fread(raw.data(), frame_bytes, want, job.f);
+  job.data_left -= static_cast<uint32_t>(got * frame_bytes);
+  for (size_t i = 0; i < got; ++i) {
+    const int16_t l = raw[i * job.channels];
+    const int16_t r = job.channels == 2 ? raw[i * 2 + 1] : l;
+    dst.push_back(l);
+    dst.push_back(r);
+  }
+  return got;
+}
+
+void play_task(void* arg) {
+  PlayJob* job = static_cast<PlayJob*>(arg);
+  // Linear-interpolating resampler to the codec's fixed 16 kHz clock, so 44.1/48 kHz
+  // files play at the right speed and pitch (they used to play ~3x slow).
+  const double step = static_cast<double>(job->rate) / kSampleRate;
+  std::vector<int16_t> in;  // interleaved stereo frames
+  in.reserve(4096);
+  double pos = 0;  // input frame position relative to in[0]
+  bool eof = false;
+  std::vector<int16_t> out(512 * 2);
+  while (!play_stop_) {
+    size_t frames_in = in.size() / 2;
+    while (!eof && frames_in < static_cast<size_t>(pos) + 2 + 512 * step) {
+      if (read_frames(*job, in, 1024) == 0) eof = true;
+      frames_in = in.size() / 2;
+    }
+    size_t n_out = 0;
+    while (n_out < 512) {
+      const size_t idx = static_cast<size_t>(pos);
+      if (idx + 1 >= frames_in) break;
+      const double f = pos - static_cast<double>(idx);
+      out[n_out * 2] = static_cast<int16_t>(in[idx * 2] * (1.0 - f) + in[(idx + 1) * 2] * f);
+      out[n_out * 2 + 1] = static_cast<int16_t>(in[idx * 2 + 1] * (1.0 - f) + in[(idx + 1) * 2 + 1] * f);
+      ++n_out;
+      pos += step;
+    }
+    if (n_out == 0) break;  // end of data
+    size_t written = 0;
+    i2s_channel_write(tx_, out.data(), n_out * 2 * sizeof(int16_t), &written, pdMS_TO_TICKS(500));
+    // Drop consumed input so the buffer stays small.
+    const size_t consumed = static_cast<size_t>(pos);
+    if (consumed > 1024) {
+      in.erase(in.begin(), in.begin() + static_cast<std::ptrdiff_t>(consumed * 2));
+      pos -= static_cast<double>(consumed);
+    }
+  }
+  std::fclose(job->f);
+  delete job;
+  playing_ = false;
+  vTaskDelete(nullptr);
+}
+
+}  // namespace
+
 bool audio_play_wav_file(const char* path) {
   if (!path || !*path) return false;
   if (!ready_ && !audio_init()) return false;
+  audio_stop();
   FILE* f = std::fopen(path, "rb");
   if (!f) {
     ESP_LOGW(TAG, "open failed: %s", path);
     return false;
   }
-  uint8_t hdr[44] = {};
-  if (std::fread(hdr, 1, 44, f) < 44) {
-    std::fclose(f);
-    return false;
-  }
-  if (std::memcmp(hdr, "RIFF", 4) != 0 || std::memcmp(hdr + 8, "WAVE", 4) != 0) {
+  // Walk RIFF chunks instead of assuming a 44-byte header (LIST/INFO chunks used to
+  // play as a burst of noise, and a non-16 kHz file played at the wrong speed).
+  uint8_t riff[12] = {};
+  if (std::fread(riff, 1, 12, f) != 12 || std::memcmp(riff, "RIFF", 4) != 0 || std::memcmp(riff + 8, "WAVE", 4) != 0) {
     ESP_LOGW(TAG, "not WAV: %s", path);
     std::fclose(f);
     return false;
   }
-  const uint16_t channels = static_cast<uint16_t>(hdr[22] | (hdr[23] << 8));
-  const uint16_t bits = static_cast<uint16_t>(hdr[34] | (hdr[35] << 8));
-  if (bits != 16 || (channels != 1 && channels != 2)) {
-    ESP_LOGW(TAG, "need 16-bit mono/stereo WAV");
+  uint16_t fmt_tag = 0, channels = 0, bits = 0;
+  uint32_t rate = 0, data_size = 0;
+  bool have_fmt = false, have_data = false;
+  for (int guard = 0; guard < 32 && !have_data; ++guard) {
+    uint8_t ch[8];
+    if (std::fread(ch, 1, 8, f) != 8) break;
+    const uint32_t size = static_cast<uint32_t>(ch[4] | (ch[5] << 8) | (ch[6] << 16) | (ch[7] << 24));
+    if (std::memcmp(ch, "fmt ", 4) == 0) {
+      uint8_t fmt[16] = {};
+      if (size < 16 || std::fread(fmt, 1, 16, f) != 16) break;
+      fmt_tag = static_cast<uint16_t>(fmt[0] | (fmt[1] << 8));
+      channels = static_cast<uint16_t>(fmt[2] | (fmt[3] << 8));
+      rate = static_cast<uint32_t>(fmt[4] | (fmt[5] << 8) | (fmt[6] << 16) | (fmt[7] << 24));
+      bits = static_cast<uint16_t>(fmt[14] | (fmt[15] << 8));
+      have_fmt = true;
+      if (size > 16) std::fseek(f, static_cast<long>(size - 16 + (size & 1)), SEEK_CUR);
+    } else if (std::memcmp(ch, "data", 4) == 0) {
+      data_size = size;
+      have_data = true;
+    } else {
+      std::fseek(f, static_cast<long>(size + (size & 1)), SEEK_CUR);
+    }
+  }
+  if (!have_fmt || !have_data || fmt_tag != 1 || bits != 16 || (channels != 1 && channels != 2) || rate < 4000 ||
+      rate > 96000) {
+    ESP_LOGW(TAG, "unsupported WAV (fmt=%u ch=%u bits=%u rate=%u)", fmt_tag, channels, bits,
+             static_cast<unsigned>(rate));
     std::fclose(f);
     return false;
   }
-  constexpr size_t kChunk = 1024;
-  std::vector<int16_t> in(kChunk);
-  std::vector<int16_t> out(kChunk * 2);
-  while (true) {
-    const size_t nread = std::fread(in.data(), sizeof(int16_t), kChunk, f);
-    if (nread == 0) break;
-    size_t frames = nread;
-    if (channels == 2) frames = nread / 2;
-    for (size_t i = 0; i < frames; ++i) {
-      int16_t l = 0, r = 0;
-      if (channels == 1) {
-        l = r = in[i];
-      } else {
-        l = in[i * 2];
-        r = in[i * 2 + 1];
-      }
-      out[i * 2] = l;
-      out[i * 2 + 1] = r;
-    }
-    size_t written = 0;
-    i2s_channel_write(tx_, out.data(), frames * 2 * sizeof(int16_t), &written, pdMS_TO_TICKS(500));
+  auto* job = new PlayJob{f, channels, rate, data_size};
+  play_stop_ = false;
+  playing_ = true;
+  if (xTaskCreate(play_task, "pocket_play", 6144, job, 5, nullptr) != pdPASS) {
+    playing_ = false;
+    std::fclose(f);
+    delete job;
+    return false;
   }
-  std::fclose(f);
-  vTaskDelay(pdMS_TO_TICKS(20));
   return true;
 }
 
-void audio_stop() {}
+bool audio_is_playing() { return playing_; }
+
+void audio_stop() {
+  if (!playing_) return;
+  play_stop_ = true;
+  for (int i = 0; i < 60 && playing_; ++i) vTaskDelay(pdMS_TO_TICKS(10));
+}
 
 void audio_set_volume(uint8_t percent) {
   if (percent > 100) percent = 100;
@@ -325,6 +413,7 @@ bool audio_mic_supported() {
 void audio_capture_start() {
   if (!audio_mic_supported()) return;
   if (capturing_) return;
+  audio_stop();  // recording mutes the speaker — end any track cleanly first
   capture_buf_.clear();
   capture_buf_.reserve(std::min(kMaxCaptureBytes, static_cast<size_t>(64000)));
   // Mute the speaker amp while recording so PA feedback doesn't swamp the mic.

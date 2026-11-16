@@ -90,7 +90,10 @@ bool get_str(const uint8_t* d, size_t len, size_t& off, std::string& out) {
 
 }  // namespace
 
-void wifi_known_upsert(DeviceConfig& cfg, const std::string& ssid, const std::string& password) {
+void wifi_known_upsert(DeviceConfig& cfg, const std::string& ssid_in, const std::string& password_in) {
+  // Copy first: callers often pass references into cfg.wifi_known, which erase() invalidates.
+  const std::string ssid = ssid_in;
+  const std::string password = password_in;
   if (ssid.empty()) return;
   WifiKnownNetwork entry{ssid, password};
   for (auto it = cfg.wifi_known.begin(); it != cfg.wifi_known.end(); ++it) {

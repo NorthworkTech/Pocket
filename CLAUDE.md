@@ -25,6 +25,9 @@ Companion PWA, and Pocket Cloud API. See README.md and each package README.
   shows with `host/dump_gallery` + `tools/gallery.py` (1-bit by default).
 - Draw screens with the UI kit (`pocket/ui.hpp`): `ui::header`, `ui::row`, `ui::button`,
   `ui::tabs`, `ui::empty_state`, `ui::icon`. Don't hand-roll rows or focus tiles.
+- On-device data: parse JSON with `pocket/json_lite.hpp` (`json_parse`), never substring
+  searches; write files with `write_file_atomic` (tmp + fsync + rename) and read with
+  `read_file_recover`. Lists that can grow use `ui::window_start` + `ui::scrollbar`.
 - Fonts: `tools/gen_fonts.py` → `src/font_ui.inc` (DM Sans + Source Serif 4, 1bpp).
 - OTA app slot is 0x1E0000 (~1.9 MB); keep an eye on image size. The partition table
   cannot change over OTA.

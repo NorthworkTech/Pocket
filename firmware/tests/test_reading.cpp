@@ -92,7 +92,7 @@ int main() {
   CHECK(app.screen() == ScreenId::Home);
 
   // Display order: Notes Ledger Clock Pass Weather Music Reading Settings Update
-  for (int i = 0; i < 6; ++i) app.handle(InputEvent::Down);
+  for (int i = 0; i < 4; ++i) app.handle(InputEvent::Down);  // Reading (index 4)
   app.handle(InputEvent::Select);
   CHECK(app.screen() == ScreenId::ReadingList);
 

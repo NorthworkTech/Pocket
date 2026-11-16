@@ -1,4 +1,5 @@
 #include "esp_cloud_platform.hpp"
+#include "pocket/json_lite.hpp"
 
 #include "pocket/cloud_client.hpp"
 
@@ -91,17 +92,11 @@ bool http_request(const char* method, const std::string& url, const char* auth_b
   return true;
 }
 
+/** Top-level string field via the real parser (escapes, quotes, \uXXXX all handled). */
 std::string json_string_field(const std::string& json, const char* key) {
-  const std::string needle = std::string("\"") + key + "\"";
-  size_t p = json.find(needle);
-  if (p == std::string::npos) return {};
-  p = json.find(':', p + needle.size());
-  if (p == std::string::npos) return {};
-  p = json.find('"', p + 1);
-  if (p == std::string::npos) return {};
-  size_t end = json.find('"', p + 1);
-  if (end == std::string::npos) return {};
-  return json.substr(p + 1, end - p - 1);
+  pocket::JsonValue root;
+  if (!pocket::json_parse(json, root) || !root.is_object()) return {};
+  return root.get_string(key);
 }
 
 std::string mint_pair_code() {
@@ -187,6 +182,112 @@ std::vector<uint8_t> EspCloud::music_download(const std::string& device_id, cons
   }
   out.assign(resp.begin(), resp.end());
   return out;
+}
+
+namespace {
+
+/**
+ * GET `url` and stream the body to path.part in 4 KB chunks (no whole-file buffer —
+ * a 30 MB WAV used to need ~90 MB of RAM and reboot the device), then rename.
+ */
+bool http_get_to_file(const std::string& url, const std::string& device_id, const char* accept,
+                      const std::string& path, int64_t max_bytes, int64_t* bytes_out) {
+  esp_http_client_config_t cfg = {};
+  cfg.url = url.c_str();
+  cfg.method = HTTP_METHOD_GET;
+  cfg.timeout_ms = 30000;
+  cfg.crt_bundle_attach = esp_crt_bundle_attach;
+  cfg.buffer_size = 4096;
+  cfg.max_redirection_count = 8;
+  esp_http_client_handle_t client = esp_http_client_init(&cfg);
+  if (!client) return false;
+  esp_http_client_set_header(client, "x-device-key", POCKET_DEVICE_API_KEY);
+  esp_http_client_set_header(client, "x-device-id", device_id.c_str());
+  esp_http_client_set_header(client, "Accept", accept);
+
+  int status = 0;
+  int64_t length = -1;
+  for (int hop = 0; hop < 8; ++hop) {
+    if (esp_http_client_open(client, 0) != ESP_OK) {
+      esp_http_client_cleanup(client);
+      return false;
+    }
+    length = esp_http_client_fetch_headers(client);
+    status = esp_http_client_get_status_code(client);
+    if (status == 301 || status == 302 || status == 303 || status == 307 || status == 308) {
+      esp_http_client_set_redirection(client);
+      esp_http_client_close(client);
+      continue;
+    }
+    break;
+  }
+  if (status != 200 || (max_bytes > 0 && length > max_bytes)) {
+    ESP_LOGW(TAG, "download HTTP %d len=%lld %s", status, static_cast<long long>(length), url.c_str());
+    esp_http_client_close(client);
+    esp_http_client_cleanup(client);
+    return false;
+  }
+
+  const std::string part = path + ".part";
+  FILE* f = std::fopen(part.c_str(), "wb");
+  if (!f) {
+    esp_http_client_close(client);
+    esp_http_client_cleanup(client);
+    return false;
+  }
+  std::vector<char> chunk(4096);
+  int64_t total = 0;
+  bool ok = true;
+  while (true) {
+    const int n = esp_http_client_read(client, chunk.data(), static_cast<int>(chunk.size()));
+    if (n < 0) {
+      ok = false;
+      break;
+    }
+    if (n == 0) {
+      if (esp_http_client_is_complete_data_received(client)) break;
+      if (length >= 0 && total >= length) break;
+      ok = false;  // connection dropped mid-body
+      break;
+    }
+    if (std::fwrite(chunk.data(), 1, static_cast<size_t>(n), f) != static_cast<size_t>(n)) {
+      ok = false;  // card full / write error
+      break;
+    }
+    total += n;
+    if (max_bytes > 0 && total > max_bytes) {
+      ok = false;
+      break;
+    }
+  }
+  std::fclose(f);
+  esp_http_client_close(client);
+  esp_http_client_cleanup(client);
+  if (!ok || total == 0 || (length >= 0 && total != length)) {
+    ESP_LOGW(TAG, "download incomplete (%lld of %lld) %s", static_cast<long long>(total),
+             static_cast<long long>(length), path.c_str());
+    std::remove(part.c_str());
+    return false;
+  }
+  std::remove(path.c_str());
+  if (std::rename(part.c_str(), path.c_str()) != 0) {
+    std::remove(part.c_str());
+    return false;
+  }
+  if (bytes_out) *bytes_out = total;
+  return true;
+}
+
+}  // namespace
+
+bool EspCloud::download_to_file(const char* kind, const std::string& device_id, const std::string& id,
+                                const std::string& path, int64_t max_bytes, int64_t* bytes_out) {
+  if (device_id.empty() || id.empty()) return false;
+  const bool music = std::strcmp(kind, "music") == 0;
+  const std::string url = std::string(POCKET_CLOUD_BASE) + (music ? "/v1/music/" : "/v1/books/") + id +
+                          (music ? "/audio?device_id=" : "/text?device_id=") + device_id;
+  return http_get_to_file(url, device_id, music ? "audio/wav,application/octet-stream,*/*" : "text/plain,*/*", path,
+                          max_bytes, bytes_out);
 }
 
 std::string EspCloud::books_list_json(const std::string& device_id) {

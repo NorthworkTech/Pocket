@@ -9,3 +9,6 @@ cloud/data/
 *.log
 .vite/
 coverage/
+# Local ESP-IDF build artifacts (CI resolves components itself)
+firmware/managed_components/
+firmware/dependencies.lock

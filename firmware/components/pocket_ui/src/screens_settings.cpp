@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cstdio>
 #include <string>
+#include <vector>
 
 namespace pocket {
 
@@ -27,8 +28,8 @@ int App::settings_focus_list_top() const {
       if (wifi_ui_page_ == 1) return kListTop + 240;
       if (wifi_ui_page_ == 2) return below_title(kListTop) - 8;
       // Empty state inserts a wrapped hint (+kRowPitch+16) before Add/Back.
-      return (cfg_.wifi_known.empty() ? below_title(kListTop) - 8 + kRowPitch + 16
-                                      : below_title(kListTop) - 8);
+      // Page 0 rows sit under the connection status card (kListTop … +64).
+      return (cfg_.wifi_known.empty() ? kListTop + 80 + kRowPitch + 16 : kListTop + 80);
     default:
       return kListTop;
   }
@@ -63,13 +64,13 @@ void App::settings_move_focus(int delta) {
   const int prev = focus_.index;
   focus_.move(delta);
   if (focus_.index == prev) return;
+  if (nav_.current() == ScreenId::SettingsWifi && wifi_ui_page_ == 0 && focus_.count > 8) {
+    mark_content_dirty();  // windowed list — rows shift when it scrolls
+    return;
+  }
   mark_list_focus_dirty(settings_focus_list_top(), prev, focus_.index);
 }
 
-static const char* kSettingsRows[] = {
-    "PIN & security", "Wi-Fi",           "Display",         "Sound & mic", "Home apps",
-    "Units",          "Pocket Cloud",    "Software update", "About",
-};
 
 void App::render_settings() {
   draw_status_bar();
@@ -112,11 +113,12 @@ void App::render_settings() {
     y = ui::kv(canvas_, y, "Companion", cfg_.companion_linked ? "Linked" : "Not linked");
     ui::section(canvas_, y + 2, "What's new");
     canvas_.draw_text_wrapped(kSideMargin, y + 34, kContentW, kWrapGap,
-                              "A complete redesign: one icon set, clearer settings, and generative screensavers.",
+                              "Alarms and timers, a working Weather city, scrolling lists, safer saving, and many fixes.",
                               Canvas::TextRole::Secondary, Gray::G0);
     focus_.count = 3;
     const Row acts[3] = {{"Controls tips", RowKind::Nav},
-                         {"Reset Pocket\xE2\x80\xA6", RowKind::Plain},
+                         {reset_armed_ ? "Press again to erase everything" : "Reset Pocket\xE2\x80\xA6",
+                          reset_armed_ ? RowKind::Action : RowKind::Plain},
                          {"Back", RowKind::Back}};
     for (int i = 0; i < 3; ++i) ui::row(canvas_, row_y(560, i), acts[i], i == focus_.index);
     return;
@@ -220,8 +222,8 @@ void App::render_settings() {
 
   if (s == ScreenId::SettingsHomeApps) {
     ui::header(canvas_, "Home apps", true);
-    canvas_.draw_text(kSideMargin, kListTop - 6, "Choose what appears on Home.", Canvas::TextRole::Caption,
-                      Gray::G0);
+    canvas_.draw_text(kSideMargin, kListTop - 6, "Choose what appears on Home.",
+                      Canvas::TextRole::Caption, Gray::G0);
     static const int kOrder[] = {0, 1, 2, 3, 4, 5, 8, 6, 7};
     static const char* names[] = {"Notes", "Ledger", "Clock", "Pass", "Weather", "Music", "Reading", "Settings",
                                   "Update"};
@@ -230,7 +232,9 @@ void App::render_settings() {
     focus_.count = 9;
     for (int i = 0; i < 9; ++i) {
       const HomeApp a = static_cast<HomeApp>(kOrder[i]);
-      Row r{names[i], i < 7 ? RowKind::Toggle : RowKind::Value, i < 7 ? "" : "Always on",
+      const bool placeholder = a == HomeApp::Ledger;
+      Row r{names[i], (i < 7 && !placeholder) ? RowKind::Toggle : RowKind::Value,
+            placeholder ? "Coming soon" : (i < 7 ? (a == HomeApp::Pass ? "" : "") : "Always on"),
             home_app_visible(cfg_, a), icons[i], true};
       ui::row(canvas_, row_y(kListTop + 28, i), r, i == focus_.index);
     }
@@ -256,6 +260,12 @@ void App::render_settings() {
     ui::header(canvas_, "Updating");
     ui::empty_state(canvas_, Icon::Update, ota_status_.empty() ? "Working\xE2\x80\xA6" : ota_status_,
                     "Keep Pocket plugged in. It restarts when the update is installed.", 360);
+    if (ota_progress_ >= 0) {
+      const int by = 470;
+      canvas_.stroke_round_rect(kSideMargin, by, kContentW, 16, 8, Gray::G0, 2, Gray::G3);
+      const int fill = (kContentW - 8) * std::clamp(ota_progress_, 0, 100) / 100;
+      if (fill > 0) canvas_.fill_round_rect(kSideMargin + 4, by + 4, std::max(8, fill), 8, 4, Gray::G0);
+    }
     return;
   }
 
@@ -317,28 +327,30 @@ void App::render_settings() {
     const int n_known = static_cast<int>(cfg_.wifi_known.size());
     const int n_actions = n_known > 0 ? 3 : 2;
     focus_.count = std::max(1, n_known + n_actions);
-    int y = below_title(kListTop) - 8;
+    int y = kListTop + 80;
     if (n_known == 0) {
       canvas_.draw_text_wrapped(kSideMargin, y, kContentW, kWrapGap,
                                 "No saved networks yet. Add one from the Pocket app on your phone.",
                                 Canvas::TextRole::Secondary, Gray::G0);
       y += kRowPitch + 16;
     }
+    // Known networks + actions scroll as one window (8 saved networks overflowed the panel).
+    std::vector<Row> rows;
     for (int i = 0; i < n_known; ++i) {
       const auto& net = cfg_.wifi_known[static_cast<size_t>(i)];
       const bool cur = online && net.ssid == cfg_.wifi_ssid;
-      Row r{net.ssid, cur ? RowKind::Value : RowKind::Plain, cur ? "Connected" : "", false, Icon::Wifi, true};
-      ui::row(canvas_, y, r, i == focus_.index);
-      y += kRowPitch;
+      rows.push_back(Row{net.ssid, cur ? RowKind::Value : RowKind::Plain, cur ? "Connected" : "", false, Icon::Wifi, true});
     }
-    ui::row(canvas_, y, Row{"Add network", RowKind::Nav, {}, false, Icon::Plus, true}, focus_.index == n_known);
-    y += kRowPitch;
-    if (n_known > 0) {
-      ui::row(canvas_, y, Row{"Remove network", RowKind::Nav, {}, false, Icon::Trash, true},
-              focus_.index == n_known + 1);
-      y += kRowPitch;
+    rows.push_back(Row{"Add network", RowKind::Nav, {}, false, Icon::Plus, true});
+    if (n_known > 0) rows.push_back(Row{"Remove network", RowKind::Nav, {}, false, Icon::Trash, true});
+    rows.push_back(Row{"Back", RowKind::Back});
+    const int total = static_cast<int>(rows.size());
+    const int visible = std::max(1, (kCanvasH - 16 - y) / kRowPitch);
+    const int start = ui::window_start(focus_.index, total, visible);
+    for (int k = 0; k < visible && start + k < total; ++k) {
+      ui::row(canvas_, y + k * kRowPitch, rows[static_cast<size_t>(start + k)], start + k == focus_.index);
     }
-    ui::row(canvas_, y, Row{"Back", RowKind::Back}, focus_.index == n_known + n_actions - 1);
+    ui::scrollbar(canvas_, y, visible * kRowPitch - 8, start, visible, total);
     if (now_ms_ < error_until_ms_ && !error_msg_.empty()) ui::toast(canvas_, error_msg_);
     return;
   }
@@ -358,6 +370,19 @@ void App::render_settings() {
 
 void App::handle_settings(InputEvent e) {
   ScreenId s = nav_.current();
+  if (s == ScreenId::SettingsUpdateProgress) {
+    return;  // blocking update owns the screen
+  }
+  if (s == ScreenId::SettingsUpdateResult) {
+    if (e == InputEvent::Select || e == InputEvent::Back) {
+      // Back to wherever the check started (Home tile or Settings → Software update).
+      if (!nav_.pop()) nav_.reset(ScreenId::Home);
+      focus_.index = 0;
+      after_nav();
+    }
+    return;
+  }
+
   if (e == InputEvent::Back) {
     if (s == ScreenId::SettingsWifi && wifi_ui_page_ != 0) {
       wifi_ui_page_ = 0;
@@ -367,11 +392,12 @@ void App::handle_settings(InputEvent e) {
     }
     if (s == ScreenId::SettingsRoot) {
       nav_.pop();
-      after_nav();
     } else {
-      nav_.replace(ScreenId::SettingsRoot);
-      after_nav();
+      nav_.return_to(ScreenId::SettingsRoot);
     }
+    focus_.index = 0;
+    reset_armed_ = false;
+    after_nav();
     return;
   }
 
@@ -409,7 +435,7 @@ void App::handle_settings(InputEvent e) {
       settings_move_focus(e == InputEvent::Down ? 1 : -1);
     } else if (e == InputEvent::Select) {
       // Settings + Update (last two rows) always on
-      if (focus_.index < 7) {
+      if (focus_.index < 7 && static_cast<HomeApp>(kOrder[focus_.index]) != HomeApp::Ledger) {
         cfg_.home_visible ^= static_cast<uint16_t>(1u << kOrder[focus_.index]);
         store_.save(cfg_);
         mark_content_dirty();
@@ -423,9 +449,20 @@ void App::handle_settings(InputEvent e) {
     if (e == InputEvent::Up || e == InputEvent::Down) {
       settings_move_focus(e == InputEvent::Down ? 1 : -1);
     } else if (e == InputEvent::Select) {
-      if (focus_.index == 1) go_lock();
-      else if (focus_.index == 2) {
-        nav_.replace(ScreenId::SettingsRoot);
+      if (focus_.index == 0) {
+        // Change PIN: prove the current PIN first (handle_pin → OnboardingPinSet/Confirm).
+        pin_change_ = true;
+        pin_entry_.clear();
+        pin_pending_.clear();
+        pin_spin_count_ = 0;
+        pin_ignore_select_until_ms_ = 0;
+        pin_enter_empty_slot();
+        nav_.push(ScreenId::Pin);
+        after_nav();
+      } else if (focus_.index == 1) {
+        go_lock();
+      } else if (focus_.index == 2) {
+        nav_.return_to(ScreenId::SettingsRoot);
         after_nav();
       }
     }
@@ -493,7 +530,7 @@ void App::handle_settings(InputEvent e) {
       settings_move_focus(e == InputEvent::Down ? 1 : -1);
     } else if (e == InputEvent::Select) {
       if (focus_.index < n_known) {
-        const auto& net = cfg_.wifi_known[static_cast<size_t>(focus_.index)];
+        const WifiKnownNetwork net = cfg_.wifi_known[static_cast<size_t>(focus_.index)];  // copy: upsert reorders
         play_sound(SoundId::Click);
         error_msg_ = "Connecting…";
         error_until_ms_ = now_ms_ + 2000;
@@ -521,7 +558,7 @@ void App::handle_settings(InputEvent e) {
         mark_content_dirty();
       } else {
         wifi_ui_page_ = 0;
-        nav_.replace(ScreenId::SettingsRoot);
+        nav_.return_to(ScreenId::SettingsRoot);
         after_nav();
       }
     }
@@ -578,7 +615,7 @@ void App::handle_settings(InputEvent e) {
         store_.save(cfg_);
         redraw(true);  // full refresh now also clears any ghosting already on screen
       } else if (focus_.index == 7) {
-        nav_.replace(ScreenId::SettingsRoot);
+        nav_.return_to(ScreenId::SettingsRoot);
         after_nav();
       }
     }
@@ -617,7 +654,7 @@ void App::handle_settings(InputEvent e) {
         play_sound(SoundId::Click);
         mark_content_dirty();
       } else if (focus_.index == 2) {
-        nav_.replace(ScreenId::SettingsRoot);
+        nav_.return_to(ScreenId::SettingsRoot);
         after_nav();
       }
     }
@@ -627,6 +664,10 @@ void App::handle_settings(InputEvent e) {
   if (s == ScreenId::SettingsAbout) {
     focus_.count = 3;
     if (e == InputEvent::Up || e == InputEvent::Down) {
+      if (reset_armed_) {
+        reset_armed_ = false;
+        mark_content_dirty();
+      }
       settings_move_focus(e == InputEvent::Down ? 1 : -1);
     } else if (e == InputEvent::Select) {
       if (focus_.index == 0) {
@@ -636,14 +677,29 @@ void App::handle_settings(InputEvent e) {
         nav_.push(ScreenId::OnboardingDone);
         after_nav();
       } else if (focus_.index == 1) {
+        if (!reset_armed_) {
+          // First press arms; the row turns into an explicit confirmation.
+          reset_armed_ = true;
+          play_sound(SoundId::Attention);
+          mark_content_dirty();
+          return;
+        }
+        reset_armed_ = false;
         DeviceConfig fresh;
         fresh.device_id = cfg_.device_id;
         cfg_ = fresh;
         store_.save(cfg_);
+        // Erase on-device content too — a reset that leaves notes behind isn't a reset.
+        data_ = AppData{};
+        save_local_notes();
+        save_local_lists();
+        save_local_passes();
+        save_alarms();
+        timer_running_ = false;
         nav_.reset(ScreenId::OnboardingWelcome);
         after_nav();
       } else {
-        nav_.replace(ScreenId::SettingsRoot);
+        nav_.return_to(ScreenId::SettingsRoot);
         after_nav();
       }
     }
@@ -687,30 +743,19 @@ void App::handle_settings(InputEvent e) {
     } else if (e == InputEvent::Select) {
       if (focus_.index == 0) begin_firmware_update();
       else {
-        nav_.replace(ScreenId::SettingsRoot);
+        nav_.return_to(ScreenId::SettingsRoot);
         after_nav();
       }
     }
     return;
   }
 
-  if (s == ScreenId::SettingsUpdateProgress) {
-    return;  // blocking update owns the screen
-  }
-
-  if (s == ScreenId::SettingsUpdateResult) {
-    if (e == InputEvent::Select || e == InputEvent::Back) {
-      nav_.replace(ScreenId::Home);
-      after_nav();
-    }
-    return;
-  }
 
   // Generic: Up/Down focus, Select/Back
   if (e == InputEvent::Up || e == InputEvent::Down) {
     settings_move_focus(e == InputEvent::Down ? 1 : -1);
   } else if (e == InputEvent::Select) {
-    nav_.replace(ScreenId::SettingsRoot);
+    nav_.return_to(ScreenId::SettingsRoot);
     after_nav();
   }
 }

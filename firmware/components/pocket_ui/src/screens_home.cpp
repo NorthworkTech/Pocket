@@ -129,11 +129,16 @@ void draw_label_wrapped_centered(Canvas& c, int cx, int top_y, int max_w, int ma
   }
 }
 
-int count_home_focusable(const DeviceConfig& cfg, HomeApp* out, int cap) {
+int count_home_focusable(const DeviceConfig& cfg, bool has_passes, HomeApp* out, int cap) {
   int n = 0;
   for (int i = 0; i < kHomeGridSlots && n < cap; ++i) {
     const HomeApp a = slot_app(i);
-    if (home_app_visible(cfg, a)) out[n++] = a;
+    if (!home_app_visible(cfg, a)) continue;
+    // Never show placeholders on Home: Ledger isn't built yet, and Pass only has
+    // something to open once passes exist on the device.
+    if (a == HomeApp::Ledger) continue;
+    if (a == HomeApp::Pass && !has_passes) continue;
+    out[n++] = a;
   }
   return n;
 }
@@ -164,7 +169,7 @@ void App::render_home() {
   canvas_.dotted_hline(kSideMargin, kContentTop + kHomeHeaderH - 22, kContentW, Gray::G0, 3);
 
   HomeApp focusable[kHomeGridSlots];
-  const int n_focus = count_home_focusable(cfg_, focusable, kHomeGridSlots);
+  const int n_focus = count_home_focusable(cfg_, !data_.passes.empty(), focusable, kHomeGridSlots);
   focus_.count = std::max(1, n_focus);
   if (focus_.index >= focus_.count) focus_.index = 0;
   const HomeApp focused = n_focus > 0 ? focusable[focus_.index] : HomeApp::Settings;
@@ -205,6 +210,7 @@ void App::render_home() {
       draw_label_wrapped_centered(canvas_, cell_x + cell_w / 2, ly, cell_w - 4, 1, label, Gray::G0);
     }
   }
+  if (now_ms_ < error_until_ms_ && !error_msg_.empty()) ui::toast(canvas_, error_msg_);
 }
 
 void App::mark_home_focus_dirty(int prev_index, int next_index) {
@@ -223,7 +229,7 @@ bool App::is_home_screen() const { return nav_.current() == ScreenId::Home; }
 void App::apply_home_focus_delta(int delta) {
   if (!is_home_screen() || delta == 0) return;
   HomeApp focusable[kHomeGridSlots];
-  const int n = count_home_focusable(cfg_, focusable, kHomeGridSlots);
+  const int n = count_home_focusable(cfg_, !data_.passes.empty(), focusable, kHomeGridSlots);
   focus_.count = std::max(1, n);
   if (focus_.index >= focus_.count) focus_.index = 0;
   const int prev = focus_.index;
@@ -234,7 +240,7 @@ void App::apply_home_focus_delta(int delta) {
 
 void App::handle_home(InputEvent e) {
   HomeApp focusable[kHomeGridSlots];
-  const int n = count_home_focusable(cfg_, focusable, kHomeGridSlots);
+  const int n = count_home_focusable(cfg_, !data_.passes.empty(), focusable, kHomeGridSlots);
   focus_.count = std::max(1, n);
   if (e == InputEvent::Up || e == InputEvent::Down) {
     apply_home_focus_delta(e == InputEvent::Up ? -1 : 1);

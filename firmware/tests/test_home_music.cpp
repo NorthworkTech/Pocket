@@ -106,7 +106,7 @@ int main() {
   CHECK(app.screen() == ScreenId::Home);
 
   // Focus: Notes(0) Ledger(1) Clock(2) Pass(3) Weather(4) Music(5)
-  for (int i = 0; i < 5; ++i) app.handle(InputEvent::Down);
+  for (int i = 0; i < 3; ++i) app.handle(InputEvent::Down);  // Music (index 3)
   app.handle(InputEvent::Select);
   CHECK(app.screen() == ScreenId::MusicList);
 

@@ -42,3 +42,7 @@ CONFIG_FATFS_MAX_LFN=255
 CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=y
 CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_DEFAULT_FULL=y
 CONFIG_ESP_TLS_USING_MBEDTLS=y
+
+# OTA safety: new images boot "pending verify" and roll back unless the app confirms
+# itself healthy (app_main marks valid after 30 s of UI).
+CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y

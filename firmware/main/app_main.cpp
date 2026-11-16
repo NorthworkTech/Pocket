@@ -29,6 +29,7 @@
 #include "esp_system.h"
 #include "esp_sntp.h"
 #include "esp_timer.h"
+#include "esp_ota_ops.h"
 #include "esp_attr.h"
 #include "driver/i2c_master.h"
 #include <ctime>
@@ -52,7 +53,7 @@ constexpr uint32_t kRtcWallMagic = 0x504B5257u;  // 'PKRW'
 static const char* TAG = "pocket";
 
 // Unique marker — must appear on Mac serial (cu.usbmodem) for this build.
-static const char* kBuildId = "POCKET-LIVE-v102-redesign";
+static const char* kBuildId = "POCKET-LIVE-v103-reliable";
 
 namespace {
 
@@ -284,7 +285,7 @@ struct EspClock : pocket::PlatformClock {
   void tick_persist(uint32_t now_ms) {
     maybe_ingest_system_time();
     if (!wall.valid()) return;
-    if (last_persist_ms_ != 0 && (now_ms - last_persist_ms_) < 60'000u) return;
+    if (last_persist_ms_ != 0 && (now_ms - last_persist_ms_) < 15u * 60u * 1000u) return;  // flash wear
     last_persist_ms_ = now_ms;
     persist_now();
   }
@@ -306,7 +307,17 @@ struct EspClock : pocket::PlatformClock {
   bool time_valid() const override { return wall.valid(); }
   bool time_trusted() const override { return wall.trusted(); }
   bool time_needs_network_sync() const override { return wall.needs_network_sync(); }
-  int battery_percent() override { return pocket::board::axp_battery_percent(); }
+  /** Cached: the status bar asks every loop; the PMIC only needs reading every 30 s. */
+  int battery_percent() override {
+    const int64_t now = esp_timer_get_time();
+    if (batt_cached_ < 0 || now - batt_read_us_ > 30LL * 1000 * 1000) {
+      batt_cached_ = pocket::board::axp_battery_percent();
+      batt_read_us_ = now;
+    }
+    return batt_cached_;
+  }
+  int batt_cached_ = -1;
+  int64_t batt_read_us_ = 0;
 };
 
 EspClock* g_esp_clock = nullptr;
@@ -454,6 +465,7 @@ struct EspAudio : pocket::PlatformAudio {
     return pocket::board::audio_play_wav_file(path.c_str());
   }
   void stop() override { pocket::board::audio_stop(); }
+  bool is_playing() override { return pocket::board::audio_is_playing(); }
   void set_volume(int percent) override {
     pocket::board::audio_set_volume(static_cast<uint8_t>(percent < 0 ? 0 : (percent > 100 ? 100 : percent)));
   }
@@ -592,8 +604,21 @@ extern "C" void app_main(void) {
   ESP_LOGI(TAG, "input loop running (EPD wipe in background)");
   uint32_t last_hb = 0;
   std::string last_tz;
+  bool ota_confirmed = false;
   while (true) {
     const uint32_t now = clock.now_ms();
+    // OTA safety: a freshly installed image boots as "pending verify". Confirm it only
+    // after the UI has run for 30 s; if it crashes or hangs before that, the bootloader
+    // rolls back to the previous image on the next reset.
+    if (!ota_confirmed && g_boot.ui_ready && now > 30000u) {
+      ota_confirmed = true;
+      esp_ota_img_states_t st;
+      const esp_partition_t* running = esp_ota_get_running_partition();
+      if (running && esp_ota_get_state_partition(running, &st) == ESP_OK && st == ESP_OTA_IMG_PENDING_VERIFY) {
+        esp_ota_mark_app_valid_cancel_rollback();
+        ESP_LOGI(TAG, "OTA image confirmed healthy");
+      }
+    }
     if (now - last_hb > 5000) {
       esp_rom_printf("loop alive ui_ready=%d batt=%d time_ok=%d\n", g_boot.ui_ready ? 1 : 0,
                      clock.battery_percent(), clock.time_valid() ? 1 : 0);
@@ -635,7 +660,8 @@ extern "C" void app_main(void) {
       app.tick(now);
     }
     clock.tick_persist(now);
-    // 5 ms — snappier input without busy-spinning the core (was 10 ms after v67).
-    vTaskDelay(pdMS_TO_TICKS(5));
+    // 5 ms while in use for snappy input; 25 ms on the lock face (nothing animates there,
+    // a press still feels instant) so an idle Pocket spends far less time awake.
+    vTaskDelay(pdMS_TO_TICKS(g_boot.ui_ready && app.screen() == pocket::ScreenId::Lock ? 25 : 5));
   }
 }

@@ -22,6 +22,8 @@ bool audio_play_wav_file(const char* path);
 
 /** Stop current playback stream (best-effort). */
 void audio_stop();
+/** True while a WAV is playing on the background task. */
+bool audio_is_playing();
 
 /** DAC output level, 0–100. Clamped; applied immediately once the codec is ready. */
 void audio_set_volume(uint8_t percent);

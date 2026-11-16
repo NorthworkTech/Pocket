@@ -150,8 +150,7 @@ int main() {
   // Clock face works offline (local RTC).
   app2.handle(InputEvent::Back);
   app2.handle(InputEvent::Back);  // Home
-  // Focus Clock (index 2 in default order Notes,Ledger,Clock…)
-  app2.handle(InputEvent::Down);
+  // Focus Clock (index 1: Notes, Clock, Weather, Music, Reading, Settings, Update)
   app2.handle(InputEvent::Down);
   app2.handle(InputEvent::Select);
   CHECK(app2.screen() == ScreenId::ClockFace);
@@ -159,8 +158,8 @@ int main() {
 
   // Settings root works offline (Display/PIN/About — no net required).
   app2.handle(InputEvent::Back);
-  // Home order: Notes,Ledger,Clock,Pass,Weather,Music,Reading,Settings,Update
-  for (int i = 0; i < 7; ++i) app2.handle(InputEvent::Down);
+  // Home order: Notes,Clock,Weather,Music,Reading,Settings,Update
+  for (int i = 0; i < 5; ++i) app2.handle(InputEvent::Down);
   app2.handle(InputEvent::Select);
   CHECK(app2.screen() == ScreenId::SettingsRoot);
   app2.redraw(true);
@@ -185,8 +184,8 @@ int main() {
   App app3(store, clock, wifi, cloud, disp, &storage, &audio3);
   app3.boot();
   unlock_home(app3);
-  // Music is index 5
-  for (int i = 0; i < 5; ++i) app3.handle(InputEvent::Down);
+  // Music is index 3
+  for (int i = 0; i < 3; ++i) app3.handle(InputEvent::Down);
   app3.handle(InputEvent::Select);
   CHECK(app3.screen() == ScreenId::MusicList);
   app3.handle(InputEvent::Select);  // play first local track
@@ -196,8 +195,8 @@ int main() {
   app3.handle(InputEvent::Back);
   app3.handle(InputEvent::Back);  // Home
 
-  // Reading is index 6
-  for (int i = 0; i < 6; ++i) app3.handle(InputEvent::Down);
+  // Reading is index 4
+  for (int i = 0; i < 4; ++i) app3.handle(InputEvent::Down);
   app3.handle(InputEvent::Select);
   CHECK(app3.screen() == ScreenId::ReadingList);
   app3.handle(InputEvent::Select);  // open first local book

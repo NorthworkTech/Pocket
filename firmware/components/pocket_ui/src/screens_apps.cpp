@@ -1,5 +1,6 @@
 #include "pocket/app.hpp"
 #include "pocket/ui.hpp"
+#include "pocket/json_lite.hpp"
 #include <algorithm>
 #include <cmath>
 #include <cstdlib>
@@ -15,98 +16,17 @@
 namespace pocket {
 namespace {
 
-std::string json_escape(const std::string& s) {
-  std::string o;
-  o.reserve(s.size() + 8);
-  for (unsigned char c : s) {
-    if (c == '"' || c == '\\') {
-      o.push_back('\\');
-      o.push_back(static_cast<char>(c));
-    } else if (c == '\n') {
-      o += "\\n";
-    } else if (c == '\r') {
-      o += "\\r";
-    } else if (c < 0x20) {
-      char buf[8];
-      std::snprintf(buf, sizeof(buf), "\\u%04x", c);
-      o += buf;
-    } else {
-      o.push_back(static_cast<char>(c));
-    }
-  }
-  return o;
-}
+}  // namespace
 
-std::string json_unescape(const std::string& s) {
-  std::string o;
-  o.reserve(s.size());
-  for (size_t i = 0; i < s.size(); ++i) {
-    if (s[i] == '\\' && i + 1 < s.size()) {
-      const char n = s[++i];
-      if (n == 'n')
-        o.push_back('\n');
-      else if (n == 'r')
-        o.push_back('\r');
-      else if (n == 't')
-        o.push_back('\t');
-      else if (n == 'u' && i + 4 < s.size()) {
-        // Skip simple \u00XX ascii escapes.
-        unsigned v = 0;
-        for (int k = 0; k < 4; ++k) {
-          const char h = s[++i];
-          v <<= 4;
-          if (h >= '0' && h <= '9')
-            v |= static_cast<unsigned>(h - '0');
-          else if (h >= 'a' && h <= 'f')
-            v |= static_cast<unsigned>(h - 'a' + 10);
-          else if (h >= 'A' && h <= 'F')
-            v |= static_cast<unsigned>(h - 'A' + 10);
-        }
-        if (v < 128) o.push_back(static_cast<char>(v));
-      } else {
-        o.push_back(n);
-      }
-    } else {
-      o.push_back(s[i]);
-    }
-  }
-  return o;
-}
+namespace {
 
-bool grab_json_string(const std::string& obj, const char* key, std::string& dest) {
-  const std::string needle = std::string("\"") + key + "\"";
-  size_t k = obj.find(needle);
-  if (k == std::string::npos) return false;
-  size_t colon = obj.find(':', k + needle.size());
-  if (colon == std::string::npos) return false;
-  size_t q1 = obj.find('"', colon + 1);
-  if (q1 == std::string::npos) return false;
-  std::string raw;
-  for (size_t i = q1 + 1; i < obj.size(); ++i) {
-    if (obj[i] == '\\' && i + 1 < obj.size()) {
-      raw.push_back(obj[i]);
-      raw.push_back(obj[++i]);
-      continue;
-    }
-    if (obj[i] == '"') {
-      dest = json_unescape(raw);
-      return true;
-    }
-    raw.push_back(obj[i]);
-  }
+/** Parse a stored index file; on corruption keep a copy so the next save can't erase it. */
+bool load_index(const std::string& path, JsonValue& root) {
+  std::string text;
+  if (!read_file_recover(path, text)) return false;
+  if (json_parse(text, root) && root.is_array()) return true;
+  write_file_atomic(path + ".corrupt", text);
   return false;
-}
-
-bool grab_json_int64(const std::string& obj, const char* key, int64_t& dest) {
-  const std::string needle = std::string("\"") + key + "\"";
-  size_t k = obj.find(needle);
-  if (k == std::string::npos) return false;
-  size_t colon = obj.find(':', k + needle.size());
-  if (colon == std::string::npos) return false;
-  size_t i = colon + 1;
-  while (i < obj.size() && (obj[i] == ' ' || obj[i] == '\t')) ++i;
-  dest = static_cast<int64_t>(std::atoll(obj.c_str() + i));
-  return true;
 }
 
 }  // namespace
@@ -114,26 +34,18 @@ bool grab_json_int64(const std::string& obj, const char* key, int64_t& dest) {
 void App::load_local_notes() {
   data_.notes.clear();
   if (!storage_ || !storage_->data_ensure_root()) return;
-  const std::string path = storage_->data_root() + "/notes/index.json";
-  std::ifstream in(path);
-  if (!in) return;
-  std::string json((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
-  size_t i = 0;
-  while (i < json.size()) {
-    const size_t obj = json.find('{', i);
-    if (obj == std::string::npos) break;
-    const size_t end = json.find('}', obj + 1);
-    if (end == std::string::npos) break;
-    const std::string obj_s = json.substr(obj, end - obj + 1);
+  JsonValue root;
+  if (!load_index(storage_->data_root() + "/notes/index.json", root)) return;
+  for (const auto& o : root.items) {
+    if (!o.is_object()) continue;
     Note n;
-    grab_json_string(obj_s, "id", n.id);
-    grab_json_string(obj_s, "title", n.title);
-    grab_json_string(obj_s, "body", n.body);
-    grab_json_int64(obj_s, "created_at", n.created_at);
-    grab_json_int64(obj_s, "updated_at", n.updated_at);
-    grab_json_string(obj_s, "pending", n.pending_pcm);
-    if (!n.id.empty()) data_.notes.push_back(n);
-    i = end + 1;
+    n.id = o.get_string("id");
+    n.title = o.get_string("title");
+    n.body = o.get_string("body");
+    n.created_at = o.get_int("created_at");
+    n.updated_at = o.get_int("updated_at");
+    n.pending_pcm = o.get_string("pending");
+    if (!n.id.empty()) data_.notes.push_back(std::move(n));
   }
 }
 
@@ -145,83 +57,48 @@ bool App::save_local_notes() {
   }
   const std::string dir = storage_->data_root() + "/notes";
   ::mkdir(dir.c_str(), 0755);
-  const std::string path = dir + "/index.json";
-  std::ofstream out(path, std::ios::trunc);
-  if (!out) {
+  std::string out = "[";
+  for (size_t i = 0; i < data_.notes.size(); ++i) {
+    const auto& n = data_.notes[i];
+    if (i) out += ",";
+    out += "{\"id\":\"" + json_escape_str(n.id) + "\",\"title\":\"" + json_escape_str(n.title) + "\",\"body\":\"" +
+           json_escape_str(n.body) + "\",\"created_at\":" + std::to_string(n.created_at) +
+           ",\"updated_at\":" + std::to_string(n.updated_at);
+    if (!n.pending_pcm.empty()) out += ",\"pending\":\"" + json_escape_str(n.pending_pcm) + "\"";
+    out += "}";
+  }
+  out += "]";
+  if (!write_file_atomic(dir + "/index.json", out)) {
     error_msg_ = "Couldn't write notes to local storage.";
     error_until_ms_ = now_ms_ + 3000;
     return false;
   }
-  out << "[";
-  for (size_t i = 0; i < data_.notes.size(); ++i) {
-    const auto& n = data_.notes[i];
-    if (i) out << ",";
-    out << "{\"id\":\"" << json_escape(n.id) << "\",\"title\":\"" << json_escape(n.title)
-        << "\",\"body\":\"" << json_escape(n.body) << "\",\"created_at\":" << n.created_at
-        << ",\"updated_at\":" << n.updated_at;
-    if (!n.pending_pcm.empty())
-      out << ",\"pending\":\"" << json_escape(n.pending_pcm) << "\"";
-    out << "}";
-  }
-  out << "]";
-  return static_cast<bool>(out);
+  return true;
 }
 
 void App::load_local_lists() {
   data_.lists.clear();
   if (!storage_ || !storage_->data_ensure_root()) return;
-  const std::string path = storage_->data_root() + "/lists/index.json";
-  std::ifstream in(path);
-  if (!in) return;
-  std::string json((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
-  // Minimal: [{id,title,items:[{text,checked},...]}]
-  size_t i = 0;
-  while (i < json.size()) {
-    const size_t obj = json.find("{\"id\"", i);
-    if (obj == std::string::npos) {
-      const size_t obj2 = json.find('{', i);
-      if (obj2 == std::string::npos) break;
-      // fall through with obj2
-    }
-    const size_t start = (obj == std::string::npos) ? json.find('{', i) : obj;
-    if (start == std::string::npos) break;
-    // Find matching end by scanning for items array end — tolerant parser.
-    size_t end = start + 1;
-    int depth = 1;
-    while (end < json.size() && depth > 0) {
-      if (json[end] == '{') ++depth;
-      else if (json[end] == '}') --depth;
-      ++end;
-    }
-    const std::string obj_s = json.substr(start, end - start);
+  JsonValue root;
+  if (!load_index(storage_->data_root() + "/lists/index.json", root)) return;
+  for (const auto& o : root.items) {
+    if (!o.is_object()) continue;
     TodoList L;
-    grab_json_string(obj_s, "id", L.id);
-    grab_json_string(obj_s, "title", L.title);
-    size_t items = obj_s.find("\"items\"");
-    if (items != std::string::npos) {
-      size_t arr = obj_s.find('[', items);
-      size_t arr_end = obj_s.rfind(']');
-      if (arr != std::string::npos && arr_end != std::string::npos && arr_end > arr) {
-        size_t p = arr + 1;
-        while (p < arr_end) {
-          size_t io = obj_s.find('{', p);
-          if (io == std::string::npos || io >= arr_end) break;
-          size_t ie = obj_s.find('}', io + 1);
-          if (ie == std::string::npos || ie > arr_end) break;
-          const std::string item = obj_s.substr(io, ie - io + 1);
-          ListItem it;
-          grab_json_string(item, "text", it.text);
-          grab_json_string(item, "pending", it.pending_pcm);
-          if (item.find("\"checked\":true") != std::string::npos ||
-              item.find("\"checked\": true") != std::string::npos)
-            it.checked = true;
-          if (!it.text.empty() || !it.pending_pcm.empty()) L.items.push_back(it);
-          p = ie + 1;
-        }
+    L.id = o.get_string("id");
+    L.title = o.get_string("title");
+    L.updated_at = o.get_int("updated_at");
+    if (const JsonValue* items = o.get("items"); items && items->is_array()) {
+      for (const auto& io : items->items) {
+        if (!io.is_object()) continue;
+        ListItem it;
+        it.id = io.get_string("id");
+        it.text = io.get_string("text");
+        it.checked = io.get_bool("checked");
+        it.pending_pcm = io.get_string("pending");
+        if (!it.text.empty() || !it.pending_pcm.empty()) L.items.push_back(std::move(it));
       }
     }
-    if (!L.id.empty()) data_.lists.push_back(L);
-    i = end;
+    if (!L.id.empty()) data_.lists.push_back(std::move(L));
   }
 }
 
@@ -233,57 +110,46 @@ bool App::save_local_lists() {
   }
   const std::string dir = storage_->data_root() + "/lists";
   ::mkdir(dir.c_str(), 0755);
-  const std::string path = dir + "/index.json";
-  std::ofstream out(path, std::ios::trunc);
-  if (!out) {
+  std::string out = "[";
+  for (size_t i = 0; i < data_.lists.size(); ++i) {
+    const auto& L = data_.lists[i];
+    if (i) out += ",";
+    out += "{\"id\":\"" + json_escape_str(L.id) + "\",\"title\":\"" + json_escape_str(L.title) +
+           "\",\"updated_at\":" + std::to_string(L.updated_at) + ",\"items\":[";
+    for (size_t j = 0; j < L.items.size(); ++j) {
+      const auto& it = L.items[j];
+      if (j) out += ",";
+      out += "{\"id\":\"" + json_escape_str(it.id) + "\",\"text\":\"" + json_escape_str(it.text) +
+             "\",\"checked\":" + (it.checked ? "true" : "false");
+      if (!it.pending_pcm.empty()) out += ",\"pending\":\"" + json_escape_str(it.pending_pcm) + "\"";
+      out += "}";
+    }
+    out += "]}";
+  }
+  out += "]";
+  if (!write_file_atomic(dir + "/index.json", out)) {
     error_msg_ = "Couldn't write lists to local storage.";
     error_until_ms_ = now_ms_ + 3000;
     return false;
   }
-  out << "[";
-  for (size_t i = 0; i < data_.lists.size(); ++i) {
-    const auto& L = data_.lists[i];
-    if (i) out << ",";
-    out << "{\"id\":\"" << json_escape(L.id) << "\",\"title\":\"" << json_escape(L.title)
-        << "\",\"items\":[";
-    for (size_t j = 0; j < L.items.size(); ++j) {
-      if (j) out << ",";
-      out << "{\"text\":\"" << json_escape(L.items[j].text)
-          << "\",\"checked\":" << (L.items[j].checked ? "true" : "false");
-      if (!L.items[j].pending_pcm.empty())
-        out << ",\"pending\":\"" << json_escape(L.items[j].pending_pcm) << "\"";
-      out << "}";
-    }
-    out << "]}";
-  }
-  out << "]";
-  return static_cast<bool>(out);
+  return true;
 }
 
 void App::load_local_passes() {
   data_.passes.clear();
   if (!storage_ || !storage_->data_ensure_root()) return;
-  const std::string path = storage_->data_root() + "/passes/index.json";
-  std::ifstream in(path);
-  if (!in) return;
-  std::string json((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
-  size_t i = 0;
-  while (i < json.size()) {
-    const size_t obj = json.find('{', i);
-    if (obj == std::string::npos) break;
-    const size_t end = json.find('}', obj + 1);
-    if (end == std::string::npos) break;
-    const std::string obj_s = json.substr(obj, end - obj + 1);
+  JsonValue root;
+  if (!load_index(storage_->data_root() + "/passes/index.json", root)) return;
+  for (const auto& o : root.items) {
+    if (!o.is_object()) continue;
     Pass p;
-    grab_json_string(obj_s, "id", p.id);
-    grab_json_string(obj_s, "title", p.title);
-    grab_json_string(obj_s, "type", p.type);
-    grab_json_string(obj_s, "payload", p.payload);
-    if (!p.id.empty()) {
-      if (p.title.empty()) p.title = p.id;
-      data_.passes.push_back(std::move(p));
-    }
-    i = end + 1;
+    p.id = o.get_string("id");
+    p.title = o.get_string("title");
+    p.type = o.get_string("type");
+    p.payload = o.get_string("payload");
+    if (p.id.empty()) continue;
+    if (p.title.empty()) p.title = p.id;
+    data_.passes.push_back(std::move(p));
   }
 }
 
@@ -291,18 +157,15 @@ void App::save_local_passes() {
   if (!storage_ || !storage_->data_ensure_root()) return;
   const std::string dir = storage_->data_root() + "/passes";
   ::mkdir(dir.c_str(), 0755);
-  const std::string path = dir + "/index.json";
-  std::ofstream out(path, std::ios::trunc);
-  if (!out) return;
-  out << "[";
+  std::string out = "[";
   for (size_t i = 0; i < data_.passes.size(); ++i) {
     const auto& p = data_.passes[i];
-    if (i) out << ",";
-    out << "{\"id\":\"" << json_escape(p.id) << "\",\"title\":\"" << json_escape(p.title)
-        << "\",\"type\":\"" << json_escape(p.type) << "\",\"payload\":\"" << json_escape(p.payload)
-        << "\"}";
+    if (i) out += ",";
+    out += "{\"id\":\"" + json_escape_str(p.id) + "\",\"title\":\"" + json_escape_str(p.title) + "\",\"type\":\"" +
+           json_escape_str(p.type) + "\",\"payload\":\"" + json_escape_str(p.payload) + "\"}";
   }
-  out << "]";
+  out += "]";
+  write_file_atomic(dir + "/index.json", out);
 }
 
 static const char* wmo_condition(int code) {
@@ -325,43 +188,30 @@ void App::load_weather_cache() {
     data_.weather.units = cfg_.weather_units;
     return;
   }
-  const std::string path = storage_->data_root() + "/weather/cache.json";
-  std::ifstream in(path);
-  if (!in) {
+  std::string text;
+  JsonValue root;
+  if (!read_file_recover(storage_->data_root() + "/weather/cache.json", text) || !json_parse(text, root) ||
+      !root.is_object()) {
     if (!cfg_.weather_city.empty()) data_.weather.city = cfg_.weather_city;
     data_.weather.units = cfg_.weather_units;
     return;
   }
-  std::string json((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
-  grab_json_string(json, "city", data_.weather.city);
-  int64_t fetched = 0;
-  grab_json_int64(json, "fetched_at", fetched);
-  data_.weather.fetched_at = fetched;
-  int64_t units = 0;
-  if (grab_json_int64(json, "units", units)) data_.weather.units = static_cast<uint8_t>(units);
-  int64_t temp = 0;
-  if (grab_json_int64(json, "today_temp", temp)) data_.weather.today_temp = static_cast<int>(temp);
-  grab_json_string(json, "today_condition", data_.weather.today_condition);
+  data_.weather.city = root.get_string("city");
+  data_.weather.fetched_at = root.get_int("fetched_at");
+  data_.weather.units = static_cast<uint8_t>(root.get_int("units", cfg_.weather_units));
+  data_.weather.today_temp = static_cast<int>(root.get_int("today_temp"));
+  data_.weather.today_condition = root.get_string("today_condition");
+  data_.weather.fetched_hm = static_cast<int>(root.get_int("fetched_hm", -1));
   data_.weather.days.clear();
-  size_t days = json.find("\"days\"");
-  if (days != std::string::npos) {
-    size_t i = days;
-    while (i < json.size()) {
-      const size_t obj = json.find('{', i);
-      if (obj == std::string::npos) break;
-      const size_t end = json.find('}', obj + 1);
-      if (end == std::string::npos) break;
-      const std::string obj_s = json.substr(obj, end - obj + 1);
+  if (const JsonValue* days = root.get("days"); days && days->is_array()) {
+    for (const auto& o : days->items) {
+      if (!o.is_object()) continue;
       WeatherDay d;
-      grab_json_string(obj_s, "date", d.date);
-      int64_t hi = 0, lo = 0;
-      grab_json_int64(obj_s, "hi", hi);
-      grab_json_int64(obj_s, "lo", lo);
-      d.hi = static_cast<int>(hi);
-      d.lo = static_cast<int>(lo);
-      grab_json_string(obj_s, "condition", d.condition);
+      d.date = o.get_string("date");
+      d.hi = static_cast<int>(o.get_int("hi"));
+      d.lo = static_cast<int>(o.get_int("lo"));
+      d.condition = o.get_string("condition");
       if (!d.date.empty()) data_.weather.days.push_back(std::move(d));
-      i = end + 1;
       if (data_.weather.days.size() >= 5) break;
     }
   }
@@ -373,19 +223,20 @@ void App::save_weather_cache() {
   if (!storage_ || !storage_->data_ensure_root()) return;
   const std::string dir = storage_->data_root() + "/weather";
   ::mkdir(dir.c_str(), 0755);
-  const std::string path = dir + "/cache.json";
-  std::ofstream out(path, std::ios::trunc);
-  if (!out) return;
-  out << "{\"city\":\"" << json_escape(data_.weather.city) << "\",\"units\":" << static_cast<int>(data_.weather.units)
-      << ",\"fetched_at\":" << data_.weather.fetched_at << ",\"today_temp\":" << data_.weather.today_temp
-      << ",\"today_condition\":\"" << json_escape(data_.weather.today_condition) << "\",\"days\":[";
+  std::string out = "{\"city\":\"" + json_escape_str(data_.weather.city) +
+                    "\",\"units\":" + std::to_string(static_cast<int>(data_.weather.units)) +
+                    ",\"fetched_at\":" + std::to_string(data_.weather.fetched_at) +
+                    ",\"today_temp\":" + std::to_string(data_.weather.today_temp) +
+                    ",\"fetched_hm\":" + std::to_string(data_.weather.fetched_hm) + ",\"today_condition\":\"" +
+                    json_escape_str(data_.weather.today_condition) + "\",\"days\":[";
   for (size_t i = 0; i < data_.weather.days.size(); ++i) {
     const auto& d = data_.weather.days[i];
-    if (i) out << ",";
-    out << "{\"date\":\"" << json_escape(d.date) << "\",\"hi\":" << d.hi << ",\"lo\":" << d.lo
-        << ",\"condition\":\"" << json_escape(d.condition) << "\"}";
+    if (i) out += ",";
+    out += "{\"date\":\"" + json_escape_str(d.date) + "\",\"hi\":" + std::to_string(d.hi) +
+           ",\"lo\":" + std::to_string(d.lo) + ",\"condition\":\"" + json_escape_str(d.condition) + "\"}";
   }
-  out << "]}";
+  out += "]}";
+  write_file_atomic(dir + "/cache.json", out);
 }
 
 bool App::save_pending_pcm(const std::vector<uint8_t>& pcm, std::string* out_name) {
@@ -470,9 +321,10 @@ bool App::queue_offline_dictation(const std::vector<uint8_t>& pcm) {
   const ScreenId s = nav_.current();
   if (s == ScreenId::ListsDetail && note_index_ < static_cast<int>(data_.lists.size())) {
     auto& L = data_.lists[note_index_];
-    // Re-record replaces any existing pending clip on this list (recover from failed STT).
+    // Online, a new clip re-records a failed one. Offline, every clip is a new item —
+    // replacing would silently drop the earlier recording ("milk" then "eggs").
     for (auto& it : L.items) {
-      if (it.pending_pcm.empty()) continue;
+      if (it.pending_pcm.empty() || !wifi_.connected()) continue;
       const std::string old = it.pending_pcm;
       std::string name;
       if (!save_pending_pcm(pcm, &name)) return false;
@@ -503,6 +355,23 @@ bool App::queue_offline_dictation(const std::vector<uint8_t>& pcm) {
   // Notes detail, or create a new note from list/elsewhere.
   if (s == ScreenId::NotesDetail && note_index_ >= 0 && note_index_ < static_cast<int>(data_.notes.size())) {
     auto& n = data_.notes[note_index_];
+    if (!n.pending_pcm.empty() && !wifi_.connected()) {
+      // Offline with a clip already waiting: keep both — the new clip becomes its own note.
+      std::string name;
+      if (!save_pending_pcm(pcm, &name)) return false;
+      Note extra;
+      extra.id = std::to_string(now_ms_) + "-" + std::to_string(data_.notes.size() + 1);
+      extra.title = n.title + " (2)";
+      extra.body = kVoicePendingText;
+      extra.pending_pcm = name;
+      extra.created_at = extra.updated_at = now_ms_;
+      data_.notes.push_back(extra);
+      save_local_notes();
+      error_msg_ = "Saved as a new note \xE2\x80\x94 text when online.";
+      error_until_ms_ = now_ms_ + 3500;
+      mark_content_dirty();
+      return true;
+    }
     if (!n.pending_pcm.empty()) {
       // Re-record replaces the waiting clip so online STT failures aren't a dead end.
       const std::string old = n.pending_pcm;
@@ -595,10 +464,20 @@ void App::flush_pending_dictation() {
     std::string t = cloud_.stt_transcribe(pcm);
     if (t.size() == 1 && t[0] == '\x01') continue;  // transport — retry later
     if (t.empty()) {
-      // Keep clip; surface failure so online + pending isn't silent.
-      error_msg_ = "Couldn't transcribe — hold to re-record.";
-      error_until_ms_ = now_ms_ + 3500;
-      mark_content_dirty();
+      // Server answered but produced nothing. Give up after 3 tries so a bad clip
+      // can't freeze the UI with a 90 s upload every minute forever.
+      if (++stt_failures_[n.pending_pcm] >= 3) {
+        stt_failures_.erase(n.pending_pcm);
+        delete_pending_pcm(n.pending_pcm);
+        n.pending_pcm.clear();
+        replace_pending_text(n.body, "(Couldn't transcribe this voice clip)");
+        n.updated_at = now_ms_;
+        notes_changed = true;
+      } else {
+        error_msg_ = "Couldn't transcribe \xE2\x80\x94 hold to re-record.";
+        error_until_ms_ = now_ms_ + 3500;
+        mark_content_dirty();
+      }
       continue;
     }
     const std::string done = n.pending_pcm;
@@ -624,9 +503,17 @@ void App::flush_pending_dictation() {
       std::string t = cloud_.stt_transcribe(pcm);
       if (t.size() == 1 && t[0] == '\x01') continue;
       if (t.empty()) {
-        error_msg_ = "Couldn't transcribe — hold to re-record.";
-        error_until_ms_ = now_ms_ + 3500;
-        mark_content_dirty();
+        if (++stt_failures_[it.pending_pcm] >= 3) {
+          stt_failures_.erase(it.pending_pcm);
+          delete_pending_pcm(it.pending_pcm);
+          it.pending_pcm.clear();
+          it.text = "(Couldn't transcribe this voice clip)";
+          lists_changed = true;
+        } else {
+          error_msg_ = "Couldn't transcribe \xE2\x80\x94 hold to re-record.";
+          error_until_ms_ = now_ms_ + 3500;
+          mark_content_dirty();
+        }
         continue;
       }
       const std::string done = it.pending_pcm;
@@ -698,112 +585,122 @@ bool App::weather_fetch_forecast() {
                 "&temperature_unit=%s&timezone=auto&forecast_days=5",
                 static_cast<double>(cfg_.weather_lat), static_cast<double>(cfg_.weather_lon), unit);
   const std::string body = cloud_.http_get_text(url);
-  if (body.empty()) return false;
+  JsonValue root;
+  if (body.empty() || !json_parse(body, root) || !root.is_object()) return false;
 
-  auto find_arr = [&](const char* key) -> size_t {
-    const std::string needle = std::string("\"") + key + "\"";
-    size_t p = body.find(needle);
-    if (p == std::string::npos) return std::string::npos;
-    return body.find('[', p);
-  };
-  auto next_num = [&](size_t& i) -> double {
-    while (i < body.size() &&
-           (body[i] == ' ' || body[i] == '\t' || body[i] == ',' || body[i] == '[' || body[i] == '\n'))
-      ++i;
-    const char* s = body.c_str() + i;
-    char* end = nullptr;
-    double v = std::strtod(s, &end);
-    if (end) i = static_cast<size_t>(end - body.c_str());
-    return v;
-  };
-  auto next_str = [&](size_t& i) -> std::string {
-    while (i < body.size() && body[i] != '"') ++i;
-    if (i >= body.size()) return {};
-    ++i;
-    size_t end = body.find('"', i);
-    if (end == std::string::npos) return {};
-    std::string s = body.substr(i, end - i);
-    i = end + 1;
-    return s;
-  };
+  const JsonValue* cur = root.get("current");
+  const JsonValue* daily = root.get("daily");
+  if (!daily || !daily->is_object()) return false;
+  const JsonValue* times = daily->get("time");
+  const JsonValue* codes = daily->get("weather_code");
+  const JsonValue* his = daily->get("temperature_2m_max");
+  const JsonValue* los = daily->get("temperature_2m_min");
+  if (!times || !codes || !his || !los || !times->is_array()) return false;
 
-  // current temperature + weather_code (first occurrence after "current")
-  size_t cur = body.find("\"current\"");
-  int cur_temp = data_.weather.today_temp;
-  int cur_code = 0;
-  if (cur != std::string::npos) {
-    size_t t = body.find("\"temperature_2m\"", cur);
-    if (t != std::string::npos) {
-      t = body.find(':', t);
-      if (t != std::string::npos) cur_temp = static_cast<int>(std::lround(std::atof(body.c_str() + t + 1)));
-    }
-    size_t c = body.find("\"weather_code\"", cur);
-    if (c != std::string::npos && c < body.find("\"daily\"", cur)) {
-      c = body.find(':', c);
-      if (c != std::string::npos) cur_code = static_cast<int>(std::atoi(body.c_str() + c + 1));
-    }
+  std::vector<WeatherDay> days;
+  for (size_t i = 0; i < times->items.size() && i < 5; ++i) {
+    WeatherDay d;
+    d.date = times->items[i].str;  // full YYYY-MM-DD — the weekday is derived from it
+    if (i < codes->items.size()) d.condition = wmo_condition(static_cast<int>(codes->items[i].number));
+    if (i < his->items.size()) d.hi = static_cast<int>(std::lround(his->items[i].number));
+    if (i < los->items.size()) d.lo = static_cast<int>(std::lround(los->items[i].number));
+    if (!d.date.empty()) days.push_back(std::move(d));
   }
+  if (days.empty()) return false;
 
-  size_t times = find_arr("time");
-  size_t codes = find_arr("weather_code");
-  // Prefer daily weather_code array (second weather_code after daily)
-  size_t daily = body.find("\"daily\"");
-  if (daily != std::string::npos) {
-    size_t dt = body.find("\"time\"", daily);
-    size_t dc = body.find("\"weather_code\"", daily);
-    size_t dhi = body.find("\"temperature_2m_max\"", daily);
-    size_t dlo = body.find("\"temperature_2m_min\"", daily);
-    if (dt != std::string::npos) times = body.find('[', dt);
-    if (dc != std::string::npos) codes = body.find('[', dc);
-    size_t his = (dhi != std::string::npos) ? body.find('[', dhi) : std::string::npos;
-    size_t los = (dlo != std::string::npos) ? body.find('[', dlo) : std::string::npos;
-    if (times == std::string::npos || codes == std::string::npos || his == std::string::npos ||
-        los == std::string::npos)
-      return false;
-    size_t ti = times + 1, ci = codes + 1, hi = his + 1, lo = los + 1;
-    data_.weather.days.clear();
-    for (int n = 0; n < 5; ++n) {
-      WeatherDay d;
-      d.date = next_str(ti);
-      d.condition = wmo_condition(static_cast<int>(next_num(ci)));
-      d.hi = static_cast<int>(std::lround(next_num(hi)));
-      d.lo = static_cast<int>(std::lround(next_num(lo)));
-      if (d.date.size() >= 10) d.date = d.date.substr(5);  // MM-DD
-      if (d.date.empty()) break;
-      data_.weather.days.push_back(std::move(d));
-    }
-  } else {
-    return false;
-  }
-
-  data_.weather.city = cfg_.weather_city.empty() ? data_.weather.city : cfg_.weather_city;
+  data_.weather.days = std::move(days);
+  data_.weather.city = cfg_.weather_city;
   data_.weather.units = cfg_.weather_units;
-  data_.weather.today_temp = cur_temp;
-  data_.weather.today_condition = wmo_condition(cur_code);
-  if (data_.weather.today_condition.empty() && !data_.weather.days.empty())
-    data_.weather.today_condition = data_.weather.days[0].condition;
+  if (cur && cur->is_object()) {
+    data_.weather.today_temp = static_cast<int>(std::lround(cur->get_number("temperature_2m", data_.weather.today_temp)));
+    data_.weather.today_condition = wmo_condition(static_cast<int>(cur->get_int("weather_code")));
+  }
+  if (data_.weather.today_condition.empty()) data_.weather.today_condition = data_.weather.days[0].condition;
   data_.weather.fetched_at = static_cast<int64_t>(now_ms_);
+  if (clock_.time_valid()) {
+    int h = 0, m = 0, wd = 0, mo = 0, dd = 0;
+    clock_.local_hm(h, m, wd, mo, dd);
+    data_.weather.fetched_hm = h * 60 + m;
+  }
   save_weather_cache();
   return true;
+}
+
+namespace {
+
+struct City {
+  const char* name;
+  const char* tz;  // default for this IANA zone (nullptr = picker only)
+  float lat, lon;
+};
+constexpr City kCities[] = {
+    {"New York", "America/New_York", 40.7128f, -74.0060f},
+    {"Boston", nullptr, 42.3601f, -71.0589f},
+    {"Washington, DC", nullptr, 38.9072f, -77.0369f},
+    {"Miami", nullptr, 25.7617f, -80.1918f},
+    {"Chicago", "America/Chicago", 41.8781f, -87.6298f},
+    {"Austin", nullptr, 30.2672f, -97.7431f},
+    {"Denver", "America/Denver", 39.7392f, -104.9903f},
+    {"Phoenix", "America/Phoenix", 33.4484f, -112.0740f},
+    {"Los Angeles", "America/Los_Angeles", 34.0522f, -118.2437f},
+    {"San Francisco", nullptr, 37.7749f, -122.4194f},
+    {"Seattle", nullptr, 47.6062f, -122.3321f},
+    {"Toronto", nullptr, 43.6532f, -79.3832f},
+    {"London", "Europe/London", 51.5074f, -0.1278f},
+    {"Paris", nullptr, 48.8566f, 2.3522f},
+    {"Berlin", nullptr, 52.5200f, 13.4050f},
+    {"Lisbon", nullptr, 38.7223f, -9.1393f},
+    {"Tel Aviv", nullptr, 32.0853f, 34.7818f},
+    {"Tokyo", nullptr, 35.6762f, 139.6503f},
+    {"Sydney", nullptr, -33.8688f, 151.2093f},
+    {"Reykjavík", "UTC", 64.1466f, -21.9426f},
+};
+constexpr int kCityCount = sizeof(kCities) / sizeof(kCities[0]);
+
+}  // namespace
+
+void App::weather_ensure_city() {
+  if (!cfg_.weather_city.empty()) return;
+  for (const auto& c : kCities) {
+    if (c.tz && cfg_.tz_id == c.tz) {
+      cfg_.weather_city = c.name;
+      cfg_.weather_lat = c.lat;
+      cfg_.weather_lon = c.lon;
+      store_.save(cfg_);
+      data_.weather = WeatherCache{};
+      data_.weather.city = c.name;
+      data_.weather.units = cfg_.weather_units;
+      return;
+    }
+  }
+}
+
+int App::weather_display_temp(int v) const {
+  if (data_.weather.units == cfg_.weather_units) return v;
+  // Cache was fetched in the other unit — convert rather than mislabel ("72°C").
+  if (cfg_.weather_units == 1) return static_cast<int>(std::lround((v - 32) * 5.0 / 9.0));
+  return static_cast<int>(std::lround(v * 9.0 / 5.0 + 32));
 }
 
 void App::weather_refresh() {
   error_msg_.clear();
   if (!wifi_.connected()) {
-    error_msg_ = "You're offline. Showing saved forecast.";
+    error_msg_ = "You're offline \xE2\x80\x94 showing the saved forecast.";
     error_until_ms_ = now_ms_ + 3500;
+    transient_error_armed_ = true;
     mark_content_dirty();
     return;
   }
   if (cfg_.weather_city.empty()) {
-    error_msg_ = "Set a city in Settings → Units / Weather.";
-    error_until_ms_ = now_ms_ + 3500;
-    mark_content_dirty();
+    focus_.index = 0;
+    nav_.push(ScreenId::WeatherCitySetup);
+    after_nav();
     return;
   }
   if (!weather_fetch_forecast()) {
-    error_msg_ = "Couldn't refresh weather.";
+    error_msg_ = "Couldn't refresh the forecast.";
     error_until_ms_ = now_ms_ + 3500;
+    transient_error_armed_ = true;
   }
   mark_content_dirty();
 }
@@ -830,12 +727,16 @@ void App::render_notes() {
       focus_.count = 1;
     } else {
       focus_.count = n + 1;
-      for (int i = 0; i < n && row_y(list_top, i) + kFocusRowH < kBottomCtaY - 8; ++i) {
+      constexpr int kVisible = 8;
+      const int start = ui::window_start(std::min(focus_.index, n - 1), n, kVisible);
+      for (int k = 0; k < kVisible && start + k < n; ++k) {
+        const int i = start + k;
         const auto& note = data_.notes[static_cast<size_t>(i)];
         Row r{note.title, note.pending_pcm.empty() ? RowKind::Nav : RowKind::Value,
               note.pending_pcm.empty() ? "" : "Voice"};
-        ui::row(canvas_, row_y(list_top, i), r, i == focus_.index);
+        ui::row(canvas_, row_y(list_top, k), r, i == focus_.index);
       }
+      ui::scrollbar(canvas_, list_top, kVisible * kRowPitch - 8, start, kVisible, n);
     }
     ui::button(canvas_, kBottomCtaY, "New note", n == 0 || focus_.index == n, Icon::Plus, true);
   } else if (s == ScreenId::NotesDetail) {
@@ -878,13 +779,17 @@ void App::render_notes() {
       focus_.count = 1;
     } else {
       focus_.count = n + 1;
-      for (int i = 0; i < n && row_y(list_top, i) + kFocusRowH < kBottomCtaY - 8; ++i) {
+      constexpr int kVisible = 8;
+      const int start = ui::window_start(std::min(focus_.index, n - 1), n, kVisible);
+      ui::scrollbar(canvas_, list_top, kVisible * kRowPitch - 8, start, kVisible, n);
+      for (int k = 0; k < kVisible && start + k < n; ++k) {
+        const int i = start + k;
         const auto& L = data_.lists[static_cast<size_t>(i)];
         int done = 0;
         for (const auto& it : L.items) done += it.checked ? 1 : 0;
         char cnt[24];
         std::snprintf(cnt, sizeof(cnt), "%d/%d", done, static_cast<int>(L.items.size()));
-        ui::row(canvas_, row_y(list_top, i), Row{L.title, RowKind::Nav, cnt}, i == focus_.index);
+        ui::row(canvas_, row_y(list_top, k), Row{L.title, RowKind::Nav, cnt}, i == focus_.index);
       }
     }
     ui::button(canvas_, kBottomCtaY, "New list", n == 0 || focus_.index == n, Icon::Plus, true);
@@ -893,13 +798,16 @@ void App::render_notes() {
       auto& L = data_.lists[static_cast<size_t>(note_index_)];
       ui::header(canvas_, L.title, true);
       const int top = below_title(kContentTop);
-      focus_.count = static_cast<int>(L.items.size()) + 1;
-      for (size_t i = 0; i < L.items.size(); ++i) {
-        const int y = row_y(top, static_cast<int>(i));
-        if (y + kFocusRowH >= kBottomCtaY - 8) break;
-        ui::row(canvas_, y, Row{L.items[i].text, RowKind::Check, {}, L.items[i].checked},
+      const int n = static_cast<int>(L.items.size());
+      focus_.count = n + 1;
+      constexpr int kVisible = 8;
+      const int start = ui::window_start(std::min(focus_.index, std::max(0, n - 1)), n, kVisible);
+      for (int k = 0; k < kVisible && start + k < n; ++k) {
+        const size_t i = static_cast<size_t>(start + k);
+        ui::row(canvas_, row_y(top, k), Row{L.items[i].text, RowKind::Check, {}, L.items[i].checked},
                 static_cast<int>(i) == focus_.index);
       }
+      ui::scrollbar(canvas_, top, kVisible * kRowPitch - 8, start, kVisible, n);
       if (L.items.empty()) {
         canvas_.draw_text_wrapped(kSideMargin, top, kContentW, kWrapGap,
                                   "Empty list. Hold the side button and say an item.", Canvas::TextRole::Secondary,
@@ -955,6 +863,14 @@ void App::handle_notes(InputEvent e) {
   }
 
   if (e == InputEvent::PttStart) {
+    if (nav_.current() == ScreenId::ListsList) {
+      // Voice adds items to an open list — not a stray Note from the overview.
+      error_msg_ = "Open a list, then hold to add an item.";
+      error_until_ms_ = now_ms_ + 2500;
+      transient_error_armed_ = true;
+      mark_content_dirty();
+      return;
+    }
     ptt_active_ = true;
     mic_capturing_ = true;
     if (audio_) audio_->start_capture();
@@ -962,6 +878,7 @@ void App::handle_notes(InputEvent e) {
     return;
   }
   if (e == InputEvent::PttStop) {
+    if (!ptt_active_) return;
     ptt_active_ = false;
     mic_capturing_ = false;
     const MicCaptureResult cap = audio_ ? audio_->stop_capture() : MicCaptureResult{};
@@ -1008,7 +925,7 @@ void App::handle_notes(InputEvent e) {
       const int n_notes = static_cast<int>(data_.notes.size());
       // List↔list: tight row region. Involving the FAB → content band (non-contiguous).
       if (prev < n_notes && focus_.index < n_notes) {
-        mark_list_focus_dirty(kContentTop + kTabBand, prev, focus_.index);
+        mark_content_dirty();  // windowed list + bottom button: content band is always correct
       } else {
         mark_content_dirty();
       }
@@ -1064,7 +981,7 @@ void App::handle_notes(InputEvent e) {
       if (focus_.index == prev) return;
       const int n_lists = static_cast<int>(data_.lists.size());
       if (prev < n_lists && focus_.index < n_lists) {
-        mark_list_focus_dirty(kContentTop + kTabBand, prev, focus_.index);
+        mark_content_dirty();  // windowed list + bottom button: content band is always correct
       } else {
         mark_content_dirty();
       }
@@ -1094,7 +1011,7 @@ void App::handle_notes(InputEvent e) {
         if (focus_.index == prev) return;
         const int n_items = static_cast<int>(L.items.size());
         if (prev < n_items && focus_.index < n_items) {
-          mark_list_focus_dirty(below_title(kContentTop), prev, focus_.index);
+          mark_content_dirty();
         } else {
           mark_content_dirty();
         }
@@ -1122,81 +1039,7 @@ void App::handle_ledger(InputEvent e) {
   }
 }
 
-static const char* kMonthName[] = {"January", "February", "March",     "April",   "May",      "June",
-                                   "July",    "August",   "September", "October", "November", "December"};
 
-void App::render_clock() {
-  draw_status_bar();
-  static const char* kClockTabs[] = {"Clock", "Alarms", "Timers"};
-  ui::tabs(canvas_, kContentTop, kClockTabs, 3, clock_tab_);
-  ScreenId s = nav_.current();
-  if (s == ScreenId::ClockFace || clock_tab_ == 0) {
-    int h = 0, m = 0, wd = 0, mo = 0, d = 0;
-    clock_.local_hm(h, m, wd, mo, d);
-    char tbuf[16];
-    if (!clock_.time_valid()) {
-      std::snprintf(tbuf, sizeof(tbuf), "--:--");
-    } else if (cfg_.time_format == 24) {
-      std::snprintf(tbuf, sizeof(tbuf), "%02d:%02d", h, m);
-    } else {
-      int h12 = h % 12;
-      if (h12 == 0) h12 = 12;
-      std::snprintf(tbuf, sizeof(tbuf), "%d:%02d", h12, m);
-    }
-    canvas_.draw_text_centered(kCanvasW / 2, kContentTop + kTabBand + 80, tbuf,
-                               Canvas::TextRole::HugeClock, Gray::G0);
-    // Local once synced (SNTP / RTC / NVS restore). Clear copy when unsynced or approximate.
-    if (!clock_.time_valid()) {
-      canvas_.draw_text_wrapped(
-          kSideMargin, kFooterY - 4, kContentW, kWrapGap,
-          wifi_.connected() ? "Syncing time…" : "Connect to Wi‑Fi once to set the time.",
-          Canvas::TextRole::Secondary, Gray::G1);
-    } else if (clock_.time_needs_network_sync()) {
-      canvas_.draw_text_wrapped(
-          kSideMargin, kFooterY - 4, kContentW, kWrapGap,
-          wifi_.connected() ? "Syncing time…"
-                            : "Time may be off after power-off — connect Wi‑Fi to sync.",
-          Canvas::TextRole::Caption, Gray::G0);
-      if (wd >= 0 && wd < 7) {
-        static const char* kWd[] = {"Sunday", "Monday", "Tuesday", "Wednesday",
-                                    "Thursday", "Friday", "Saturday"};
-        char datebuf[48];
-        std::snprintf(datebuf, sizeof(datebuf), "%s, %s %d", kWd[wd], kMonthName[((mo % 12) + 12) % 12], d);
-        canvas_.draw_text_centered(
-            kCanvasW / 2,
-            kContentTop + kTabBand + 80 + canvas_.text_height(Canvas::TextRole::HugeClock) + 16,
-            datebuf, Canvas::TextRole::Secondary, Gray::G1);
-      }
-    } else if (wd >= 0 && wd < 7) {
-      static const char* kWd[] = {"Sunday", "Monday", "Tuesday", "Wednesday",
-                                  "Thursday", "Friday", "Saturday"};
-      char datebuf[48];
-      std::snprintf(datebuf, sizeof(datebuf), "%s, %s %d", kWd[wd], kMonthName[((mo % 12) + 12) % 12], d);
-      canvas_.draw_text_centered(kCanvasW / 2, kContentTop + kTabBand + 80 +
-                                                   canvas_.text_height(Canvas::TextRole::HugeClock) + 16,
-                                 datebuf, Canvas::TextRole::Secondary, Gray::G1);
-    }
-  } else if (clock_tab_ == 1) {
-    ui::empty_state(canvas_, ui::Icon::Alarm, "No alarms yet",
-                    "Alarms arrive in a free update. The clock keeps time offline.", 400);
-  } else {
-    ui::empty_state(canvas_, ui::Icon::Timer, "No timers yet",
-                    "Timers arrive in a free update. The clock keeps time offline.", 400);
-  }
-}
-
-void App::handle_clock(InputEvent e) {
-  if (e == InputEvent::Back) {
-    nav_.pop();
-    after_nav();
-    return;
-  }
-  if (e == InputEvent::Up || e == InputEvent::Down) {
-    // Tab change redraws the body (clock face ↔ empty states) — content band, not full panel.
-    clock_tab_ = e == InputEvent::Down ? (clock_tab_ + 1) % 3 : (clock_tab_ + 2) % 3;
-    mark_content_dirty();
-  }
-}
 
 void App::render_pass() {
   using ui::Icon;
@@ -1242,11 +1085,15 @@ void App::render_pass() {
   } else {
     focus_.count = static_cast<int>(data_.passes.size());
     const int list_top = below_title(kContentTop);
-    for (int i = 0; i < focus_.count; ++i) {
+    constexpr int kVisible = 10;
+    const int start = ui::window_start(focus_.index, focus_.count, kVisible);
+    for (int k = 0; k < kVisible && start + k < focus_.count; ++k) {
+      const int i = start + k;
       const auto& p = data_.passes[static_cast<size_t>(i)];
-      ui::row(canvas_, row_y(list_top, i), ui::Row{p.title, ui::RowKind::Nav, p.type, false, Icon::Pass, true},
+      ui::row(canvas_, row_y(list_top, k), ui::Row{p.title, ui::RowKind::Nav, p.type, false, Icon::Pass, true},
               i == focus_.index);
     }
+    ui::scrollbar(canvas_, list_top, kVisible * kRowPitch - 8, start, kVisible, focus_.count);
   }
 }
 
@@ -1268,7 +1115,7 @@ void App::handle_pass(InputEvent e) {
       const int prev = focus_.index;
       focus_.move(e == InputEvent::Down ? 1 : -1);
       if (focus_.index == prev) return;
-      mark_list_focus_dirty(below_title(kContentTop), prev, focus_.index);
+      mark_content_dirty();
       return;
     }
     if (e == InputEvent::Select) {
@@ -1281,85 +1128,162 @@ void App::handle_pass(InputEvent e) {
 
 void App::render_weather() {
   draw_status_bar();
+  using ui::Icon;
+  using ui::Row;
+  using ui::RowKind;
+
+  if (nav_.current() == ScreenId::WeatherCitySetup) {
+    ui::header(canvas_, "Weather city", true);
+    focus_.count = kCityCount;
+    constexpr int kVisible = 10;
+    const int start = ui::window_start(focus_.index, kCityCount, kVisible);
+    for (int k = 0; k < kVisible && start + k < kCityCount; ++k) {
+      const int i = start + k;
+      ui::row(canvas_, row_y(kListTop, k), Row{kCities[i].name, RowKind::Radio, {}, cfg_.weather_city == kCities[i].name},
+              i == focus_.index);
+    }
+    ui::scrollbar(canvas_, kListTop, kVisible * kRowPitch - 8, start, kVisible, kCityCount);
+    return;
+  }
+
   if (data_.weather.city.empty() && !cfg_.weather_city.empty()) data_.weather.city = cfg_.weather_city;
+  focus_.count = 2;
   if (data_.weather.city.empty()) {
     ui::header(canvas_, "Weather", true);
-    ui::empty_state(canvas_, ui::Icon::Weather, "No city set",
-                    wifi_.connected() ? "Set your city in Companion, then choose Try again."
-                                      : "Set your city in Companion when you're back online.",
-                    360);
+    ui::empty_state(canvas_, Icon::Weather, "Choose your city", "Pick a city for the forecast.", 360);
     focus_.count = 1;
-    ui::button(canvas_, kBottomCtaY, "Try again", true, ui::Icon::Update, true);
+    ui::button(canvas_, kBottomCtaY, "Choose city", true, Icon::ChevronRight, true);
     return;
   }
   ui::header(canvas_, data_.weather.city, true);
-  {
-    // Condition glyph, top right of the hero temperature.
-    std::string cond = data_.weather.today_condition;
-    for (auto& ch : cond) ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
-    ui::Icon wi = ui::Icon::Weather;
-    if (cond.find("rain") != std::string::npos || cond.find("drizzle") != std::string::npos ||
-        cond.find("shower") != std::string::npos)
-      wi = ui::Icon::Rain;
-    else if (cond.find("cloud") != std::string::npos || cond.find("overcast") != std::string::npos ||
-             cond.find("fog") != std::string::npos)
-      wi = ui::Icon::Cloud;
-    ui::icon(canvas_, wi, kCanvasW - kSideMargin - 48, below_title(kContentTop) + 44, 88, Gray::G0);
-  }
-  // Big serif temperature with the unit set small beside it.
-  char tbuf[32];
-  std::snprintf(tbuf, sizeof(tbuf), "%d\xC2\xB0", data_.weather.today_temp);
-  const int temp_y = below_title(kContentTop) - 8;
-  canvas_.draw_text(kSideMargin - 4, temp_y, tbuf, Canvas::TextRole::Hero, Gray::G0);
-  const int tw = canvas_.text_width(tbuf, Canvas::TextRole::Hero);
-  canvas_.draw_text(kSideMargin + tw + 2, temp_y + 22, cfg_.weather_units ? "C" : "F",
-                    Canvas::TextRole::BodyStrong, Gray::G0);
-  const int cond_y = temp_y + canvas_.text_height(Canvas::TextRole::Hero) + 4;
-  canvas_.draw_text_fit(kSideMargin, cond_y, kContentW, data_.weather.today_condition,
-                        Canvas::TextRole::Body, Gray::G0);
-  // Forecast table: weekday · high / low · condition, on dotted rules.
-  static const char* kDow[] = {"Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"};
-  auto weekday_of = [](const std::string& iso) -> int {
-    int y = 0, m = 0, d = 0;
-    if (std::sscanf(iso.c_str(), "%d-%d-%d", &y, &m, &d) != 3 || m < 1 || m > 12) return -1;
-    static const int t[] = {0, 3, 2, 5, 0, 3, 5, 1, 4, 6, 2, 4};
-    if (m < 3) y -= 1;
-    return (y + y / 4 - y / 100 + y / 400 + t[m - 1] + d) % 7;
-  };
-  const int forecast_top = cond_y + kBodyLinePitch + kSectionGap + 8;
-  constexpr int kRowH = 52;
-  for (size_t i = 0; i < data_.weather.days.size() && i < 5; ++i) {
-    auto& d = data_.weather.days[i];
-    const int ry = forecast_top + static_cast<int>(i) * kRowH;
-    canvas_.dotted_hline(kSideMargin, ry - 10, kContentW, Gray::G0, 3);
-    const int wd = weekday_of(d.date);
-    const char* day = i == 0 ? "Today" : (wd >= 0 ? kDow[wd] : d.date.c_str());
-    canvas_.draw_text(kSideMargin, ry, day, Canvas::TextRole::BodyStrong, Gray::G0);
-    char hl[24];
-    std::snprintf(hl, sizeof(hl), "%d\xC2\xB0 / %d\xC2\xB0", d.hi, d.lo);
-    canvas_.draw_text(kSideMargin + 108, ry + 3, hl, Canvas::TextRole::Secondary, Gray::G0);
-    canvas_.draw_text_fit(kSideMargin + 232, ry + 3, kContentW - 232, d.condition, Canvas::TextRole::Secondary,
+
+  if (data_.weather.days.empty()) {
+    ui::empty_state(canvas_, Icon::Cloud, wifi_.connected() ? "Getting the forecast\xE2\x80\xA6" : "No forecast yet",
+                    wifi_.connected() ? "This takes a moment." : "Connect to Wi-Fi to load the forecast.", 360);
+  } else {
+    {
+      std::string cond = data_.weather.today_condition;
+      for (auto& ch : cond) ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+      Icon wi = Icon::Weather;
+      if (cond.find("rain") != std::string::npos || cond.find("drizzle") != std::string::npos ||
+          cond.find("shower") != std::string::npos)
+        wi = Icon::Rain;
+      else if (cond.find("cloud") != std::string::npos || cond.find("overcast") != std::string::npos ||
+               cond.find("fog") != std::string::npos)
+        wi = Icon::Cloud;
+      ui::icon(canvas_, wi, kCanvasW - kSideMargin - 48, below_title(kContentTop) + 44, 88, Gray::G0);
+    }
+    char tbuf[32];
+    std::snprintf(tbuf, sizeof(tbuf), "%d\xC2\xB0", weather_display_temp(data_.weather.today_temp));
+    const int temp_y = below_title(kContentTop) - 8;
+    canvas_.draw_text(kSideMargin - 4, temp_y, tbuf, Canvas::TextRole::Hero, Gray::G0);
+    const int tw = canvas_.text_width(tbuf, Canvas::TextRole::Hero);
+    canvas_.draw_text(kSideMargin + tw + 2, temp_y + 22, cfg_.weather_units ? "C" : "F", Canvas::TextRole::BodyStrong,
+                      Gray::G0);
+    const int cond_y = temp_y + canvas_.text_height(Canvas::TextRole::Hero) + 4;
+    canvas_.draw_text_fit(kSideMargin, cond_y, kContentW, data_.weather.today_condition, Canvas::TextRole::Body,
                           Gray::G0);
+    static const char* kDow[] = {"Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"};
+    auto weekday_of = [](const std::string& iso) -> int {
+      int y = 0, m = 0, d = 0;
+      if (std::sscanf(iso.c_str(), "%d-%d-%d", &y, &m, &d) != 3 || m < 1 || m > 12) return -1;
+      static const int t[] = {0, 3, 2, 5, 0, 3, 5, 1, 4, 6, 2, 4};
+      if (m < 3) y -= 1;
+      return (y + y / 4 - y / 100 + y / 400 + t[m - 1] + d) % 7;
+    };
+    const int forecast_top = cond_y + kBodyLinePitch + kSectionGap + 8;
+    constexpr int kRowH = 52;
+    for (size_t i = 0; i < data_.weather.days.size() && i < 5; ++i) {
+      const auto& d = data_.weather.days[i];
+      const int ry = forecast_top + static_cast<int>(i) * kRowH;
+      canvas_.dotted_hline(kSideMargin, ry - 10, kContentW, Gray::G0, 3);
+      const int wd = weekday_of(d.date);
+      const char* day = i == 0 ? "Today" : (wd >= 0 ? kDow[wd] : d.date.c_str());
+      canvas_.draw_text(kSideMargin, ry, day, Canvas::TextRole::BodyStrong, Gray::G0);
+      char hl[32];
+      std::snprintf(hl, sizeof(hl), "%d\xC2\xB0 / %d\xC2\xB0", weather_display_temp(d.hi), weather_display_temp(d.lo));
+      canvas_.draw_text(kSideMargin + 108, ry + 3, hl, Canvas::TextRole::Secondary, Gray::G0);
+      canvas_.draw_text_fit(kSideMargin + 232, ry + 3, kContentW - 232, d.condition, Canvas::TextRole::Secondary,
+                            Gray::G0);
+    }
   }
-  const char* footer = wifi_.connected() && data_.weather.fetched_at != 0
-                           ? "Updated · hold Select to refresh"
-                           : "Offline · showing saved forecast";
-  if (data_.weather.fetched_at == 0 && data_.weather.days.empty()) {
-    footer = wifi_.connected() ? "Select to fetch forecast" : "Offline · no saved forecast yet";
+
+  // Status line + actions.
+  char upd[64];
+  if (!wifi_.connected()) std::snprintf(upd, sizeof(upd), "Offline \xC2\xB7 saved forecast");
+  else if (data_.weather.fetched_hm >= 0) {
+    const int hh = data_.weather.fetched_hm / 60, mm = data_.weather.fetched_hm % 60;
+    if (cfg_.time_format == 24) std::snprintf(upd, sizeof(upd), "Updated %02d:%02d", hh, mm);
+    else std::snprintf(upd, sizeof(upd), "Updated %d:%02d %s", hh % 12 == 0 ? 12 : hh % 12, mm, hh < 12 ? "AM" : "PM");
+  } else {
+    upd[0] = '\0';
   }
-  ui::footer(canvas_, footer);
-  focus_.count = 1;
+  if (upd[0]) canvas_.draw_text(kSideMargin, kBottomCtaY - kRowPitch - 34, upd, Canvas::TextRole::Caption, Gray::G0);
+  ui::row(canvas_, kBottomCtaY - kRowPitch, Row{"Refresh", RowKind::Plain, {}, false, Icon::Update, true},
+          focus_.index == 0);
+  ui::row(canvas_, kBottomCtaY, Row{"Change city", RowKind::Nav, {}, false, Icon::Weather, true}, focus_.index == 1);
   if (now_ms_ < error_until_ms_ && !error_msg_.empty()) ui::toast(canvas_, error_msg_);
 }
 
 void App::handle_weather(InputEvent e) {
+  const bool rot = e == InputEvent::Up || e == InputEvent::Down;
+  if (nav_.current() == ScreenId::WeatherCitySetup) {
+    focus_.count = kCityCount;
+    if (e == InputEvent::Back) {
+      nav_.pop();
+      after_nav();
+    } else if (rot) {
+      const int prev = focus_.index;
+      focus_.move(e == InputEvent::Down ? 1 : -1);
+      if (focus_.index != prev) mark_content_dirty();
+    } else if (e == InputEvent::Select && focus_.index >= 0 && focus_.index < kCityCount) {
+      const City& c = kCities[focus_.index];
+      cfg_.weather_city = c.name;
+      cfg_.weather_lat = c.lat;
+      cfg_.weather_lon = c.lon;
+      store_.save(cfg_);
+      data_.weather = WeatherCache{};
+      data_.weather.city = c.name;
+      data_.weather.units = cfg_.weather_units;
+      save_weather_cache();
+      weather_refresh_pending_ = true;
+      focus_.index = 0;
+      nav_.pop();
+      after_nav();
+    }
+    return;
+  }
   if (e == InputEvent::Back) {
     nav_.pop();
     after_nav();
     return;
   }
+  if (cfg_.weather_city.empty() && data_.weather.city.empty()) {
+    if (e == InputEvent::Select) {
+      focus_.index = 0;
+      nav_.push(ScreenId::WeatherCitySetup);
+      after_nav();
+    }
+    return;
+  }
+  focus_.count = 2;
+  if (rot) {
+    const int prev = focus_.index;
+    focus_.move(e == InputEvent::Down ? 1 : -1);
+    if (focus_.index != prev) mark_region_dirty(0, kBottomCtaY - kRowPitch - 4, kCanvasW, kRowPitch + kFocusRowH + 8);
+    return;
+  }
   if (e == InputEvent::Select) {
-    weather_refresh();
+    if (focus_.index == 1) {
+      // Open the picker at the current city.
+      focus_.index = 0;
+      for (int i = 0; i < kCityCount; ++i)
+        if (cfg_.weather_city == kCities[i].name) focus_.index = i;
+      nav_.push(ScreenId::WeatherCitySetup);
+      after_nav();
+    } else {
+      weather_refresh();
+    }
   }
 }
 

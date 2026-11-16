@@ -1,3 +1,5 @@
+#include "esp_timer.h"
+#include "sdmmc_cmd.h"
 #include "pocket_board/sdcard.hpp"
 #include "pocket_board/pins.hpp"
 
@@ -120,29 +122,45 @@ bool try_mount(bool format_if_failed, esp_err_t* out_err) {
   return false;
 }
 
-}  // namespace
-
-bool sd_probe() {
-  if (mounted_) return true;
-  esp_err_t err = ESP_FAIL;
-  if (try_mount(false, &err)) return true;
-
-  // Unformatted / corrupt FAT often returns ESP_FAIL. One-shot format so a
-  // blank inserted card is detected as Empty instead of Absent.
-  if (err == ESP_FAIL || err == ESP_ERR_INVALID_STATE || err == ESP_ERR_INVALID_RESPONSE) {
-    ESP_LOGW(TAG, "mount failed (%s); trying one-shot format for empty card", esp_err_to_name(err));
-    if (try_mount(true, &err)) {
-      ESP_LOGI(TAG, "formatted blank/corrupt card");
-      return true;
-    }
-  }
+/** A mounted card that no longer answers CMD13 was pulled — drop the mount. */
+bool still_there() {
+  if (!mounted_ || !card_) return mounted_;
+  if (sdmmc_get_status(card_) == ESP_OK) return true;
+  ESP_LOGW(TAG, "card stopped responding — treating as removed");
+  esp_vfs_fat_sdcard_unmount(kMount, card_);
+  card_ = nullptr;
+  mounted_ = false;
   return false;
 }
 
-bool sd_present() {
-  if (mounted_) return true;
+/** Mount attempts with no card cost hundreds of ms on the UI loop — space them out. */
+int64_t last_failed_us_ = 0;
+constexpr int64_t kRetryAfterUs = 3 * 1000 * 1000;
+
+bool mount_throttled() {
+  const int64_t now = esp_timer_get_time();
+  if (last_failed_us_ != 0 && now - last_failed_us_ < kRetryAfterUs) return false;
   esp_err_t err = ESP_FAIL;
-  return try_mount(false, &err);
+  if (try_mount(false, &err)) {
+    last_failed_us_ = 0;
+    return true;
+  }
+  last_failed_us_ = now;
+  return false;
+}
+
+}  // namespace
+
+bool sd_probe() {
+  if (mounted_) return still_there();
+  // Never format here: an unreadable card (exFAT, another device's filesystem) is
+  // left untouched. Formatting happens only from the SD gate's explicit Reformat.
+  return mount_throttled();
+}
+
+bool sd_present() {
+  if (mounted_) return still_there();
+  return mount_throttled();
 }
 
 SdContentKind sd_classify() {

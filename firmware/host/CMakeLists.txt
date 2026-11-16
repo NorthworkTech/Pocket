@@ -27,6 +27,8 @@ set(POCKET_UI_SRCS
   ${POCKET_UI}/src/cloud_client.cpp
   ${POCKET_UI}/src/screensaver.cpp
   ${POCKET_UI}/src/ui.cpp
+  ${POCKET_UI}/src/screens_clock.cpp
+  ${POCKET_UI}/src/json_lite.cpp
   ${POCKET_UI}/vendor/qrcodegen/qrcodegen.c
 )
 
@@ -149,3 +151,18 @@ add_executable(test_screensaver ../tests/test_screensaver.cpp ${POCKET_UI_SRCS})
 target_include_directories(test_screensaver PRIVATE ${POCKET_UI}/include ${POCKET_UI}/vendor/qrcodegen)
 target_compile_definitions(test_screensaver PRIVATE POCKET_HOST=1)
 add_test(NAME test_screensaver COMMAND test_screensaver)
+
+add_executable(test_security ../tests/test_security.cpp ${POCKET_UI_SRCS})
+target_include_directories(test_security PRIVATE ${POCKET_UI}/include ${POCKET_UI}/vendor/qrcodegen)
+target_compile_definitions(test_security PRIVATE POCKET_HOST=1)
+add_test(NAME test_security COMMAND test_security)
+
+add_executable(test_data_integrity ../tests/test_data_integrity.cpp ${POCKET_UI_SRCS})
+target_include_directories(test_data_integrity PRIVATE ${POCKET_UI}/include ${POCKET_UI}/vendor/qrcodegen)
+target_compile_definitions(test_data_integrity PRIVATE POCKET_HOST=1)
+add_test(NAME test_data_integrity COMMAND test_data_integrity)
+
+add_executable(test_clock ../tests/test_clock.cpp ${POCKET_UI_SRCS})
+target_include_directories(test_clock PRIVATE ${POCKET_UI}/include ${POCKET_UI}/vendor/qrcodegen)
+target_compile_definitions(test_clock PRIVATE POCKET_HOST=1)
+add_test(NAME test_clock COMMAND test_clock)

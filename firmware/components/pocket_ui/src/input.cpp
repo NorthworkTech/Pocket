@@ -93,7 +93,12 @@ void InputMapper::on_button_down(bool pressed, uint32_t now_ms) {
 }
 
 void InputMapper::on_button_function(bool pressed, uint32_t now_ms) {
-  if (!debounce(fn_seen_, last_fn_ms_, now_ms)) return;
+  if (!debounce(fn_seen_, last_fn_ms_, now_ms)) {
+    fn_pending_ = {true, pressed, now_ms};
+    return;
+  }
+  fn_pending_.set = false;
+  fn_level_ = pressed;
   if (pressed) {
     if (!fn_down_) {
       fn_down_ = true;
@@ -109,7 +114,12 @@ void InputMapper::on_button_function(bool pressed, uint32_t now_ms) {
 }
 
 void InputMapper::on_boot(bool pressed, uint32_t now_ms) {
-  if (!debounce(boot_seen_, last_boot_ms_, now_ms)) return;
+  if (!debounce(boot_seen_, last_boot_ms_, now_ms)) {
+    boot_pending_ = {true, pressed, now_ms};
+    return;
+  }
+  boot_pending_.set = false;
+  boot_level_ = pressed;
   if (pressed) {
     if (!boot_down_) {
       boot_down_ = true;
@@ -129,7 +139,12 @@ void InputMapper::on_boot(bool pressed, uint32_t now_ms) {
 }
 
 void InputMapper::on_pwr(bool pressed, uint32_t now_ms) {
-  if (!debounce(pwr_seen_, last_pwr_ms_, now_ms)) return;
+  if (!debounce(pwr_seen_, last_pwr_ms_, now_ms)) {
+    pwr_pending_ = {true, pressed, now_ms};
+    return;
+  }
+  pwr_pending_.set = false;
+  pwr_level_ = pressed;
   if (pressed) {
     if (pwr_edge_armed_) {
       push(InputEvent::Power);
@@ -141,6 +156,21 @@ void InputMapper::on_pwr(bool pressed, uint32_t now_ms) {
 }
 
 void InputMapper::tick(uint32_t now_ms) {
+  // Settle deferred edges: once the window has passed with no newer edge, apply the
+  // final level if it differs from what we last accepted (bounce chatter collapses).
+  auto settle = [&](Pending& p, bool level, void (InputMapper::*fn)(bool, uint32_t), bool& seen,
+                    uint32_t& last_ms) {
+    if (!p.set || now_ms - p.ms < InputThresholds::kDebounceMs) return;
+    p.set = false;
+    if (p.pressed == level) return;
+    seen = false;  // bypass the window for this replayed edge
+    (this->*fn)(p.pressed, now_ms);
+    last_ms = now_ms;
+  };
+  settle(fn_pending_, fn_level_, &InputMapper::on_button_function, fn_seen_, last_fn_ms_);
+  settle(boot_pending_, boot_level_, &InputMapper::on_boot, boot_seen_, last_boot_ms_);
+  settle(pwr_pending_, pwr_level_, &InputMapper::on_pwr, pwr_seen_, last_pwr_ms_);
+
   if (fn_down_ && !fn_long_fired_) {
     if (now_ms - fn_down_ms_ >= InputThresholds::kFunctionLongMs) {
       push(InputEvent::Home);

@@ -99,7 +99,7 @@ static void unlock_home(App& app) {
 
 static void goto_wifi_add_chooser(App& app, TClock& clock, TWifi& wifi, TDisp& disp) {
   while (app.home_focus_index() > 0) app.apply_home_focus_delta(-1);
-  app.apply_home_focus_delta(7);
+  app.apply_home_focus_delta(5);  // Settings
   app.handle(InputEvent::Select);
   CHECK(app.screen() == ScreenId::SettingsRoot);
 

@@ -15,6 +15,10 @@ void App::refresh_sd_kind() {
 void App::enter_sd_gate_from_hotplug() {
   if (sd_gate_active_) return;
   if (nav_.current() == ScreenId::SdCardGate || nav_.current() == ScreenId::OnboardingSdCard) return;
+  // Never pop the SD prompt over Lock/PIN; it appears after unlock if the card is still in.
+  if (nav_.current() == ScreenId::Lock || nav_.current() == ScreenId::Pin ||
+      nav_.current() == ScreenId::ClockRinging)
+    return;
   sd_return_screen_ = nav_.current();
   sd_waiting_eject_ = false;
   sd_gate_active_ = true;
@@ -39,6 +43,10 @@ void App::leave_sd_gate() {
 void App::maybe_poll_sd_hotplug() {
   if (!cfg_.onboarding_complete || !storage_) return;
   if (nav_.current() == ScreenId::SdCardGate || nav_.current() == ScreenId::OnboardingSdCard) return;
+  // Never pop the SD prompt over Lock/PIN; it appears after unlock if the card is still in.
+  if (nav_.current() == ScreenId::Lock || nav_.current() == ScreenId::Pin ||
+      nav_.current() == ScreenId::ClockRinging)
+    return;
   if (now_ms_ - last_sd_poll_ms_ < 800) return;
   last_sd_poll_ms_ = now_ms_;
 
