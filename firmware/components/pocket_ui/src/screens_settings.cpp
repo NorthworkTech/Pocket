@@ -103,7 +103,7 @@ void App::render_settings() {
                       Canvas::TextRole::Body, Gray::G0);
     canvas_.draw_text_wrapped(
         kSideMargin, kListTop + kTitleToBody + 3 * kBodyLinePitch + 8, kContentW, kWrapGap,
-        "Add network paints SoftAP before RF and refuses Lock until Cancel; Home stays snappy.",
+        "A new look: crisp type, a calmer Home, and seven generative screensavers. Pick one in Display.",
         Canvas::TextRole::Secondary, Gray::G1);
     canvas_.draw_text(kSideMargin, kListTop + kTitleToBody + 6 * kBodyLinePitch + 16, "Pocket Cloud",
                       Canvas::TextRole::Body, Gray::G0);
@@ -159,11 +159,17 @@ void App::render_settings() {
                                                                : "Brightness: Lighter";
     const char* ghost_label =
         cfg_.ghosting_frequent ? "Ghosting control: Frequent" : "Ghosting control: Normal";
+    std::string saver = "Screensaver: ";
+    if (cfg_.screensaver == kScreensaverPlain) saver += "Plain";
+    else if (cfg_.screensaver >= 1 && cfg_.screensaver <= kScreensaverCount)
+      saver += screensaver_name(cfg_.screensaver - 1);
+    else saver += "Rotate";
     const char* rows[] = {idle,
                           cfg_.show_batt_pct ? "Show battery %: On" : "Show battery %: Off",
-                          lockmsg.c_str(), bright_label, "Full refresh: Now", ghost_label, "Back"};
-    draw_focus_rows(canvas_, focus_, rows, 7, kListTop);
-    canvas_.draw_text_wrapped(kSideMargin, kListTop + 7 * kRowPitch + 16, kContentW, kWrapGap,
+                          lockmsg.c_str(), saver.c_str(), bright_label, "Full refresh: Now", ghost_label,
+                          "Back"};
+    draw_focus_rows(canvas_, focus_, rows, 8, kListTop);
+    canvas_.draw_text_wrapped(kSideMargin, kListTop + 8 * kRowPitch + 16, kContentW, kWrapGap,
                               "Set a custom lock message in Pocket Companion.",
                               Canvas::TextRole::Secondary, Gray::G1);
     return;
@@ -546,7 +552,7 @@ void App::handle_settings(InputEvent e) {
   }
 
   if (s == ScreenId::SettingsDisplay) {
-    focus_.count = 7;
+    focus_.count = 8;
     if (e == InputEvent::Up || e == InputEvent::Down) {
       settings_move_focus(e == InputEvent::Down ? 1 : -1);
     } else if (e == InputEvent::Select) {
@@ -568,6 +574,13 @@ void App::handle_settings(InputEvent e) {
         store_.save(cfg_);
         mark_content_dirty();
       } else if (focus_.index == 3) {
+        // Rotate → each piece → Plain → Rotate.
+        if (cfg_.screensaver == kScreensaverPlain) cfg_.screensaver = 0;
+        else if (cfg_.screensaver >= kScreensaverCount) cfg_.screensaver = kScreensaverPlain;
+        else ++cfg_.screensaver;
+        store_.save(cfg_);
+        mark_content_dirty();
+      } else if (focus_.index == 4) {
         const uint8_t opts[] = {20, 50, 80};
         int cur = 1;
         for (int i = 0; i < 3; ++i)
@@ -579,15 +592,15 @@ void App::handle_settings(InputEvent e) {
           cloud_.push_device_settings(cfg_.device_id, cfg_.volume_percent, cfg_.brightness_percent);
         }
         redraw(true);  // full refresh so the new contrast is visible immediately
-      } else if (focus_.index == 4) {
-        redraw(true);
       } else if (focus_.index == 5) {
+        redraw(true);
+      } else if (focus_.index == 6) {
         cfg_.ghosting_frequent = !cfg_.ghosting_frequent;
         refresh_.set_ghosting_budget(cfg_.ghosting_frequent ? RefreshPolicy::kGhostingNFrequent
                                                              : RefreshPolicy::kGhostingN);
         store_.save(cfg_);
         redraw(true);  // full refresh now also clears any ghosting already on screen
-      } else if (focus_.index == 6) {
+      } else if (focus_.index == 7) {
         nav_.replace(ScreenId::SettingsRoot);
         after_nav();
       }

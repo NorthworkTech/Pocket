@@ -25,6 +25,7 @@ set(POCKET_UI_SRCS
   ${POCKET_UI}/src/screens_sd.cpp
   ${POCKET_UI}/src/screens_update.cpp
   ${POCKET_UI}/src/cloud_client.cpp
+  ${POCKET_UI}/src/screensaver.cpp
   ${POCKET_UI}/vendor/qrcodegen/qrcodegen.c
 )
 
@@ -138,3 +139,12 @@ target_compile_definitions(dump_home_png PRIVATE POCKET_HOST=1)
 add_executable(dump_lock_png dump_lock_png.cpp ${POCKET_UI_SRCS})
 target_include_directories(dump_lock_png PRIVATE ${POCKET_UI}/include ${POCKET_UI}/vendor/qrcodegen)
 target_compile_definitions(dump_lock_png PRIVATE POCKET_HOST=1)
+
+add_executable(dump_gallery dump_gallery.cpp ${POCKET_UI_SRCS})
+target_include_directories(dump_gallery PRIVATE ${POCKET_UI}/include ${POCKET_UI}/vendor/qrcodegen)
+target_compile_definitions(dump_gallery PRIVATE POCKET_HOST=1)
+
+add_executable(test_screensaver ../tests/test_screensaver.cpp ${POCKET_UI_SRCS})
+target_include_directories(test_screensaver PRIVATE ${POCKET_UI}/include ${POCKET_UI}/vendor/qrcodegen)
+target_compile_definitions(test_screensaver PRIVATE POCKET_HOST=1)
+add_test(NAME test_screensaver COMMAND test_screensaver)

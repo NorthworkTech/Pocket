@@ -28,7 +28,7 @@ constexpr int kFocusRowH = 56;
 /** Full-width focus / list row (side margins already applied). */
 constexpr int kFocusRowW = kCanvasW - 2 * kSideMargin;
 /** Horizontal inset for unfocused row labels. */
-constexpr int kRowLabelInset = 8;
+constexpr int kRowLabelInset = 16;
 /** Vertical pad so Body sits inside a focus-row band. */
 constexpr int kRowTextPad = 12;
 /** Max width for unfocused row labels. */

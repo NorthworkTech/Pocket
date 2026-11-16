@@ -932,14 +932,32 @@ void App::render_notes() {
       focus_.count = static_cast<int>(L.items.size()) + 1;  // items + Add via dictate
       for (size_t i = 0; i < L.items.size(); ++i) {
         const int y = row_y(list_top, static_cast<int>(i));
-        std::string row = (L.items[i].checked ? "[x] " : "[ ] ") + L.items[i].text;
-        Gray g = L.items[i].checked ? Gray::G1 : Gray::G0;
-        if (static_cast<int>(i) == focus_.index)
-          canvas_.draw_focus_tile(kSideMargin, y, kFocusRowW, kFocusRowH, row,
-                                  Canvas::TextRole::Secondary);
-        else
-          canvas_.draw_text_fit(kSideMargin + kRowLabelInset, y + kRowTextPad, kRowLabelW, row,
-                                Canvas::TextRole::Secondary, g);
+        const bool focused = static_cast<int>(i) == focus_.index;
+        const bool done = L.items[i].checked;
+        const Gray ink = focused ? Gray::G3 : Gray::G0;
+        if (focused) canvas_.fill_round_rect(kSideMargin, y, kFocusRowW, kFocusRowH, 12, Gray::G0);
+        // Real checkbox: rounded square, filled with a tick when done.
+        const int bx = kSideMargin + kRowLabelInset;
+        const int by = y + (kFocusRowH - 24) / 2;
+        if (done) {
+          canvas_.fill_round_rect(bx, by, 24, 24, 5, ink);
+          const Gray tick = focused ? Gray::G0 : Gray::G3;
+          canvas_.thick_line(bx + 5, by + 12, bx + 10, by + 17, 3, tick);
+          canvas_.thick_line(bx + 10, by + 17, bx + 19, by + 7, 3, tick);
+        } else {
+          canvas_.stroke_round_rect(bx, by, 24, 24, 5, ink, 2, focused ? Gray::G0 : Gray::G3);
+        }
+        const int tx = bx + 38;
+        const int ty = y + (kFocusRowH - canvas_.text_height(Canvas::TextRole::Body)) / 2;
+        canvas_.draw_text_fit(tx, ty, kSideMargin + kFocusRowW - kRowLabelInset - tx, L.items[i].text,
+                              Canvas::TextRole::Body, ink);
+        if (done) {
+          // Strike through finished items.
+          const int tw = std::min(canvas_.text_width(L.items[i].text, Canvas::TextRole::Body),
+                                  kSideMargin + kFocusRowW - kRowLabelInset - tx);
+          canvas_.hline(tx, ty + 18, tw, ink);
+          canvas_.hline(tx, ty + 19, tw, ink);
+        }
       }
       const int y = kBottomCtaY;
       if (focus_.index == static_cast<int>(L.items.size()))
@@ -1360,20 +1378,40 @@ void App::render_weather() {
   }
   canvas_.draw_text_fit(kSideMargin, kContentTop, kContentW, data_.weather.city,
                         Canvas::TextRole::ScreenTitle, Gray::G0);
+  // Big serif temperature with the unit set small beside it.
   char tbuf[32];
-  std::snprintf(tbuf, sizeof(tbuf), "%d°%c", data_.weather.today_temp, cfg_.weather_units ? 'C' : 'F');
-  const int temp_y = below_title(kContentTop);
-  canvas_.draw_text(kSideMargin, temp_y, tbuf, Canvas::TextRole::HugeClock, Gray::G0);
-  const int cond_y = temp_y + canvas_.text_height(Canvas::TextRole::HugeClock) + kSectionGap;
+  std::snprintf(tbuf, sizeof(tbuf), "%d\xC2\xB0", data_.weather.today_temp);
+  const int temp_y = below_title(kContentTop) - 8;
+  canvas_.draw_text(kSideMargin - 4, temp_y, tbuf, Canvas::TextRole::Hero, Gray::G0);
+  const int tw = canvas_.text_width(tbuf, Canvas::TextRole::Hero);
+  canvas_.draw_text(kSideMargin + tw + 2, temp_y + 22, cfg_.weather_units ? "C" : "F",
+                    Canvas::TextRole::BodyStrong, Gray::G0);
+  const int cond_y = temp_y + canvas_.text_height(Canvas::TextRole::Hero) + 4;
   canvas_.draw_text_fit(kSideMargin, cond_y, kContentW, data_.weather.today_condition,
                         Canvas::TextRole::Body, Gray::G0);
-  const int forecast_top = cond_y + kBodyLinePitch + kSectionGap;
+  // Forecast table: weekday · high / low · condition, on dotted rules.
+  static const char* kDow[] = {"Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"};
+  auto weekday_of = [](const std::string& iso) -> int {
+    int y = 0, m = 0, d = 0;
+    if (std::sscanf(iso.c_str(), "%d-%d-%d", &y, &m, &d) != 3 || m < 1 || m > 12) return -1;
+    static const int t[] = {0, 3, 2, 5, 0, 3, 5, 1, 4, 6, 2, 4};
+    if (m < 3) y -= 1;
+    return (y + y / 4 - y / 100 + y / 400 + t[m - 1] + d) % 7;
+  };
+  const int forecast_top = cond_y + kBodyLinePitch + kSectionGap + 8;
+  constexpr int kRowH = 52;
   for (size_t i = 0; i < data_.weather.days.size() && i < 5; ++i) {
     auto& d = data_.weather.days[i];
-    char line[64];
-    std::snprintf(line, sizeof(line), "%s  %d/%d  %s", d.date.c_str(), d.hi, d.lo, d.condition.c_str());
-    canvas_.draw_text_fit(kSideMargin, forecast_top + static_cast<int>(i) * kBodyLinePitch, kContentW,
-                          line, Canvas::TextRole::Secondary, Gray::G0);
+    const int ry = forecast_top + static_cast<int>(i) * kRowH;
+    canvas_.dotted_hline(kSideMargin, ry - 10, kContentW, Gray::G0, 3);
+    const int wd = weekday_of(d.date);
+    const char* day = i == 0 ? "Today" : (wd >= 0 ? kDow[wd] : d.date.c_str());
+    canvas_.draw_text(kSideMargin, ry, day, Canvas::TextRole::BodyStrong, Gray::G0);
+    char hl[24];
+    std::snprintf(hl, sizeof(hl), "%d\xC2\xB0 / %d\xC2\xB0", d.hi, d.lo);
+    canvas_.draw_text(kSideMargin + 108, ry + 3, hl, Canvas::TextRole::Secondary, Gray::G0);
+    canvas_.draw_text_fit(kSideMargin + 232, ry + 3, kContentW - 232, d.condition, Canvas::TextRole::Secondary,
+                          Gray::G0);
   }
   const char* footer = wifi_.connected() && data_.weather.fetched_at != 0
                            ? "Updated · hold Select to refresh"

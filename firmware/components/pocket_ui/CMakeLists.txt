@@ -19,6 +19,7 @@ idf_component_register(
     "src/screens_sd.cpp"
     "src/screens_update.cpp"
     "src/cloud_client.cpp"
+    "src/screensaver.cpp"
     "vendor/qrcodegen/qrcodegen.c"
   INCLUDE_DIRS "include" "vendor/qrcodegen"
 )

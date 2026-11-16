@@ -81,7 +81,6 @@ int main(int argc, char** argv) {
     return 1;
   }
 
-  static const char* kNames[] = {"horizon", "tide", "ridge", "constellation", "harbor", "aperture"};
   for (int i = 0; i < kLockMotifCount; ++i) {
     if (i > 0) app.handle(InputEvent::Power);  // go_lock() — advances motif
     if (app.lock_motif_index() != i) {
@@ -90,7 +89,7 @@ int main(int argc, char** argv) {
     }
     app.redraw(true);
     char path[512];
-    std::snprintf(path, sizeof(path), "%s/%s.ppm", out_dir, kNames[i]);
+    std::snprintf(path, sizeof(path), "%s/%d-%s.ppm", out_dir, i + 1, screensaver_name(i));
     if (!write_ppm(path, app.canvas())) return 1;
     std::printf("wrote %s (motif %d)\n", path, i);
   }

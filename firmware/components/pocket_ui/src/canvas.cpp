@@ -14,58 +14,115 @@ namespace {
 
 #include "font_ui.inc"
 
-Gray ink_to_gray(uint8_t ink /*0..3*/, Gray fg) {
-  if (ink == 0) return Gray::G3;  // unused by caller
-  if (fg == Gray::G0) {
-    // ink 3 = black, 2 = dark gray, 1 = light gray
-    if (ink >= 3) return Gray::G0;
-    if (ink == 2) return Gray::G1;
-    return Gray::G2;
+/** Decode one UTF-8 code point at `i` (advances i). Invalid bytes map to '?'. */
+uint32_t next_cp(std::string_view s, size_t& i) {
+  const unsigned char c = static_cast<unsigned char>(s[i++]);
+  if (c < 0x80) return c;
+  int extra = 0;
+  uint32_t cp = 0;
+  if ((c & 0xE0) == 0xC0) {
+    extra = 1;
+    cp = c & 0x1F;
+  } else if ((c & 0xF0) == 0xE0) {
+    extra = 2;
+    cp = c & 0x0F;
+  } else if ((c & 0xF8) == 0xF0) {
+    extra = 3;
+    cp = c & 0x07;
+  } else {
+    return '?';
   }
-  // Light on dark focus tiles: invert sense toward fg
-  if (ink >= 3) return fg;
-  if (ink == 2) return Gray::G2;
-  return Gray::G1;
+  for (int k = 0; k < extra; ++k) {
+    if (i >= s.size() || (static_cast<unsigned char>(s[i]) & 0xC0) != 0x80) return '?';
+    cp = (cp << 6) | (static_cast<unsigned char>(s[i++]) & 0x3F);
+  }
+  return cp;
+}
+
+const FontFace& face_for(Canvas::TextRole r) {
+  switch (r) {
+    case Canvas::TextRole::StatusBar:
+      return kFontStatus;
+    case Canvas::TextRole::Secondary:
+      return kFontSecondary;
+    case Canvas::TextRole::Caption:
+      return kFontCaption;
+    case Canvas::TextRole::BodyStrong:
+      return kFontBodyStrong;
+    case Canvas::TextRole::ScreenTitle:
+    case Canvas::TextRole::WordMark:
+      return kFontTitle;
+    case Canvas::TextRole::PinDigit:
+      return kFontPin;
+    case Canvas::TextRole::Hero:
+      return kFontHero;
+    case Canvas::TextRole::HugeClock:
+      return kFontHuge;
+    case Canvas::TextRole::Body:
+    default:
+      return kFontBody;
+  }
+}
+
+/** Faces with a reduced character set fall back to a full face of similar weight. */
+const FontFace& fallback_for(Canvas::TextRole r) {
+  switch (r) {
+    case Canvas::TextRole::StatusBar:
+      return kFontBodyStrong;
+    case Canvas::TextRole::PinDigit:
+    case Canvas::TextRole::Hero:
+    case Canvas::TextRole::HugeClock:
+      return kFontTitle;
+    default:
+      return kFontBody;
+  }
+}
+
+const FontGlyph* find_glyph(const FontFace& f, uint32_t cp) {
+  int lo = 0;
+  int hi = static_cast<int>(f.count) - 1;
+  while (lo <= hi) {
+    const int mid = (lo + hi) / 2;
+    const uint32_t c = f.glyphs[mid].cp;
+    if (c == cp) return &f.glyphs[mid];
+    if (c < cp) lo = mid + 1;
+    else hi = mid - 1;
+  }
+  return nullptr;
+}
+
+/** Map a code point to a glyph + the face it came from (with ASCII stand-ins). */
+const FontGlyph* resolve(Canvas::TextRole role, uint32_t cp, const FontFace** face_out) {
+  const FontFace& f = face_for(role);
+  if (const FontGlyph* g = find_glyph(f, cp)) {
+    *face_out = &f;
+    return g;
+  }
+  const FontFace& fb = fallback_for(role);
+  if (const FontGlyph* g = find_glyph(fb, cp)) {
+    *face_out = &fb;
+    return g;
+  }
+  // Last resort: '?' in the primary face, else the fallback.
+  if (const FontGlyph* g = find_glyph(f, '?')) {
+    *face_out = &f;
+    return g;
+  }
+  *face_out = &fb;
+  return find_glyph(fb, '?');
 }
 
 }  // namespace
 
-bool Canvas::use_display_font(TextRole r) {
-  switch (r) {
-    case TextRole::ScreenTitle:
-    case TextRole::WordMark:
-    case TextRole::PinDigit:
-    case TextRole::HugeClock:
-      return true;
-    default:
-      return false;
-  }
-}
-
-int Canvas::role_scale(TextRole r) {
-  return r == TextRole::HugeClock ? 3 : 1;
-}
-
-int Canvas::text_height(TextRole role) const {
-  const int h = use_display_font(role) ? kDisp_H : kBody_H;
-  return h * role_scale(role);
-}
+int Canvas::text_height(TextRole role) const { return face_for(role).line_h; }
 
 int Canvas::text_width(std::string_view text, TextRole role) const {
-  const int scale = role_scale(role);
-  const bool disp = use_display_font(role);
   int w = 0;
-  for (unsigned char uc : text) {
-    if (uc >= 0x80) continue;
-    const char c = static_cast<char>(uc);
-    // Prefer bitmap width: AA pad made stored adv shorter than ink (smushed glyphs).
-    if (disp) {
-      const auto& g = kDisp_glyph(c);
-      w += std::max<int>(g.w, g.adv) * scale;
-    } else {
-      const auto& g = kBody_glyph(c);
-      w += std::max<int>(g.w, g.adv) * scale;
-    }
+  size_t i = 0;
+  while (i < text.size()) {
+    const uint32_t cp = next_cp(text, i);
+    const FontFace* f = nullptr;
+    if (const FontGlyph* g = resolve(role, cp, &f)) w += g->adv;
   }
   return w;
 }
@@ -179,52 +236,26 @@ void Canvas::line(int x0, int y0, int x1, int y1, Gray g) {
 }
 
 void Canvas::draw_text(int x, int y, std::string_view text, TextRole role, Gray g) {
-  const int scale = role_scale(role);
-  const bool disp = use_display_font(role);
-  const int native_h = disp ? kDisp_H : kBody_H;
+  const FontFace& primary = face_for(role);
   int cx = x;
-
-  for (unsigned char uc : text) {
-    if (uc >= 0x80) continue;
-    const char c = static_cast<char>(uc);
-    const uint8_t gw = disp ? kDisp_glyph(c).w : kBody_glyph(c).w;
-    const uint8_t adv = disp ? kDisp_glyph(c).adv : kBody_glyph(c).adv;
-    const uint8_t* bits = disp ? kDisp_glyph(c).bits : kBody_glyph(c).bits;
-    // Step at least by ink width so AA-padded glyphs never overlap.
-    const int step = std::max<int>(gw, adv);
-
-    if (scale == 1) {
-      for (int row = 0; row < native_h; ++row) {
-        for (int col = 0; col < gw; ++col) {
-          const uint8_t ink = bits[row * gw + col];
-          if (ink == 0) continue;
-          set_pixel(cx + col, y + row, ink_to_gray(ink, g));
-        }
-      }
-    } else {
-      // Integer upscale with coverage AA for HugeClock.
-      for (int oy = 0; oy < native_h * scale; ++oy) {
-        for (int ox = 0; ox < gw * scale; ++ox) {
-          int cover = 0;
-          for (int sy = 0; sy < 2; ++sy) {
-            for (int sx = 0; sx < 2; ++sx) {
-              const int src_x = (ox * 2 + sx) / (scale * 2);
-              const int src_y = (oy * 2 + sy) / (scale * 2);
-              if (src_x >= 0 && src_x < gw && src_y >= 0 && src_y < native_h) {
-                cover += bits[src_y * gw + src_x];
-              }
-            }
-          }
-          // cover 0..12 (4 samples × ink 0..3)
-          if (cover <= 0) continue;
-          uint8_t ink = 1;
-          if (cover >= 9) ink = 3;
-          else if (cover >= 5) ink = 2;
-          set_pixel(cx + ox, y + oy, ink_to_gray(ink, g));
-        }
+  size_t i = 0;
+  while (i < text.size()) {
+    const uint32_t cp = next_cp(text, i);
+    const FontFace* f = nullptr;
+    const FontGlyph* gl = resolve(role, cp, &f);
+    if (!gl) continue;
+    // Fallback faces have their own line box — re-center on the primary one.
+    const int dy = (f == &primary) ? 0 : (primary.line_h - f->line_h) / 2;
+    const uint8_t* bits = f->bits + gl->off;
+    const int rb = (gl->w + 7) / 8;
+    for (int row = 0; row < gl->h; ++row) {
+      const uint8_t* r = bits + row * rb;
+      const int py = y + dy + gl->yoff + row;
+      for (int col = 0; col < gl->w; ++col) {
+        if (r[col >> 3] & (0x80 >> (col & 7))) set_pixel(cx + gl->xoff + col, py, g);
       }
     }
-    cx += step * scale;
+    cx += gl->adv;
   }
 }
 
@@ -239,8 +270,13 @@ void Canvas::draw_text_fit(int x, int y, int max_w, std::string_view text, TextR
     return;
   }
   std::string s(text);
-  const std::string ell = "...";
-  while (s.size() > 1 && text_width(s + ell, role) > max_w) s.pop_back();
+  const std::string ell = "\xE2\x80\xA6";  // …
+  auto pop_cp = [&s]() {
+    while (!s.empty() && (static_cast<unsigned char>(s.back()) & 0xC0) == 0x80) s.pop_back();
+    if (!s.empty()) s.pop_back();
+  };
+  while (!s.empty() && text_width(s + ell, role) > max_w) pop_cp();
+  while (!s.empty() && s.back() == ' ') s.pop_back();
   draw_text(x, y, s + ell, role, g);
 }
 
@@ -312,18 +348,60 @@ int Canvas::draw_text_wrapped(int x, int y, int max_w, int line_gap, std::string
 }
 
 void Canvas::draw_focus_tile(int x, int y, int w, int h, std::string_view label, TextRole role) {
-  fill_rect(x, y, w, h, Gray::G0);
-  const int pad = 10;
-  const int max_w = std::max(8, w - pad * 2);
+  fill_round_rect(x, y, w, h, 12, Gray::G0);
   const int th = text_height(role);
-  std::string s(label);
-  const std::string ell = "...";
-  if (text_width(s, role) > max_w) {
-    while (s.size() > 1 && text_width(s + ell, role) > max_w) s.pop_back();
-    s += ell;
+  // Same inset as unfocused rows (kRowLabelInset) so labels never jump on focus.
+  draw_text_fit(x + kRowLabelInset, y + (h - th) / 2, std::max(8, w - 2 * kRowLabelInset), label, role,
+                Gray::G3);
+}
+
+void Canvas::dotted_hline(int x, int y, int w, Gray g, int step) {
+  for (int i = 0; i < w; i += step) set_pixel(x + i, y, g);
+}
+
+namespace {
+constexpr uint8_t kBayer4[4][4] = {{0, 8, 2, 10}, {12, 4, 14, 6}, {3, 11, 1, 9}, {15, 7, 13, 5}};
+}
+
+void Canvas::fill_tone(int x, int y, int w, int h, int level) {
+  if (level <= 0) {
+    fill_rect(x, y, w, h, Gray::G3);
+    return;
   }
-  const int tw = text_width(s, role);
-  draw_text(x + (w - tw) / 2, y + (h - th) / 2, s, role, Gray::G3);
+  for (int yy = y; yy < y + h; ++yy)
+    for (int xx = x; xx < x + w; ++xx)
+      set_pixel(xx, yy, kBayer4[yy & 3][xx & 3] < level ? Gray::G0 : Gray::G3);
+}
+
+void Canvas::fill_disc(int cx, int cy, int r, Gray g) {
+  for (int dy = -r; dy <= r; ++dy) {
+    const int hw = static_cast<int>(std::sqrt(static_cast<float>(r * r - dy * dy)) + 0.5f);
+    hline(cx - hw, cy + dy, 2 * hw + 1, g);
+  }
+}
+
+void Canvas::stroke_circle(int cx, int cy, int r, Gray g, int thickness) {
+  const int ro2 = r * r;
+  const int ri = std::max(0, r - thickness);
+  const int ri2 = ri * ri;
+  for (int dy = -r; dy <= r; ++dy)
+    for (int dx = -r; dx <= r; ++dx) {
+      const int d2 = dx * dx + dy * dy;
+      if (d2 <= ro2 + r / 2 && d2 > ri2 + ri / 2) set_pixel(cx + dx, cy + dy, g);
+    }
+}
+
+void Canvas::thick_line(int x0, int y0, int x1, int y1, int thickness, Gray g) {
+  const int r = std::max(0, thickness / 2);
+  const int dx = x1 - x0;
+  const int dy = y1 - y0;
+  const int steps = std::max(1, std::max(std::abs(dx), std::abs(dy)));
+  for (int s = 0; s <= steps; ++s) {
+    const int x = x0 + dx * s / steps;
+    const int y = y0 + dy * s / steps;
+    if (r == 0) set_pixel(x, y, g);
+    else fill_disc(x, y, r, g);
+  }
 }
 
 bool Canvas::draw_qr(int x, int y, int size, std::string_view payload) {

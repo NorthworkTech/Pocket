@@ -4,16 +4,15 @@
 #include "pocket/input.hpp"
 #include "pocket/nav.hpp"
 #include "pocket/refresh.hpp"
+#include "pocket/screensaver.hpp"
 #include <memory>
 #include <string>
 #include <vector>
 
 namespace pocket {
 
-/** Number of calm, intentionally-themed motifs the lock/sleep face rotates through:
- * horizon line, tide rings, folded paper plane, quiet constellation, city grid at
- * dusk, and aperture. Each is a designed composition, not generic abstract lines. */
-inline constexpr int kLockMotifCount = 6;
+/** Lock/sleep face rotates through the generative screensaver collection (screensaver.hpp). */
+inline constexpr int kLockMotifCount = kScreensaverCount;
 
 struct PlatformClock {
   virtual ~PlatformClock() = default;
@@ -363,6 +362,14 @@ class App {
   /** Force render for host/tests. Keeps dirty if the panel is mid-refresh. */
   void redraw(bool full);
 
+#ifdef POCKET_HOST
+  /** Host gallery / QA only: jump straight to `s` with Home underneath. */
+  void host_goto(ScreenId s, int tab = 0);
+  AppData& host_data() { return data_; }
+  std::vector<MusicTrack>& host_tracks() { return music_tracks_; }
+  std::vector<Book>& host_books() { return books_; }
+#endif
+
  private:
   enum class DirtyKind : uint8_t { FullCanvas, ContentBand, StatusBar, Region };
 
@@ -610,6 +617,8 @@ class App {
   bool last_status_needs_sync_ = false;
   /** Which calm e-ink motif to draw on the lock/sleep face; advances on each lock. */
   int lock_motif_index_ = 0;
+  /** Varies each lock's print of the current piece (same piece, fresh composition). */
+  uint32_t lock_seed_ = 1;
   SdContentKind sd_kind_ = SdContentKind::Absent;
   bool sd_waiting_eject_ = false;
   uint32_t last_sd_poll_ms_ = 0;

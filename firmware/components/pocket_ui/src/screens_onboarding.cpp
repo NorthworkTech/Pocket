@@ -31,14 +31,21 @@ void App::render_onboarding() {
 
   switch (s) {
     case ScreenId::OnboardingWelcome: {
-      canvas_.draw_text(kSideMargin, ty, "Pocket", Canvas::TextRole::WordMark, Gray::G0);
-      canvas_.draw_text(kSideMargin, below_title(ty), "Welcome", Canvas::TextRole::ScreenTitle, Gray::G0);
-      int y = canvas_.draw_text_wrapped(kSideMargin, below_title(below_title(ty)), kWrapW, kLineGap,
-                                        "Notes, lists, and daily tools — quiet, focused, always with you.",
+      canvas_.draw_text(kSideMargin, ty, "Welcome to Pocket", Canvas::TextRole::ScreenTitle, Gray::G0);
+      int y = canvas_.draw_text_wrapped(kSideMargin, below_title(ty) - 4, kWrapW, kLineGap,
+                                        "Notes, lists, and daily tools \xE2\x80\x94 quiet, focused, always with you.",
                                         Canvas::TextRole::Body, Gray::G0);
-      canvas_.draw_text_wrapped(kSideMargin, y + 12, kWrapW, kLineGap,
-                                "A short setup with the Pocket app gets you online and linked.",
-                                Canvas::TextRole::Secondary, Gray::G1);
+      y = canvas_.draw_text_wrapped(kSideMargin, y + 10, kWrapW, kLineGap,
+                                    "A short setup with the Pocket app gets you online and linked.",
+                                    Canvas::TextRole::Secondary, Gray::G0);
+      // A print from the screensaver collection — a taste of the quiet face to come.
+      const int art_y = y + 28;
+      const int art_h = kBottomCtaY - 28 - art_y;
+      if (art_h > 120) {
+        draw_screensaver(canvas_, 1, kSideMargin, art_y, kContentW, art_h, 7);
+        canvas_.stroke_rect(kSideMargin, art_y, kContentW, art_h, Gray::G0);
+        canvas_.stroke_rect(kSideMargin + 1, art_y + 1, kContentW - 2, art_h - 2, Gray::G0);
+      }
       focus_.count = 1;
       canvas_.draw_focus_tile(kSideMargin, kBottomCtaY, kFocusRowW, kFocusRowH, "Begin setup", Canvas::TextRole::Body);
       break;
@@ -262,25 +269,28 @@ void App::render_onboarding() {
         canvas_.draw_text_centered(kCanvasW / 2, qr_y + qr_size / 2 - 4, "No code", Canvas::TextRole::Body, Gray::G1);
       }
 
-      canvas_.draw_text_centered(kCanvasW / 2, qr_y + qr_size + 20, "or go to", Canvas::TextRole::Secondary, Gray::G1);
+      // Below the QR: the manual route, then the code itself, then its status.
+      canvas_.draw_text_centered(kCanvasW / 2, qr_y + qr_size + 12, "or open", Canvas::TextRole::Caption, Gray::G0);
       {
         const std::string site = companion_display_origin() + "/link";
-        canvas_.draw_text_wrapped(kSideMargin, qr_y + qr_size + 52, kWrapW, kLineGap, site, Canvas::TextRole::Body,
-                                  Gray::G0);
+        const int sw = std::min(kWrapW, canvas_.text_width(site, Canvas::TextRole::Secondary));
+        canvas_.draw_text_fit((kCanvasW - sw) / 2, qr_y + qr_size + 38, kWrapW, site, Canvas::TextRole::Secondary,
+                              Gray::G0);
       }
-      canvas_.draw_text_centered(kCanvasW / 2, qr_y + qr_size + 100, pair_code_, Canvas::TextRole::WordMark, Gray::G0);
-      if (pair_status_ == "expired") {
-        canvas_.draw_text_centered(kCanvasW / 2, qr_y + qr_size + 152, "Code expired — refresh below",
-                                   Canvas::TextRole::Secondary, Gray::G0);
-      } else if (pair_status_ == "claimed") {
-        canvas_.draw_text_centered(kCanvasW / 2, qr_y + qr_size + 152, "Linked", Canvas::TextRole::Secondary, Gray::G0);
-      } else {
-        canvas_.draw_text_centered(kCanvasW / 2, qr_y + qr_size + 152, "Expires in 10 minutes",
-                                   Canvas::TextRole::Secondary, Gray::G1);
+      // Letter-spaced code reads clearly across a room.
+      std::string spaced;
+      for (char ch : pair_code_) {
+        if (!spaced.empty()) spaced += ' ';
+        spaced += ch;
       }
+      canvas_.draw_text_centered(kCanvasW / 2, qr_y + qr_size + 76, spaced, Canvas::TextRole::WordMark, Gray::G0);
+      const char* status = pair_status_ == "expired"   ? "Code expired \xE2\x80\x94 refresh below"
+                           : pair_status_ == "claimed" ? "Linked"
+                                                       : "Expires in 10 minutes";
+      canvas_.draw_text_centered(kCanvasW / 2, qr_y + qr_size + 130, status, Canvas::TextRole::Caption, Gray::G0);
       focus_.count = 2;
-      const char* acts[] = {"Waiting for link…", "Refresh code"};
-      const int actions_top = std::min(qr_y + qr_size + 200, 560);
+      const char* acts[] = {"Waiting for link\xE2\x80\xA6", "Refresh code"};
+      const int actions_top = std::min(qr_y + qr_size + 172, kBottomCtaY - kRowPitch);
       for (int i = 0; i < 2; ++i) {
         int row_y = actions_top + i * kRowPitch;
         if (i == focus_.index)
@@ -328,7 +338,7 @@ void App::render_onboarding() {
     }
     case ScreenId::OnboardingTimezone: {
       canvas_.draw_text(kSideMargin, ty, "Clock", Canvas::TextRole::ScreenTitle, Gray::G0);
-      canvas_.draw_text(kSideMargin, below_title(ty), "Time zone", Canvas::TextRole::Secondary, Gray::G1);
+      canvas_.draw_text(kSideMargin, ty + 52, "Time zone", Canvas::TextRole::Caption, Gray::G0);
       focus_.count = kTzCount + 3;
       constexpr int kTzRowH = 44;
       const int kTzTop = ty + 88;

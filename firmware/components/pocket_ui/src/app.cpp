@@ -565,7 +565,12 @@ void App::go_lock() {
   pin_entry_.clear();
   parental_session_unlocked_ = false;
   parental_pin_for_app_ = false;
-  lock_motif_index_ = (lock_motif_index_ + 1) % kLockMotifCount;
+  if (cfg_.screensaver >= 1 && cfg_.screensaver <= kScreensaverCount) {
+    lock_motif_index_ = cfg_.screensaver - 1;
+  } else {
+    lock_motif_index_ = (lock_motif_index_ + 1) % kLockMotifCount;
+  }
+  lock_seed_ = lock_seed_ * 1664525u + 1013904223u + (clock_.now_ms() & 0xFFFFu);
   after_nav();
 }
 
@@ -963,6 +968,19 @@ void App::redraw(bool full) {
   dirty_ = false;
 }
 
+#ifdef POCKET_HOST
+void App::host_goto(ScreenId s, int tab) {
+  nav_.reset(ScreenId::Home);
+  if (s == ScreenId::Lock) nav_.reset(ScreenId::Lock);
+  else if (s != ScreenId::Home) nav_.push(s);
+  focus_.index = 0;
+  notes_tab_ = tab;
+  clock_tab_ = tab;
+  if (s == ScreenId::Pin) pin_enter_empty_slot();
+  dirty_kind_ = DirtyKind::FullCanvas;
+}
+#endif
+
 void App::draw_status_bar() {
   int h = 0, m = 0, wd = 0, mo = 0, d = 0;
   clock_.local_hm(h, m, wd, mo, d);
@@ -1142,221 +1160,64 @@ void App::render() {
 // --- Lock / PIN -----------------------------------------------------------
 
 void App::render_lock() {
-  // Calm face — no clock, no press hint, no battery %. Static art needs no ticking refresh.
-  const int wm_w = canvas_.text_width("Pocket", Canvas::TextRole::WordMark);
-  const int wm_cx = kCanvasW / 2 + 18;  // nudge right so the mark balances the wordmark
-  draw_pocket_mark(wm_cx - wm_w / 2 - 14, 56 + canvas_.text_height(Canvas::TextRole::WordMark) / 2);
-  canvas_.draw_text_centered(wm_cx, 56, "Pocket", Canvas::TextRole::WordMark, Gray::G0);
+  // Sleep face: a full-bleed generative print over a quiet paper plate. Static —
+  // no clock, no hints — so the panel can hold it with zero refreshes.
+  constexpr int kArtH = 680;
+  const bool plain = cfg_.screensaver == kScreensaverPlain;
+  if (plain) {
+    const int wm_w = canvas_.text_width("Pocket", Canvas::TextRole::WordMark);
+    const int mark = 30;
+    const int total = mark + 14 + wm_w;
+    const int x0 = (kCanvasW - total) / 2;
+    const int y = 330;
+    draw_pocket_mark(x0 + mark, y + canvas_.text_height(Canvas::TextRole::WordMark) / 2);
+    canvas_.draw_text(x0 + mark + 14, y, "Pocket", Canvas::TextRole::WordMark, Gray::G0);
+    canvas_.dotted_hline(kCanvasW / 2 - 60, y + 72, 120, Gray::G0, 3);
+    if (!cfg_.lock_message.empty()) {
+      const int tw = std::min(kContentW, canvas_.text_width(cfg_.lock_message, Canvas::TextRole::Secondary));
+      canvas_.draw_text_fit((kCanvasW - tw) / 2, y + 92, kContentW, cfg_.lock_message,
+                            Canvas::TextRole::Secondary, Gray::G0);
+    }
+    return;
+  }
 
   draw_lock_motif();
 
-  // Optional custom message — set in Settings → Display or Companion. Empty by default.
+  // Plate: wordmark left, piece credit right, optional owner message beneath.
+  canvas_.fill_rect(0, kArtH, kCanvasW, kCanvasH - kArtH, Gray::G3);
+  canvas_.hline(0, kArtH, kCanvasW, Gray::G0);
+  const int wm_y = kArtH + 22;
+  const int wm_h = canvas_.text_height(Canvas::TextRole::WordMark);
+  draw_pocket_mark(kSideMargin + 26, wm_y + wm_h / 2);
+  canvas_.draw_text(kSideMargin + 38, wm_y, "Pocket", Canvas::TextRole::WordMark, Gray::G0);
+  char credit[40];
+  std::snprintf(credit, sizeof(credit), "No. %d  \xC2\xB7  %s", lock_motif_index_ + 1,
+                screensaver_name(lock_motif_index_));
+  const int cw = canvas_.text_width(credit, Canvas::TextRole::Caption);
+  const int cap_y = wm_y + (wm_h - canvas_.text_height(Canvas::TextRole::Caption)) / 2 + 3;
+  canvas_.draw_text(kCanvasW - kSideMargin - cw, cap_y, credit, Canvas::TextRole::Caption, Gray::G0);
   if (!cfg_.lock_message.empty()) {
-    canvas_.draw_text_fit(kSideMargin, kFooterY, kContentW, cfg_.lock_message, Canvas::TextRole::Secondary,
-                          Gray::G1);
+    canvas_.draw_text_fit(kSideMargin, wm_y + wm_h + 4, kContentW, cfg_.lock_message,
+                          Canvas::TextRole::Secondary, Gray::G0);
   }
 }
 
 /** Small geometric mark to the left of the "Pocket" wordmark: a folded-corner square,
  * echoing a pocket without being a literal icon. `right_x` is the mark's right edge. */
 void App::draw_pocket_mark(int right_x, int cy) {
-  constexpr int kSize = 30;
+  constexpr int kSize = 24;
   const int x = right_x - kSize;
   const int y = cy - kSize / 2;
-  canvas_.stroke_round_rect(x, y, kSize, kSize, 6, Gray::G0, 2);
-  // Folded corner — small filled triangle at top-right, reads as a pocket flap.
-  constexpr int kFold = 11;
+  canvas_.stroke_round_rect(x, y, kSize, kSize, 5, Gray::G0, 3);
+  constexpr int kFold = 10;
   for (int i = 0; i < kFold; ++i) {
     canvas_.hline(x + kSize - kFold + i, y + i, kFold - i, Gray::G0);
   }
 }
 
 void App::draw_lock_motif() {
-  constexpr int kTop = 180;
-  constexpr int kBot = 620;
-  constexpr int cx = kCanvasW / 2;
-  const int motif = ((lock_motif_index_ % kLockMotifCount) + kLockMotifCount) % kLockMotifCount;
-
-  // Designed compositions (v71): denser filled scenes — layered masses, clear hierarchy,
-  // no sparse scribble webs. Helpers are local and cheap on 2bpp.
-  auto fill_disc = [this](int ox, int oy, int r, Gray g) {
-    for (int yy = -r; yy <= r; ++yy) {
-      const int half_w = static_cast<int>(std::sqrt(static_cast<double>(r * r - yy * yy)));
-      canvas_.hline(ox - half_w, oy + yy, 2 * half_w + 1, g);
-    }
-  };
-  auto fill_ring = [this, &fill_disc](int ox, int oy, int r_outer, int r_inner, Gray g) {
-    if (r_outer <= r_inner) return;
-    fill_disc(ox, oy, r_outer, g);
-    fill_disc(ox, oy, r_inner, Gray::G3);
-  };
-  auto fill_diamond = [this](int ox, int oy, int r, Gray g) {
-    for (int yy = -r; yy <= r; ++yy) {
-      const int half_w = r - std::abs(yy);
-      canvas_.hline(ox - half_w, oy + yy, 2 * half_w + 1, g);
-    }
-  };
-  auto thick_band = [this](int x0, int y0, int x1, int y1, int thickness, Gray g) {
-    const int dx = x1 - x0;
-    const int dy = y1 - y0;
-    const int steps = std::max(1, std::max(std::abs(dx), std::abs(dy)));
-    const int r = std::max(1, thickness / 2);
-    for (int s = 0; s <= steps; ++s) {
-      const int x = x0 + dx * s / steps;
-      const int y = y0 + dy * s / steps;
-      canvas_.fill_round_rect(x - r, y - r, 2 * r + 1, 2 * r + 1, r, g);
-    }
-  };
-  auto fill_peak = [this](int peak_x, int peak_y, int half_w, int base_y, Gray g) {
-    for (int y = peak_y; y < base_y; ++y) {
-      const int t = y - peak_y;
-      const int span = half_w * t / std::max(1, base_y - peak_y);
-      canvas_.hline(peak_x - span, y, 2 * span + 1, g);
-    }
-  };
-
-  switch (motif) {
-    case 0: {
-      // "Horizon" — quieter sky, clearer sun placement, even water mirror (v81).
-      const int horizon_y = kTop + 230;
-      // Soft sky wash — one calm band (less noise than stacked slabs).
-      canvas_.fill_rect(0, kTop + 36, kCanvasW, 40, Gray::G2);
-      // Far ridge silhouette.
-      for (int x = 0; x < kCanvasW; ++x) {
-        const int rise = 14 + static_cast<int>(9.0 * std::sin((x + 40) * 0.030));
-        canvas_.vline(x, horizon_y - 64 - rise, rise + 64, Gray::G2);
-      }
-      // Mid hill.
-      for (int x = 0; x < kCanvasW; ++x) {
-        const int rise = 32 - std::abs(x - (cx - 40)) / 7;
-        if (rise > 0) canvas_.vline(x, horizon_y - rise, rise, Gray::G1);
-      }
-      // Near shore band + soft crest.
-      canvas_.fill_rect(0, horizon_y, kCanvasW, kBot - horizon_y + 20, Gray::G1);
-      for (int x = 28; x < kCanvasW - 28; ++x) {
-        const int rise = 18 - std::abs(x - (cx + 24)) / 11;
-        if (rise > 0) canvas_.vline(x, horizon_y - rise, rise, Gray::G0);
-      }
-      // Sun with soft corona — sits just above the mid ridge.
-      fill_ring(cx + 14, horizon_y - 100, 56, 46, Gray::G2);
-      fill_disc(cx + 14, horizon_y - 100, 38, Gray::G0);
-      // Water reflections — even cadence, stepping narrower.
-      for (int i = 0; i < 5; ++i) {
-        const int y = horizon_y + 30 + i * 34;
-        const int inset = 60 + i * 34;
-        const int h = (i < 2) ? 6 : 4;
-        canvas_.fill_round_rect(inset, y, kCanvasW - 2 * inset, h, 2,
-                                (i % 2 == 0) ? Gray::G0 : Gray::G2);
-      }
-      break;
-    }
-    case 1: {
-      // "Tide" — moon clear of ripples; calmer rings; soft path (v81).
-      const int oy = kTop + 270;
-      // Moon high and left — never reads as a padlock shackle on the outer ring.
-      fill_ring(cx - 160, kTop + 44, 30, 24, Gray::G2);
-      fill_disc(cx - 160, kTop + 44, 20, Gray::G0);
-      fill_ring(cx, oy, 192, 178, Gray::G2);
-      fill_ring(cx, oy, 158, 142, Gray::G1);
-      fill_ring(cx, oy, 116, 98, Gray::G1);
-      fill_ring(cx, oy, 74, 54, Gray::G0);
-      fill_disc(cx, oy, 22, Gray::G0);
-      // Soft vertical highlight — moon path on water.
-      for (int i = 0; i < 4; ++i) {
-        const int y = oy + 42 + i * 28;
-        const int w = 14 - i * 3;
-        if (w > 0) canvas_.fill_round_rect(cx - w / 2, y, w, 4, 2, Gray::G2);
-      }
-      break;
-    }
-    case 2: {
-      // "Ridge" — tighter peaks, clearer snow caps, quieter sun (v81).
-      const int base_y = kBot - 48;
-      canvas_.fill_rect(0, base_y, kCanvasW, 16, Gray::G1);
-      canvas_.fill_rect(56, base_y + 5, kCanvasW - 112, 7, Gray::G0);
-      fill_peak(cx - 124, kTop + 152, 140, base_y, Gray::G2);
-      fill_peak(cx + 114, kTop + 112, 150, base_y, Gray::G1);
-      fill_peak(cx - 4, kTop + 52, 116, base_y, Gray::G0);
-      // Snow caps on the two taller peaks.
-      fill_peak(cx + 114, kTop + 112, 36, kTop + 168, Gray::G3);
-      fill_peak(cx - 4, kTop + 52, 32, kTop + 118, Gray::G3);
-      fill_disc(cx + 152, kTop + 52, 16, Gray::G0);
-      break;
-    }
-    case 3: {
-      // "Constellation" — quieter field, thinner ladle bands (v87 RC).
-      struct Pt { int x, y; };
-      const Pt field[] = {
-          {cx - 150, kTop + 96},  {cx + 160, kTop + 88},  {cx - 28, kTop + 48},
-          {cx + 36, kTop + 400},  {cx - 140, kTop + 350}, {cx + 148, kTop + 290},
-      };
-      for (const auto& p : field) fill_diamond(p.x, p.y, 4, Gray::G2);
-      const Pt pts[] = {
-          {cx - 120, kTop + 150}, {cx - 36, kTop + 118}, {cx + 46, kTop + 136},
-          {cx + 112, kTop + 186}, {cx + 84, kTop + 258}, {cx + 8, kTop + 286},
-          {cx - 64, kTop + 266},
-      };
-      constexpr int kEdges[][2] = {{0, 1}, {1, 2}, {2, 3}, {3, 4}, {4, 5}, {5, 6}, {6, 3}};
-      for (const auto& e : kEdges) {
-        thick_band(pts[e[0]].x, pts[e[0]].y, pts[e[1]].x, pts[e[1]].y, 4, Gray::G1);
-      }
-      for (size_t i = 0; i < sizeof(pts) / sizeof(pts[0]); ++i) {
-        const int r = (i == 3) ? 12 : 8;
-        fill_diamond(pts[i].x, pts[i].y, r, Gray::G0);
-      }
-      break;
-    }
-    case 4: {
-      // "Harbor dusk" — fewer buildings, calmer windows, quieter water (v87 RC).
-      const int base_y = kBot - 70;
-      fill_ring(cx - 140, kTop + 70, 32, 26, Gray::G2);
-      fill_disc(cx - 140, kTop + 70, 22, Gray::G0);
-      canvas_.fill_rect(0, base_y, kCanvasW, kBot - base_y + 20, Gray::G1);
-      canvas_.fill_rect(32, base_y, kCanvasW - 64, 8, Gray::G0);
-      struct Bldg { int x, w, h; Gray g; };
-      const Bldg blds[] = {
-          {48, 40, 170, Gray::G1},  {100, 26, 110, Gray::G2}, {134, 46, 220, Gray::G1},
-          {190, 32, 150, Gray::G2}, {230, 54, 260, Gray::G0}, {294, 28, 130, Gray::G1},
-          {330, 42, 190, Gray::G1}, {380, 26, 120, Gray::G2}, {414, 48, 170, Gray::G1},
-      };
-      for (const auto& b : blds) {
-        const int y0 = base_y - b.h;
-        canvas_.fill_rect(b.x, y0, b.w, b.h, b.g);
-        for (int wy = y0 + 24; wy < base_y - 24; wy += 40) {
-          for (int wx = b.x + 10; wx + 6 < b.x + b.w - 6; wx += 18) {
-            canvas_.fill_rect(wx, wy, 5, 7, Gray::G2);
-          }
-        }
-      }
-      canvas_.fill_rect(230 + 22, base_y - 288, 8, 28, Gray::G0);
-      for (int i = 0; i < 4; ++i) {
-        const int bx = 100 + i * 78;
-        canvas_.fill_round_rect(bx, base_y + 24 + (i % 2) * 8, 32 - i * 2, 4, 2, Gray::G0);
-      }
-      break;
-    }
-    default: {
-      // "Aperture" — three nested frames, even weight, quieter iris (v87 RC).
-      constexpr int kSteps = 3;
-      const int max_size = kBot - kTop - 48;
-      const int cy = kTop + 24 + max_size / 2;
-      for (int i = 0; i < kSteps; ++i) {
-        const int size = max_size - i * 110;
-        if (size <= 64) break;
-        const int x = cx - size / 2;
-        const int y = cy - size / 2;
-        const Gray g = (i % 2 == 0) ? Gray::G1 : Gray::G2;
-        const int rad = 22 - i * 2;
-        canvas_.fill_round_rect(x, y, size, size, rad, g);
-        const int inset = 18;
-        canvas_.fill_round_rect(x + inset, y + inset, size - 2 * inset, size - 2 * inset,
-                                std::max(8, rad - 6), Gray::G3);
-      }
-      fill_ring(cx, cy, 44, 34, Gray::G1);
-      fill_disc(cx, cy, 18, Gray::G0);
-      break;
-    }
-  }
+  const int piece = ((lock_motif_index_ % kLockMotifCount) + kLockMotifCount) % kLockMotifCount;
+  draw_screensaver(canvas_, piece, 0, 0, kCanvasW, 680, lock_seed_);
 }
 
 void App::handle_lock(InputEvent e) {
@@ -1391,7 +1252,7 @@ void App::draw_pin_entry(bool mask_completed, int band_top) {
   char prog[32];
   const int at = std::min(static_cast<int>(pin_entry_.size()) + 1, n);
   std::snprintf(prog, sizeof(prog), "Digit %d of %d", at, n);
-  canvas_.draw_text_centered(kCanvasW / 2, slot_y - 36, prog, Canvas::TextRole::Secondary, Gray::G1);
+  canvas_.draw_text_centered(kCanvasW / 2, slot_y - 36, prog, Canvas::TextRole::Caption, Gray::G0);
 
   // Fixed digit cell width so 1 vs 0 doesn't optically "jump" sideways on spin.
   int dig_box = 0;
@@ -1409,38 +1270,40 @@ void App::draw_pin_entry(bool mask_completed, int band_top) {
     const bool filled = i < static_cast<int>(pin_entry_.size());
 
     // Solid slot fill first — critical for e-ink partial refresh correctness.
+    const int dig_y = slot_y + (kSlotH - canvas_.text_height(Canvas::TextRole::PinDigit)) / 2;
     if (focused) {
-      canvas_.fill_rect(x, slot_y, kSlotW, kSlotH, Gray::G0);
+      canvas_.fill_round_rect(x, slot_y, kSlotW, kSlotH, 10, Gray::G0);
       // Always paint the live working digit (equals pin_slot_value(i)).
       char s[2] = {pin_digit_working_, 0};
       const int tw = canvas_.text_width(s, Canvas::TextRole::PinDigit);
       const int tx = x + (kSlotW - dig_box) / 2 + (dig_box - tw) / 2;
       // White digit on black focus — high contrast; flips cleanly on partials.
-      canvas_.draw_text(tx, slot_y + 16, s, Canvas::TextRole::PinDigit, Gray::G3);
+      canvas_.draw_text(tx, dig_y, s, Canvas::TextRole::PinDigit, Gray::G3);
     } else if (filled) {
       canvas_.fill_rect(x, slot_y, kSlotW, kSlotH, Gray::G3);
-      canvas_.stroke_rect(x, slot_y, kSlotW, kSlotH, Gray::G2);
+      canvas_.stroke_round_rect(x, slot_y, kSlotW, kSlotH, 10, Gray::G0, 2, Gray::G3);
       if (mask_completed) {
         const int cx = x + kSlotW / 2;
         const int cy = slot_y + kSlotH / 2;
-        canvas_.fill_round_rect(cx - 8, cy - 8, 16, 16, 8, Gray::G0);
+        canvas_.fill_disc(cx, cy, 8, Gray::G0);
       } else {
         char s[2] = {pin_entry_[static_cast<size_t>(i)], 0};
         const int tw = canvas_.text_width(s, Canvas::TextRole::PinDigit);
         const int tx = x + (kSlotW - dig_box) / 2 + (dig_box - tw) / 2;
-        canvas_.draw_text(tx, slot_y + 16, s, Canvas::TextRole::PinDigit, Gray::G0);
+        canvas_.draw_text(tx, dig_y, s, Canvas::TextRole::PinDigit, Gray::G0);
       }
     } else {
+      // Empty slot: dotted outline + baseline tick — clearly a slot, quieter than a filled one.
       canvas_.fill_rect(x, slot_y, kSlotW, kSlotH, Gray::G3);
-      canvas_.stroke_rect(x, slot_y, kSlotW, kSlotH, Gray::G2);
-      canvas_.hline(x + 10, slot_y + kSlotH / 2, kSlotW - 20, Gray::G2);
+      canvas_.stroke_round_rect(x, slot_y, kSlotW, kSlotH, 10, Gray::G0, 1, Gray::G3);
+      canvas_.fill_rect(x + 16, slot_y + kSlotH - 18, kSlotW - 32, 3, Gray::G0);
     }
   }
 
-  canvas_.draw_text_centered(kCanvasW / 2, slot_y + kSlotH + 28, "Turn to choose · Press to set",
-                             Canvas::TextRole::Secondary, Gray::G1);
-  canvas_.draw_text_centered(kCanvasW / 2, slot_y + kSlotH + 56, "Back erases a digit",
-                             Canvas::TextRole::Secondary, Gray::G1);
+  canvas_.draw_text_centered(kCanvasW / 2, slot_y + kSlotH + 26, "Turn to choose \xC2\xB7 Press to set",
+                             Canvas::TextRole::Caption, Gray::G0);
+  canvas_.draw_text_centered(kCanvasW / 2, slot_y + kSlotH + 52, "Back erases a digit",
+                             Canvas::TextRole::Caption, Gray::G0);
 }
 
 void App::render_pin() {

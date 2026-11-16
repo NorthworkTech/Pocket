@@ -1,6 +1,7 @@
 #include "pocket/app.hpp"
 #include <algorithm>
 #include <cstdint>
+#include <cstdio>
 #include <string>
 #include <vector>
 
@@ -89,52 +90,30 @@ constexpr int kHomeOrder[kHomeGridSlots] = {0, 1, 2, 3, 4, 5, 8, 6, 7, 9, 10, 11
 
 HomeApp slot_app(int i) { return static_cast<HomeApp>(kHomeOrder[i]); }
 
-/** iPhone-style Home: 3 columns of square rounded icons with labels underneath.
- * v60+: content-sized rows (no stretch-to-fill air between label and next icon). */
+/** Home: editorial header (greeting + date) over an evenly spaced 3-column grid
+ * that uses the whole page — no dead band at the bottom. */
 constexpr int kHomeCols = 3;
-constexpr int kHomeGapX = 16;
-constexpr int kHomeGapY = 8;
-/** WordMark (49) + hairline rule + air before the grid — must clear the brand. */
-constexpr int kHomeBrandBand = 56;
-constexpr int kHomeBottomPad = 16;
-/** Cap so icons stay calm — slight size from v59 OK. */
-constexpr int kHomeIconMax = 100;
+constexpr int kHomeGapX = 18;
+/** Header: greeting (ScreenTitle) + date (Secondary) + rule. */
+constexpr int kHomeHeaderH = 112;
+constexpr int kHomeBottomPad = 18;
+constexpr int kHomeIconMax = 108;
 constexpr int kHomeIconMin = 68;
 
-/** Cell metrics for an iOS-style grid: square icon + label band under it. */
+/** Cell metrics: square icon + label band; rows share the remaining height evenly. */
 void home_grid_metrics(int n_focus, int label_band_h, int* out_grid_top, int* out_cell_w,
                        int* out_cell_h, int* out_icon) {
-  const int grid_top_min = kContentTop + kHomeBrandBand;
+  const int grid_top = kContentTop + kHomeHeaderH;
   const int rows = std::max(1, (n_focus + kHomeCols - 1) / kHomeCols);
   const int cell_w = (kCanvasW - 2 * kSideMargin - (kHomeCols - 1) * kHomeGapX) / kHomeCols;
-  // Size icon from column width — do NOT stretch cell_h to fill leftover canvas height
-  // (that was the loose vertical rhythm on v59).
-  int icon = std::min(cell_w - 4, kHomeIconMax);
+  const int avail = kCanvasH - grid_top - kHomeBottomPad;
+  const int row_h = std::min(avail / std::max(3, rows), kHomeIconMax + label_band_h + 60);
+  int icon = std::min({cell_w - 16, kHomeIconMax, row_h - label_band_h - 18});
   icon = std::max(kHomeIconMin, icon);
-  const int cell_h = icon + label_band_h + 4;
-  const int grid_h = rows * cell_h + (rows - 1) * kHomeGapY;
-  const int avail = kCanvasH - grid_top_min - kHomeBottomPad;
-  // Pack from the top; only a little leftover air above the grid (never between rows).
-  int grid_top = grid_top_min;
-  if (avail > grid_h) {
-    grid_top = grid_top_min + std::min(20, (avail - grid_h) / 6);
-  }
   *out_grid_top = grid_top;
   *out_cell_w = cell_w;
-  *out_cell_h = cell_h;
+  *out_cell_h = row_h;
   *out_icon = icon;
-}
-
-void home_cell_rect(int index, int n_focus, int label_band_h, int* out_x, int* out_y, int* out_w,
-                    int* out_h) {
-  int grid_top = 0, cell_w = 0, cell_h = 0, icon = 0;
-  home_grid_metrics(n_focus, label_band_h, &grid_top, &cell_w, &cell_h, &icon);
-  const int col = index % kHomeCols;
-  const int row = index / kHomeCols;
-  *out_x = kSideMargin + col * (cell_w + kHomeGapX);
-  *out_y = grid_top + row * (cell_h + kHomeGapY);
-  *out_w = cell_w;
-  *out_h = cell_h;
 }
 
 /** Word-wrap `text` into at most `max_lines` centered lines within `max_w`,
@@ -205,11 +184,25 @@ int count_home_focusable(const DeviceConfig& cfg, HomeApp* out, int cap) {
 void App::render_home() {
   draw_status_bar();
 
-  // Product brand — no version number on Home. Wordmark stays the bitmap font.
-  canvas_.draw_text(kSideMargin, kContentTop, kProductName, Canvas::TextRole::WordMark, Gray::G0);
-  const int brand_rule_y = kContentTop + canvas_.text_height(Canvas::TextRole::WordMark) + 8;
-  // Short G1 rule under the mark — matches status-bar hairline weight (v87 RC).
-  canvas_.hline(kSideMargin, brand_rule_y, 96, Gray::G1);
+  // Header — a calm greeting and today's date instead of a product label.
+  static const char* kDays[] = {"Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday",
+                                "Saturday"};
+  static const char* kMonthsLong[] = {"January", "February", "March",     "April",   "May",      "June",
+                                      "July",    "August",   "September", "October", "November", "December"};
+  int hh = 0, mm = 0, wd = 0, mo = 0, day = 0;
+  clock_.local_hm(hh, mm, wd, mo, day);
+  const char* greet = "Good evening";
+  if (!clock_.time_valid()) greet = "Hello";
+  else if (hh >= 4 && hh < 12) greet = "Good morning";
+  else if (hh >= 12 && hh < 17) greet = "Good afternoon";
+  canvas_.draw_text(kSideMargin, kContentTop, greet, Canvas::TextRole::ScreenTitle, Gray::G0);
+  if (clock_.time_valid()) {
+    char date[48];
+    std::snprintf(date, sizeof(date), "%s, %s %d", kDays[((wd % 7) + 7) % 7], kMonthsLong[((mo % 12) + 12) % 12],
+                  day);
+    canvas_.draw_text(kSideMargin, kContentTop + 50, date, Canvas::TextRole::Secondary, Gray::G0);
+  }
+  canvas_.dotted_hline(kSideMargin, kContentTop + kHomeHeaderH - 22, kContentW, Gray::G0, 3);
 
   HomeApp focusable[kHomeGridSlots];
   const int n_focus = count_home_focusable(cfg_, focusable, kHomeGridSlots);
@@ -217,46 +210,41 @@ void App::render_home() {
   if (focus_.index >= focus_.count) focus_.index = 0;
   const HomeApp focused = n_focus > 0 ? focusable[focus_.index] : HomeApp::Settings;
 
-  const int label_line_h = canvas_.text_height(Canvas::TextRole::Secondary) + 2;
-  const int label_band_h = label_line_h + 4;
+  const int label_band_h = canvas_.text_height(Canvas::TextRole::Secondary) + 6;
   int grid_top = 0, cell_w = 0, cell_h = 0, icon = 0;
   home_grid_metrics(n_focus, label_band_h, &grid_top, &cell_w, &cell_h, &icon);
-  // iOS corner radius ≈ 22% of icon edge.
-  const int radius = std::max(12, icon * 22 / 100);
+  const int radius = std::max(14, icon * 26 / 100);
 
   for (int i = 0; i < n_focus; ++i) {
     const int col = i % kHomeCols;
     const int row = i / kHomeCols;
     const int cell_x = kSideMargin + col * (cell_w + kHomeGapX);
-    const int cell_y = grid_top + row * (cell_h + kHomeGapY);
+    const int cell_y = grid_top + row * cell_h;
     const HomeApp a = focusable[i];
     const bool is_focus = a == focused;
     const int label_i = static_cast<int>(a);
-    const char* label =
-        (label_i >= 0 && label_i < kHomeGridSlots) ? kAppLabels[label_i] : "";
+    const char* label = (label_i >= 0 && label_i < kHomeGridSlots) ? kAppLabels[label_i] : "";
 
-    // Square icon centered in the cell width; label band sits under it.
+    const int block_h = icon + label_band_h;
     const int icon_x = cell_x + (cell_w - icon) / 2;
-    const int icon_y = cell_y;
-    const int glyph_cx = icon_x + icon / 2;
-    const int glyph_cy = icon_y + icon / 2;
-    const int label_top = icon_y + icon + 4;
-    const int label_max_w = cell_w - 4;
+    const int icon_y = cell_y + std::max(0, (cell_h - block_h) / 2 - 4);
+    const int label_top = icon_y + icon + 6;
 
     if (is_focus) {
-      // Solid black plate + white glyph — high contrast focus that flips cleanly
-      // under content-band partials (no muddy mid-gray focus fill).
       canvas_.fill_round_rect(icon_x, icon_y, icon, icon, radius, Gray::G0);
-      draw_app_glyph(canvas_, a, glyph_cx, glyph_cy, icon, Gray::G3);
+      draw_app_glyph(canvas_, a, icon_x + icon / 2, icon_y + icon / 2, icon, Gray::G3);
     } else {
-      // Paper plate + hairline outline — glyph reads as ink on stationery.
-      canvas_.fill_round_rect(icon_x, icon_y, icon, icon, radius, Gray::G3);
-      canvas_.stroke_round_rect(icon_x, icon_y, icon, icon, radius, Gray::G1, 1, Gray::G3);
-      draw_app_glyph(canvas_, a, glyph_cx, glyph_cy, icon, Gray::G0);
+      canvas_.stroke_round_rect(icon_x, icon_y, icon, icon, radius, Gray::G0, 2, Gray::G3);
+      draw_app_glyph(canvas_, a, icon_x + icon / 2, icon_y + icon / 2, icon, Gray::G0);
     }
-    // Name centered under the icon — always ink on paper (iPhone-style caption).
-    draw_label_wrapped_centered(canvas_, cell_x + cell_w / 2, label_top, label_max_w, 1, label,
-                                Gray::G0);
+    const Canvas::TextRole role = is_focus ? Canvas::TextRole::BodyStrong : Canvas::TextRole::Secondary;
+    const int lw = canvas_.text_width(label, role);
+    const int ly = label_top + (is_focus ? -2 : 0);
+    if (lw <= cell_w) {
+      canvas_.draw_text(cell_x + (cell_w - lw) / 2, ly, label, role, Gray::G0);
+    } else {
+      draw_label_wrapped_centered(canvas_, cell_x + cell_w / 2, ly, cell_w - 4, 1, label, Gray::G0);
+    }
   }
 }
 

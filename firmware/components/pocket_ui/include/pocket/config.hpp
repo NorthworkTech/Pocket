@@ -38,7 +38,7 @@ struct DeviceConfig {
   bool companion_linked = false;
   std::string fw_channel = "stable";
   /** Consumer-facing semver shown in About / Update — never a POCKET-LIVE flash marker. */
-  std::string fw_version = "1.7.7";
+  std::string fw_version = "1.8.0";
   std::string fw_build_id;  // internal OTA id e.g. POCKET-LIVE-v38-… (not shown to users)
   std::string device_id;  // UUID
   std::string device_token;
@@ -65,11 +65,14 @@ struct DeviceConfig {
   /** Settings → Display → "Ghosting control": force a full e-ink flash more often
    * (every 8 partials instead of 16) for users who notice residual ghosting. */
   bool ghosting_frequent = false;
+  /** Lock/sleep screensaver: 0 = rotate through the collection on each lock,
+   * 1..kScreensaverCount = always that piece, kScreensaverPlain = wordmark only. */
+  uint8_t screensaver = 0;
 };
 
 /** Consumer product branding (UI). Flash markers stay in `fw_build_id` only. */
 inline constexpr const char* kProductName = "Pocket Classic";
-inline constexpr const char* kConsumerVersion = "1.7.7";
+inline constexpr const char* kConsumerVersion = "1.8.0";
 /** Body/list placeholder while a voice clip waits for cloud STT (honest offline UX). */
 inline constexpr const char* kVoicePendingText = "Voice clip — will become text when online";
 /** Spec §E: keep last known entitlement for local use while offline this long. */
