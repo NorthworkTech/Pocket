@@ -1,5 +1,6 @@
 #include "pocket/app.hpp"
 #include "pocket/ui.hpp"
+#include "pocket/release.hpp"
 #include <algorithm>
 #include <cstdio>
 #include <string>
@@ -56,7 +57,7 @@ void App::mark_list_focus_dirty(int list_top, int prev, int next) {
   const int i0 = std::min(prev, next);
   const int i1 = std::max(prev, next);
   const int y = std::max(0, row_y(list_top, i0) - 4);
-  const int bottom = std::min(kCanvasH, row_y(list_top, i1) + kFocusRowH + 4);
+  const int bottom = std::min(kCanvasH, row_y(list_top, i1) + kRowPitch);  // incl. the hairline under the row
   mark_region_dirty(0, y, kCanvasW, bottom - y);
 }
 
@@ -90,7 +91,7 @@ void App::render_settings() {
         {"PIN & security", Icon::Lock, ""},     {"Wi-Fi", Icon::Wifi, wifi_val},
         {"Display", Icon::Display, ""},         {"Sound & mic", Icon::Sound, ""},
         {"Home apps", Icon::Home, ""},          {"Units", Icon::Weather, cfg_.weather_units ? "\xC2\xB0" "C" : "\xC2\xB0" "F"},
-        {"Pocket Cloud", Icon::Cloud, cloud_val}, {"Software update", Icon::Update, kConsumerVersion},
+        {"Pocket Cloud", Icon::Cloud, cloud_val}, {"Software update", Icon::Update, kOsVersion},
         {"About", Icon::Info, ""},
     };
     focus_.count = 9;
@@ -104,7 +105,7 @@ void App::render_settings() {
   if (s == ScreenId::SettingsAbout) {
     ui::header(canvas_, "About", true);
     char ver[32];
-    std::snprintf(ver, sizeof(ver), "%s", kConsumerVersion);
+    std::snprintf(ver, sizeof(ver), "%s (%s)", kOsDisplayName, kConsumerVersion);
     int y = kListTop + 4;
     y = ui::kv(canvas_, y, "Model", kProductName);
     y = ui::kv(canvas_, y, "Name", cfg_.device_name);
@@ -113,7 +114,7 @@ void App::render_settings() {
     y = ui::kv(canvas_, y, "Companion", cfg_.companion_linked ? "Linked" : "Not linked");
     ui::section(canvas_, y + 2, "What's new");
     canvas_.draw_text_wrapped(kSideMargin, y + 34, kContentW, kWrapGap,
-                              "Alarms and timers, a working Weather city, scrolling lists, safer saving, and many fixes.",
+                              kReleaseNoteCount > 0 ? kReleaseNotes[0] : "",
                               Canvas::TextRole::Secondary, Gray::G0);
     focus_.count = 3;
     const Row acts[3] = {{"Controls tips", RowKind::Nav},
@@ -243,7 +244,7 @@ void App::render_settings() {
 
   if (s == ScreenId::SettingsUpdate) {
     ui::header(canvas_, "Software update", true);
-    int y = ui::kv(canvas_, kListTop + 4, "Installed", kConsumerVersion);
+    int y = ui::kv(canvas_, kListTop + 4, "Installed", kOsDisplayName);
     y = ui::kv(canvas_, y, "Channel", cfg_.fw_channel == "stable" ? "Stable" : cfg_.fw_channel);
     (void)y;
     canvas_.draw_text_fit(kSideMargin, kListTop + 106, kContentW,
@@ -253,30 +254,6 @@ void App::render_settings() {
     const Row rows[2] = {{"Check for update", RowKind::Action, {}, false, Icon::Update, true},
                          {"Back", RowKind::Back}};
     for (int i = 0; i < 2; ++i) ui::row(canvas_, row_y(kListTop + 72 + 2 * kBodyLinePitch, i), rows[i], i == focus_.index);
-    return;
-  }
-
-  if (s == ScreenId::SettingsUpdateProgress) {
-    ui::header(canvas_, "Updating");
-    ui::empty_state(canvas_, Icon::Update, ota_status_.empty() ? "Working\xE2\x80\xA6" : ota_status_,
-                    "Keep Pocket plugged in. It restarts when the update is installed.", 360);
-    if (ota_progress_ >= 0) {
-      const int by = 470;
-      canvas_.stroke_round_rect(kSideMargin, by, kContentW, 16, 8, Gray::G0, 2, Gray::G3);
-      const int fill = (kContentW - 8) * std::clamp(ota_progress_, 0, 100) / 100;
-      if (fill > 0) canvas_.fill_round_rect(kSideMargin + 4, by + 4, std::max(8, fill), 8, 4, Gray::G0);
-    }
-    return;
-  }
-
-  if (s == ScreenId::SettingsUpdateResult) {
-    ui::header(canvas_, "Software update");
-    const bool ok = ota_status_.empty() || ota_status_.find("up to date") != std::string::npos ||
-                    ota_status_.find("Up to date") != std::string::npos;
-    ui::empty_state(canvas_, ok ? Icon::Check : Icon::Info, ok ? "You're up to date" : "Update",
-                    ota_status_.empty() ? "Done." : ota_status_, 360);
-    focus_.count = 1;
-    ui::button(canvas_, kBottomCtaY, "OK", true);
     return;
   }
 
@@ -370,18 +347,6 @@ void App::render_settings() {
 
 void App::handle_settings(InputEvent e) {
   ScreenId s = nav_.current();
-  if (s == ScreenId::SettingsUpdateProgress) {
-    return;  // blocking update owns the screen
-  }
-  if (s == ScreenId::SettingsUpdateResult) {
-    if (e == InputEvent::Select || e == InputEvent::Back) {
-      // Back to wherever the check started (Home tile or Settings → Software update).
-      if (!nav_.pop()) nav_.reset(ScreenId::Home);
-      focus_.index = 0;
-      after_nav();
-    }
-    return;
-  }
 
   if (e == InputEvent::Back) {
     if (s == ScreenId::SettingsWifi && wifi_ui_page_ != 0) {

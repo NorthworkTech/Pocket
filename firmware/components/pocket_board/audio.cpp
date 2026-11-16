@@ -11,6 +11,7 @@
 #include "driver/gpio.h"
 #include "driver/i2c_master.h"
 #include "driver/i2s_std.h"
+#include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -35,9 +36,14 @@ bool ready_ = false;
 /** Background playback state — the UI loop never blocks on a track. */
 volatile bool play_stop_ = false;
 volatile bool playing_ = false;
-bool capturing_ = false;
-std::vector<uint8_t> capture_buf_;
-constexpr size_t kMaxCaptureBytes = 16000 * 2 * 2 * 5;  // ~5 s stereo @16 kHz
+volatile bool capturing_ = false;
+/** Raw stereo capture, filled by a dedicated task so e-ink refreshes / network on the UI
+ * loop can never starve the I2S DMA ring (which used to drop chunks of speech). */
+uint8_t* cap_buf_ = nullptr;
+size_t cap_cap_ = 0;
+volatile size_t cap_len_ = 0;
+volatile bool cap_task_running_ = false;
+constexpr size_t kMaxCaptureBytes = 16000 * 2 * 2 * 45;  // 45 s stereo @16 kHz (~2.9 MB, PSRAM)
 
 bool es_wr(uint8_t reg, uint8_t val) {
   if (!es_dev_) return false;
@@ -137,6 +143,9 @@ bool i2s_init() {
   // from the same ES8311) is enabled only during a capture window to save power.
   i2s_chan_config_t chan = I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_0, I2S_ROLE_MASTER);
   chan.auto_clear = true;
+  // Deeper DMA ring (8 × 480 frames ≈ 240 ms) so a busy moment never drops mic audio.
+  chan.dma_desc_num = 8;
+  chan.dma_frame_num = 480;
   if (i2s_new_channel(&chan, &tx_, &rx_) != ESP_OK) return false;
 
   i2s_std_config_t std = {};
@@ -410,58 +419,89 @@ bool audio_mic_supported() {
   return rx_ != nullptr;
 }
 
+void capture_task(void*) {
+  uint8_t chunk[4096];
+  while (capturing_) {
+    size_t nread = 0;
+    if (i2s_channel_read(rx_, chunk, sizeof(chunk), &nread, pdMS_TO_TICKS(100)) == ESP_OK && nread > 0) {
+      const size_t len = cap_len_;
+      const size_t take = std::min(nread, cap_cap_ - len);
+      if (take > 0) {
+        std::memcpy(cap_buf_ + len, chunk, take);
+        cap_len_ = len + take;
+      }
+    }
+  }
+  cap_task_running_ = false;
+  vTaskDelete(nullptr);
+}
+
 void audio_capture_start() {
   if (!audio_mic_supported()) return;
-  if (capturing_) return;
+  if (capturing_ || cap_task_running_) return;
   audio_stop();  // recording mutes the speaker — end any track cleanly first
-  capture_buf_.clear();
-  capture_buf_.reserve(std::min(kMaxCaptureBytes, static_cast<size_t>(64000)));
+  if (!cap_buf_) {
+    // Prefer PSRAM for the long buffer; fall back to a short internal one.
+    cap_buf_ = static_cast<uint8_t*>(heap_caps_malloc(kMaxCaptureBytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+    cap_cap_ = kMaxCaptureBytes;
+    if (!cap_buf_) {
+      cap_cap_ = 16000 * 2 * 2 * 4;
+      cap_buf_ = static_cast<uint8_t*>(malloc(cap_cap_));
+      if (!cap_buf_) {
+        cap_cap_ = 0;
+        ESP_LOGE(TAG, "no memory for mic capture");
+        return;
+      }
+    }
+  }
+  cap_len_ = 0;
   // Mute the speaker amp while recording so PA feedback doesn't swamp the mic.
   gpio_set_level(static_cast<gpio_num_t>(kPinPaCtrl), 0);
   // Re-assert mic PGA/volume each capture (safe if already set).
   es_wr(0x14, 0x1A);
   es_wr(0x17, 0xBF);
   es_wr(0x0E, 0x02);
-  if (i2s_channel_enable(rx_) == ESP_OK) {
-    capturing_ = true;
-    // Let the ADC / DMA settle; discard the first noisy chunk.
-    vTaskDelay(pdMS_TO_TICKS(60));
-    uint8_t discard[512];
-    size_t nread = 0;
-    (void)i2s_channel_read(rx_, discard, sizeof(discard), &nread, pdMS_TO_TICKS(30));
-  } else {
+  if (i2s_channel_enable(rx_) != ESP_OK) {
     gpio_set_level(static_cast<gpio_num_t>(kPinPaCtrl), 1);
+    return;
+  }
+  // Let the ADC settle; discard the first noisy chunk.
+  vTaskDelay(pdMS_TO_TICKS(40));
+  uint8_t discard[512];
+  size_t nread = 0;
+  (void)i2s_channel_read(rx_, discard, sizeof(discard), &nread, pdMS_TO_TICKS(30));
+  capturing_ = true;
+  cap_task_running_ = true;
+  if (xTaskCreatePinnedToCore(capture_task, "mic_cap", 6144, nullptr, 6, nullptr, 0) != pdPASS) {
+    capturing_ = false;
+    cap_task_running_ = false;
+    i2s_channel_disable(rx_);
+    gpio_set_level(static_cast<gpio_num_t>(kPinPaCtrl), 1);
+    ESP_LOGE(TAG, "mic task start failed");
   }
 }
 
 void audio_capture_poll() {
-  if (!capturing_ || !rx_) return;
-  if (capture_buf_.size() >= kMaxCaptureBytes) return;
-  uint8_t chunk[2048];
-  size_t nread = 0;
-  // Short block so a ~50 ms UI tick still drains DMA without spinning forever.
-  if (i2s_channel_read(rx_, chunk, sizeof(chunk), &nread, pdMS_TO_TICKS(20)) == ESP_OK && nread > 0) {
-    const size_t room = kMaxCaptureBytes - capture_buf_.size();
-    const size_t take = std::min(nread, room);
-    capture_buf_.insert(capture_buf_.end(), chunk, chunk + take);
-  }
+  // Capture drains on its own task; nothing to do on the UI loop.
 }
 
 MicCaptureResult audio_capture_stop() {
   MicCaptureResult result;
   if (!capturing_) return result;
-  // One last drain to catch anything still in the DMA buffer.
-  audio_capture_poll();
-  if (rx_) i2s_channel_disable(rx_);
+  // Keep the last ~120 ms in flight (end of the final word), then stop the task.
+  vTaskDelay(pdMS_TO_TICKS(120));
   capturing_ = false;
+  for (int i = 0; i < 30 && cap_task_running_; ++i) vTaskDelay(pdMS_TO_TICKS(10));
+  if (rx_) i2s_channel_disable(rx_);
   gpio_set_level(static_cast<gpio_num_t>(kPinPaCtrl), 1);
 
-  result.ok = !capture_buf_.empty();
+  const size_t cap_len = cap_len_;
+  result.ok = cap_len > 0;
   if (result.ok) {
     // Stereo interleaved 16-bit. Pick the louder channel (or average when similar) —
     // some board revisions wire the analog mic into R instead of L.
-    const auto* samples = reinterpret_cast<const int16_t*>(capture_buf_.data());
-    const size_t n_frames = capture_buf_.size() / (2 * sizeof(int16_t));
+    const auto* samples = reinterpret_cast<const int16_t*>(cap_buf_);
+    const size_t n_frames = cap_len / (2 * sizeof(int16_t));
     double sum_l = 0.0, sum_r = 0.0;
     for (size_t i = 0; i < n_frames; ++i) {
       const double l = samples[i * 2];
@@ -471,7 +511,8 @@ MicCaptureResult audio_capture_stop() {
     }
     const bool use_right = sum_r > sum_l * 1.25;
     const bool blend = !use_right && sum_l <= sum_r * 1.25 && sum_r > 0;
-    std::vector<int16_t> mono(n_frames);
+    // Downmix in place (mono[i] only overwrites frames already read).
+    auto* mono = reinterpret_cast<int16_t*>(cap_buf_);
     double sum_sq = 0.0;
     for (size_t i = 0; i < n_frames; ++i) {
       int16_t s;
@@ -486,8 +527,34 @@ MicCaptureResult audio_capture_stop() {
       mono[i] = s;
       sum_sq += static_cast<double>(s) * static_cast<double>(s);
     }
-    result.pcm.resize(mono.size() * sizeof(int16_t));
-    std::memcpy(result.pcm.data(), mono.data(), result.pcm.size());
+    // Trim leading/trailing silence (20 ms windows) — smaller upload, faster transcript.
+    constexpr size_t kWin = 320;
+    const size_t n_win = n_frames / kWin;
+    size_t first = 0, last = n_frames;
+    if (n_win > 4) {
+      std::vector<float> e(n_win);
+      float peak = 0.f;
+      for (size_t w = 0; w < n_win; ++w) {
+        double acc = 0.0;
+        for (size_t k = 0; k < kWin; ++k) {
+          const double v = mono[w * kWin + k];
+          acc += v * v;
+        }
+        e[w] = static_cast<float>(std::sqrt(acc / kWin));
+        peak = std::max(peak, e[w]);
+      }
+      const float thr = std::max(120.f, peak * 0.08f);
+      size_t w0 = 0, w1 = n_win;
+      while (w0 < n_win && e[w0] < thr) ++w0;
+      while (w1 > w0 && e[w1 - 1] < thr) --w1;
+      if (w0 < w1) {
+        constexpr size_t kPadWin = 12;  // keep 240 ms either side so soft consonants survive
+        first = (w0 > kPadWin ? w0 - kPadWin : 0) * kWin;
+        last = std::min(n_frames, (w1 + kPadWin) * kWin);
+      }
+    }
+    result.pcm.resize((last - first) * sizeof(int16_t));
+    std::memcpy(result.pcm.data(), mono + first, result.pcm.size());
     const double rms = n_frames ? std::sqrt(sum_sq / static_cast<double>(n_frames)) : 0.0;
     // 32767 full-scale → percent scale tuned so normal speech reads ~15-40%.
     result.level_percent = static_cast<int>(std::min(100.0, (rms / 32767.0) * 400.0));
@@ -497,7 +564,7 @@ MicCaptureResult audio_capture_stop() {
       result.pcm.clear();
     }
   }
-  capture_buf_.clear();
+  cap_len_ = 0;
   return result;
 }
 

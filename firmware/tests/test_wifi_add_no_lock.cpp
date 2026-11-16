@@ -159,7 +159,7 @@ int main() {
   CHECK(disp.busy());
 
   // Immediate Power / Back / Home on enter — must NOT Lock (RF glitch sim).
-  app.handle(InputEvent::Power);
+  app.handle(InputEvent::PowerLong);
   CHECK(app.screen() == ScreenId::OnboardingWifiPassword);
   CHECK(app.screen() != ScreenId::Lock);
   app.handle(InputEvent::Back);
@@ -178,7 +178,7 @@ int main() {
   CHECK(app.screen() != ScreenId::Lock);
 
   // Spurious gestures right as RF comes up.
-  app.handle(InputEvent::Power);
+  app.handle(InputEvent::PowerLong);
   app.handle(InputEvent::Back);
   CHECK(app.screen() == ScreenId::OnboardingWifiPassword);
   CHECK(app.screen() != ScreenId::Lock);
@@ -199,7 +199,7 @@ int main() {
   // After Cancel + RF guard expiry, Power locks again.
   clock.t += 4000;
   app.tick(clock.t);
-  app.handle(InputEvent::Power);
+  app.handle(InputEvent::PowerLong);
   CHECK(app.screen() == ScreenId::Lock);
 
   // Unlock; outside add flow, idle still locks.
@@ -226,7 +226,7 @@ int main() {
   app.handle(InputEvent::Select);
   CHECK(app.screen() == ScreenId::OnboardingWifiPassword);
   CHECK(wifi.start_calls == starts2 + 1);
-  app.handle(InputEvent::Power);
+  app.handle(InputEvent::PowerLong);
   app.handle(InputEvent::Back);
   CHECK(app.screen() != ScreenId::Lock);
   CHECK(app.screen() == ScreenId::OnboardingWifiPassword);

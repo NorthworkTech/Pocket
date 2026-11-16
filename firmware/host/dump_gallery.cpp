@@ -100,8 +100,13 @@ int main(int argc, char** argv) {
       "sd-gate", "home", "notes", "note", "lists", "list", "ledger", "clock", "alarms", "alarm-edit",
       "timers", "timer-run", "pass", "pass-detail", "weather", "weather-city", "music", "now-playing",
       "reading", "book", "settings", "security", "wifi", "display", "sound", "home-apps", "units", "about",
-      "cloud", "update", "update-progress", "update-result", "ringing"};
-  const int n_screens = static_cast<int>(ScreenId::ClockRinging) + 1;
+      "cloud", "update", "update-progress", "update-result", "ringing", "update-available"};
+  const int n_screens = static_cast<int>(ScreenId::SettingsUpdateAvailable) + 1;
+  FirmwareUpdateInfo upd;
+  upd.version_name = "PocketOS 27.1 Beta";
+  upd.size_bytes = 1572864;
+  upd.notes = {"Tap the power button for Home. Hold it to lock.", "Smooth PIN entry and cleaner screen updates everywhere.", "Five new screensavers, and a quieter lock screen.", "Faster, longer dictation with clear progress."};
+  app.host_set_update(upd);
   int i = 0;
   for (int sidx = 0; sidx < n_screens; ++sidx) {
     const ScreenId id = static_cast<ScreenId>(sidx);
@@ -117,6 +122,37 @@ int main(int argc, char** argv) {
     if (!write_ppm(path, app.canvas())) return 1;
   }
   {
+    std::string body;
+    for (int k = 0; k < 5; ++k)
+      body += "Pack the rain shell, the good boots, and the paperback. Call Sam about the cabin key before Friday.\n";
+    d.notes[0].body = body;
+    app.host_goto(ScreenId::NotesList);
+    app.handle(InputEvent::Select);
+    app.redraw(true);
+    char path[512];
+    std::snprintf(path, sizeof(path), "%s/%02d-note-long.ppm", out.c_str(), i++);
+    if (!write_ppm(path, app.canvas())) return 1;
+    app.host_show_status("Downloading \xE2\x80\x9CWalden\xE2\x80\x9D\xE2\x80\xA6");
+    std::snprintf(path, sizeof(path), "%s/%02d-status-pill.ppm", out.c_str(), i++);
+    if (!write_ppm(path, app.canvas())) return 1;
+    app.host_goto(ScreenId::Home);
+  }
+  {
+    app.host_goto(ScreenId::SettingsUpdateProgress);
+    app.host_set_installing(true, 42);
+    app.redraw(true);
+    char path[512];
+    std::snprintf(path, sizeof(path), "%s/%02d-update-installing.ppm", out.c_str(), i++);
+    if (!write_ppm(path, app.canvas())) return 1;
+    app.host_set_installing(false, -1);
+    app.host_goto(ScreenId::Lock);
+    app.host_set_update_welcome(true);
+    app.redraw(true);
+    std::snprintf(path, sizeof(path), "%s/%02d-update-welcome.ppm", out.c_str(), i++);
+    if (!write_ppm(path, app.canvas())) return 1;
+    app.host_set_update_welcome(false);
+  }
+  {
     std::string text;
     for (int k = 0; k < 6; ++k)
       text += "When I wrote the following pages, or rather the bulk of them, I lived alone, in the woods, a mile "
@@ -130,7 +166,8 @@ int main(int argc, char** argv) {
     if (!write_ppm(path, app.canvas())) return 1;
   }
   for (int m = 1; m < kLockMotifCount; ++m) {
-    app.handle(InputEvent::Power);
+    app.host_goto(ScreenId::Home);
+    app.handle(InputEvent::PowerLong);
     app.redraw(true);
     char path[512];
     std::snprintf(path, sizeof(path), "%s/%02d-lock-motif%d.ppm", out.c_str(), i++, app.lock_motif_index());

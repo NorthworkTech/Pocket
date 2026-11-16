@@ -598,5 +598,43 @@ int kv(Canvas& c, int y, std::string_view key, std::string_view value) {
   return y + 48;
 }
 
+std::vector<std::string> wrap_text(Canvas& c, std::string_view text, Canvas::TextRole role, int max_w) {
+  std::vector<std::string> out;
+  size_t p = 0;
+  while (p <= text.size()) {
+    size_t nl = text.find('\n', p);
+    if (nl == std::string_view::npos) nl = text.size();
+    const std::string_view para = text.substr(p, nl - p);
+    if (para.find_first_not_of(" \t\r") == std::string_view::npos) {
+      out.emplace_back();
+    } else {
+      for (auto& l : wrap(c, para, role, max_w)) out.push_back(std::move(l));
+    }
+    if (nl == text.size()) break;
+    p = nl + 1;
+  }
+  while (!out.empty() && out.back().empty()) out.pop_back();
+  return out;
+}
+
+void waves(Canvas& c, int top, int h) {
+  for (int j = 0; j < 9; ++j) {
+    const float t = j / 8.0f;
+    const int y0 = top + static_cast<int>(h * (0.15f + 0.8f * t));
+    const float amp = 6.0f + 16.0f * t;
+    const float freq = 0.028f - 0.012f * t;
+    const int thick = 1 + static_cast<int>(3 * t);
+    int prev = y0;
+    for (int x = 0; x < kCanvasW; ++x) {
+      const float sw = std::sin(x * freq + j * 1.7f);
+      const int y = y0 - static_cast<int>(amp * (sw > 0 ? sw * sw : sw * 0.4f));
+      const int a = x == 0 ? y : std::min(prev, y);
+      const int b = x == 0 ? y : std::max(prev, y);
+      c.fill_rect(x, a, 1, b - a + thick, Gray::G0);
+      prev = y;
+    }
+  }
+}
+
 }  // namespace ui
 }  // namespace pocket

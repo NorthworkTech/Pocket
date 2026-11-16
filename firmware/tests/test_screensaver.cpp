@@ -128,7 +128,7 @@ int main() {
     app.handle(InputEvent::Back);
     for (int i = 0; i < 3; ++i) {
       app.host_goto(ScreenId::Home);
-      app.handle(InputEvent::Power);
+      app.handle(InputEvent::PowerLong);
       CHECK(app.screen() == ScreenId::Lock);
       CHECK(app.lock_motif_index() == 3);
     }

@@ -1,5 +1,6 @@
 #include "pocket/app.hpp"
 #include "pocket/ui.hpp"
+#include "pocket/json_lite.hpp"
 #include <algorithm>
 #include <cctype>
 #include <cstdio>
@@ -20,52 +21,141 @@ constexpr int kReadGap = 6;
 namespace {
 
 
-/** Minimal JSON array parse for [{id,title,author,format,filename,size},...] — tolerant of spacing. */
-void parse_books_list(const std::string& json, std::vector<Book>& out) {
+/** Cloud library list: `{"books":[...]}` or a bare array of {id,title,author,format,size}. */
+bool parse_books_list(const std::string& json, std::vector<Book>& out) {
   out.clear();
-  size_t i = 0;
-  while (i < json.size()) {
-    const size_t obj = json.find('{', i);
-    if (obj == std::string::npos) break;
-    const size_t end = json.find('}', obj + 1);
-    if (end == std::string::npos) break;
-    const std::string obj_s = json.substr(obj, end - obj + 1);
-
-    auto grab = [&](const char* key, std::string& dest) {
-      const std::string needle = std::string("\"") + key + "\"";
-      const size_t k = obj_s.find(needle);
-      if (k == std::string::npos) return;
-      const size_t colon = obj_s.find(':', k + needle.size());
-      if (colon == std::string::npos) return;
-      const size_t q1 = obj_s.find('"', colon + 1);
-      if (q1 == std::string::npos) return;
-      const size_t q2 = obj_s.find('"', q1 + 1);
-      if (q2 == std::string::npos) return;
-      dest = obj_s.substr(q1 + 1, q2 - q1 - 1);
-    };
-
+  JsonValue root;
+  if (!json_parse(json, root)) {
+    // Older firmware's transport handed us the array tail of an object ("[...]}").
+    const size_t a = json.find('['), b = json.rfind(']');
+    if (a == std::string::npos || b == std::string::npos || b < a || !json_parse(json.substr(a, b - a + 1), root))
+      return false;
+  }
+  const JsonValue* arr = root.is_array() ? &root : root.get("books");
+  if (!arr || !arr->is_array()) return false;
+  for (const auto& o : arr->items) {
+    if (!o.is_object()) continue;
     Book b;
-    grab("id", b.id);
-    grab("title", b.title);
-    grab("author", b.author);
-    grab("format", b.format);
-    grab("filename", b.filename);
-    const size_t sk = obj_s.find("\"size");
-    if (sk != std::string::npos) {
-      size_t n = obj_s.find(':', sk);
-      if (n != std::string::npos) {
-        ++n;
-        while (n < obj_s.size() && (obj_s[n] == ' ' || obj_s[n] == '\t')) ++n;
-        b.size_bytes = std::atoi(obj_s.c_str() + n);
-      }
-    }
-    if (b.id.empty()) {
-      i = end + 1;
-      continue;
-    }
+    b.id = o.get_string("id");
+    if (b.id.empty()) continue;
+    b.title = o.get_string("title");
+    b.author = o.get_string("author");
+    b.format = o.get_string("format");
+    b.filename = o.get_string("filename");
+    b.size_bytes = static_cast<int>(o.get_int("size_bytes", o.get_int("size")));
     if (b.title.empty()) b.title = b.filename.empty() ? b.id : b.filename;
-    out.push_back(b);
-    i = end + 1;
+    out.push_back(std::move(b));
+  }
+  return true;
+}
+
+/** On-device name for a cloud book: its id (unique, FAT/LittleFS-safe, short). */
+std::string cloud_book_file(const std::string& id) {
+  std::string f;
+  for (char c : id) {
+    if (std::isalnum(static_cast<unsigned char>(c)) || c == '-' || c == '_') f.push_back(c);
+    if (f.size() >= 48) break;
+  }
+  return (f.empty() ? std::string("book") : f) + ".txt";
+}
+
+/** Legacy (≤2.0) on-device name derived from the server filename. */
+std::string legacy_book_file(const Book& b) {
+  std::string fname = b.filename.empty() ? (b.id + ".txt") : b.filename;
+  for (char& c : fname)
+    if (c == '/' || c == '\\') c = '_';
+  if (fname.size() < 4 || fname.substr(fname.size() - 4) != ".txt") fname += ".txt";
+  return fname;
+}
+
+constexpr const char* kLibraryIndex = "library.json";
+
+std::string json_escape(const std::string& in) {
+  std::string o;
+  for (unsigned char c : in) {
+    if (c == '"' || c == '\\') { o.push_back('\\'); o.push_back(static_cast<char>(c)); }
+    else if (c < 0x20) { char u[8]; std::snprintf(u, sizeof(u), "\\u%04x", c); o += u; }
+    else o.push_back(static_cast<char>(c));
+  }
+  return o;
+}
+
+/** Index of cloud books on this device: file → title/author/remote size. */
+struct IndexEntry {
+  std::string id, title, author, format, file;
+  int remote_size = 0;
+};
+
+std::vector<IndexEntry> read_index(const std::string& root) {
+  std::vector<IndexEntry> out;
+  std::string body;
+  if (!read_file_recover(root + "/" + kLibraryIndex, body)) return out;
+  JsonValue v;
+  if (!json_parse(body, v) || !v.is_array()) return out;
+  for (const auto& o : v.items) {
+    if (!o.is_object()) continue;
+    IndexEntry e;
+    e.id = o.get_string("id");
+    e.title = o.get_string("title");
+    e.author = o.get_string("author");
+    e.format = o.get_string("format");
+    e.file = o.get_string("file");
+    e.remote_size = static_cast<int>(o.get_int("remote_size"));
+    if (!e.file.empty()) out.push_back(std::move(e));
+  }
+  return out;
+}
+
+void write_index(const std::string& root, const std::vector<IndexEntry>& idx) {
+  std::string body = "[";
+  for (size_t i = 0; i < idx.size(); ++i) {
+    const auto& e = idx[i];
+    char num[24];
+    std::snprintf(num, sizeof(num), "%d", e.remote_size);
+    body += std::string(i ? "," : "") + "{\"id\":\"" + json_escape(e.id) + "\",\"title\":\"" + json_escape(e.title) +
+            "\",\"author\":\"" + json_escape(e.author) + "\",\"format\":\"" + json_escape(e.format) +
+            "\",\"file\":\"" + json_escape(e.file) + "\",\"remote_size\":" + num + "}";
+  }
+  body += "]";
+  (void)write_file_atomic(root + "/" + kLibraryIndex, body);
+}
+
+/** Clean a downloaded book for the panel: no BOM/CR, and unwrap hard-wrapped plain text
+ * (Gutenberg-style ~70-column lines) so paragraphs flow to the screen width. */
+void normalize_book_text(std::string& t) {
+  if (t.size() >= 3 && static_cast<unsigned char>(t[0]) == 0xEF && static_cast<unsigned char>(t[1]) == 0xBB &&
+      static_cast<unsigned char>(t[2]) == 0xBF)
+    t.erase(0, 3);
+  size_t w = 0;
+  for (size_t r = 0; r < t.size(); ++r) {
+    if (t[r] == '\r') {
+      if (r + 1 < t.size() && t[r + 1] == '\n') continue;
+      t[w++] = '\n';
+    } else {
+      t[w++] = t[r];
+    }
+  }
+  t.resize(w);
+  // Detect hard wrap: most non-empty lines between 45 and 80 bytes.
+  size_t lines = 0, wrapped = 0, start = 0;
+  for (size_t i = 0; i <= t.size() && lines < 4000; ++i) {
+    if (i == t.size() || t[i] == '\n') {
+      const size_t len = i - start;
+      if (len > 0) {
+        ++lines;
+        if (len >= 45 && len <= 80) ++wrapped;
+      }
+      start = i + 1;
+    }
+  }
+  if (lines < 20 || wrapped * 10 < lines * 6) return;
+  // Single newline inside a paragraph → space; blank lines (paragraph breaks) stay.
+  for (size_t i = 0; i < t.size(); ++i) {
+    if (t[i] != '\n') continue;
+    const bool prev_nl = i > 0 && t[i - 1] == '\n';
+    const bool next_nl = i + 1 < t.size() && t[i + 1] == '\n';
+    const bool next_indent = i + 1 < t.size() && (t[i + 1] == ' ' || t[i + 1] == '\t');
+    if (!prev_nl && !next_nl && !next_indent) t[i] = ' ';
   }
 }
 
@@ -78,46 +168,62 @@ void App::reading_load_local() {
     return;
   }
   const std::string root = storage_->book_root();
-  DIR* dir = ::opendir(root.c_str());
-  if (!dir) {
-    reading_status_ = "No local books yet.";
-    return;
-  }
-  while (auto* ent = ::readdir(dir)) {
-    const char* name = ent->d_name;
-    if (!name || name[0] == '.') continue;
-    const std::string fname = name;
-    const auto dot = fname.rfind('.');
-    if (dot == std::string::npos) continue;
-    std::string ext = fname.substr(dot + 1);
-    for (char& c : ext) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-    if (ext != "txt") continue;
-    const std::string path = root + "/" + fname;
+  // Cloud books first, with their real titles and authors.
+  std::vector<std::string> known;
+  for (const auto& e : read_index(root)) {
+    const std::string path = root + "/" + e.file;
     struct stat st {};
     if (stat(path.c_str(), &st) != 0 || st.st_size <= 0) continue;
     Book b;
-    b.id = fname;
-    b.filename = fname;
-    b.title = fname.substr(0, dot);
-    b.format = "txt";
+    b.id = e.id.empty() ? e.file : e.id;
+    b.title = e.title.empty() ? e.file : e.title;
+    b.author = e.author;
+    b.format = e.format;
+    b.filename = e.file;
     b.local_path = path;
     b.size_bytes = static_cast<int>(st.st_size);
+    known.push_back(e.file);
     books_.push_back(std::move(b));
   }
-  ::closedir(dir);
+  // Then anything copied onto the card by hand.
+  if (DIR* dir = ::opendir(root.c_str())) {
+    while (auto* ent = ::readdir(dir)) {
+      const char* name = ent->d_name;
+      if (!name || name[0] == '.') continue;
+      const std::string fname = name;
+      if (std::find(known.begin(), known.end(), fname) != known.end()) continue;
+      const auto dot = fname.rfind('.');
+      if (dot == std::string::npos) continue;
+      std::string ext = fname.substr(dot + 1);
+      for (char& c : ext) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+      if (ext != "txt") continue;
+      const std::string path = root + "/" + fname;
+      struct stat st {};
+      if (stat(path.c_str(), &st) != 0 || st.st_size <= 0) continue;
+      Book b;
+      b.id = fname;
+      b.filename = fname;
+      b.title = fname.substr(0, dot);
+      b.format = "txt";
+      b.local_path = path;
+      b.size_bytes = static_cast<int>(st.st_size);
+      books_.push_back(std::move(b));
+    }
+    ::closedir(dir);
+  }
   reading_status_ =
       books_.empty() ? "No local books yet." : (std::to_string(books_.size()) + " on device");
 }
 
 void App::reading_sync_from_cloud() {
-  reading_status_ = "Syncing…";
+  reading_status_ = "Syncing\xE2\x80\xA6";
   mark_content_dirty();
   if (!wifi_.connected()) {
     reading_load_local();
     if (books_.empty())
-      reading_status_ = "Sync needs Wi‑Fi. Local books still open offline.";
+      reading_status_ = "Sync needs Wi-Fi. Local books still open offline.";
     else
-      reading_status_ = "Offline · " + std::to_string(books_.size()) + " local";
+      reading_status_ = "Offline \xC2\xB7 " + std::to_string(books_.size()) + " local";
     return;
   }
   if (!storage_ || !storage_->book_ensure_root()) {
@@ -125,50 +231,68 @@ void App::reading_sync_from_cloud() {
     return;
   }
   const std::string root = storage_->book_root();
+  show_status("Syncing your library\xE2\x80\xA6");
   const std::string json = cloud_.books_list_json(cfg_.device_id);
   if (json.empty()) {
+    reading_load_local();
     reading_status_ = "Couldn't reach Pocket Cloud \xC2\xB7 showing books on Pocket";
     return;
   }
   std::vector<Book> remote;
-  parse_books_list(json, remote);
-  if (remote.empty() && json.find('[') != std::string::npos) {
-    books_.clear();
-    reading_status_ = "Library empty — upload in Companion.";
+  if (!parse_books_list(json, remote)) {
+    // Never treat a garbled reply as "library is empty" — that would delete books.
+    reading_load_local();
+    reading_status_ = "Pocket Cloud sent an unexpected reply Â· showing books on Pocket";
     return;
   }
-  std::vector<Book> local;
-  for (auto& b : remote) {
-    const uint64_t free = storage_->free_bytes(root);
-    if (b.size_bytes > 0 && free < static_cast<uint64_t>(b.size_bytes) + 64 * 1024) {
-      reading_status_ = "Not enough free space.";
-      break;
-    }
-    std::string fname = b.filename.empty() ? (b.id + ".txt") : b.filename;
-    for (char& c : fname) {
-      if (c == '/' || c == '\\') c = '_';
-    }
-    if (!fname.empty() && fname.substr(fname.size() >= 4 ? fname.size() - 4 : 0) != ".txt") {
-      fname += ".txt";  // device always stores normalized plain text
-    }
-    const std::string path = root + "/" + fname;
+  const std::vector<IndexEntry> old_idx = read_index(root);
+  std::vector<IndexEntry> idx;
+  int failed = 0;
+  std::string fail_msg;
+  for (const auto& b : remote) {
+    const std::string file = cloud_book_file(b.id);
+    const std::string path = root + "/" + file;
+    // Same book, same size on the server → keep the local copy; edited → fetch again.
+    int prev_remote = -1;
+    for (const auto& e : old_idx)
+      if (e.id == b.id) prev_remote = e.remote_size;
     struct stat st {};
-    if (stat(path.c_str(), &st) == 0 && st.st_size > 0) {
-      b.local_path = path;
-      local.push_back(b);
-      continue;
+    const bool have = stat(path.c_str(), &st) == 0 && st.st_size > 0;
+    if (!have || prev_remote != b.size_bytes) {
+      const uint64_t free = storage_->free_bytes(root);
+      if (b.size_bytes > 0 && free < static_cast<uint64_t>(b.size_bytes) + 64 * 1024) {
+        ++failed;
+        fail_msg = "Not enough free space for \xE2\x80\x9C" + b.title + "\xE2\x80\x9D.";
+        continue;
+      }
+      show_status("Downloading \xE2\x80\x9C" + b.title + "\xE2\x80\x9D\xE2\x80\xA6");
+      int64_t got = 0;
+      if (!cloud_.download_to_file("book", cfg_.device_id, b.id, path, 8LL * 1024 * 1024, &got)) {
+        ++failed;
+        fail_msg = "Couldn't download \xE2\x80\x9C" + b.title + "\xE2\x80\x9D.";
+        if (!have) continue;  // keep an older copy if we had one
+      }
     }
-    int64_t got = 0;
-    if (!cloud_.download_to_file("book", cfg_.device_id, b.id, path, 8LL * 1024 * 1024, &got)) {
-      reading_status_ = "Download failed for " + b.title;
-      continue;
-    }
-    b.local_path = path;
-    b.size_bytes = static_cast<int>(got);
-    local.push_back(b);
+    // Pre-2.1 builds saved by server filename — drop that copy so it isn't listed twice.
+    const std::string legacy = root + "/" + legacy_book_file(b);
+    if (legacy != path) ::remove(legacy.c_str());
+    idx.push_back({b.id, b.title, b.author, b.format, file, b.size_bytes});
   }
-  books_ = std::move(local);
-  reading_status_ = books_.empty() ? "No books available." : "Synced " + std::to_string(books_.size());
+  // Books removed in Pocket Cloud leave the device too (only ones the cloud put there).
+  for (const auto& e : old_idx) {
+    bool still = false;
+    for (const auto& n : idx) still = still || n.file == e.file;
+    if (!still) ::remove((root + "/" + e.file).c_str());
+  }
+  write_index(root, idx);
+  reading_load_local();
+  if (failed) {
+    reading_status_ = failed == 1 ? fail_msg : std::to_string(failed) + " books couldn't download.";
+  } else {
+    reading_status_ = books_.empty() ? "Library empty \xE2\x80\x94 add books in Companion."
+                                     : "Up to date \xC2\xB7 " + std::to_string(books_.size()) +
+                                           (books_.size() == 1 ? " book" : " books");
+  }
 }
 
 void App::reading_paginate() {
@@ -233,6 +357,7 @@ void App::reading_paginate() {
     if (last_break > line_start) {
       i = last_break;
       while (i < n && (text[i] == ' ' || text[i] == '\t')) ++i;
+      if (i < n && text[i] == '\n') ++i;  // the newline ends this line, not a blank one
       advance_line();
     } else if (j < n && text[j] == '\n') {
       i = j + 1;
@@ -251,16 +376,31 @@ void App::reading_open_book(int index) {
     mark_content_dirty();
     return;
   }
-  std::ifstream in(b.local_path, std::ios::binary);
-  if (!in) {
+  struct stat st {};
+  if (stat(b.local_path.c_str(), &st) != 0 || st.st_size <= 0) {
     reading_status_ = "Couldn't open that book.";
     mark_content_dirty();
     return;
   }
+  FILE* f = std::fopen(b.local_path.c_str(), "rb");
+  if (!f) {
+    reading_status_ = "Couldn't open that book.";
+    mark_content_dirty();
+    return;
+  }
+  if (st.st_size > 256 * 1024) show_status("Opening \xE2\x80\x9C" + b.title + "\xE2\x80\x9D\xE2\x80\xA6");
   constexpr size_t kMaxBookBytes = 3 * 1024 * 1024;  // generous for a normalized-text novel
-  std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
-  if (text.size() > kMaxBookBytes) text.resize(kMaxBookBytes);
-  reading_text_ = std::move(text);
+  // Free the previous book before allocating (no doubling growth, no peak of two books).
+  reading_text_.clear();
+  reading_text_.shrink_to_fit();
+  reading_pages_.clear();
+  reading_pages_.shrink_to_fit();
+  const size_t want = std::min(static_cast<size_t>(st.st_size), kMaxBookBytes);
+  reading_text_.resize(want);
+  const size_t got = std::fread(reading_text_.data(), 1, want, f);
+  std::fclose(f);
+  reading_text_.resize(got);
+  normalize_book_text(reading_text_);
   reading_paginate();
   reading_page_ = 0;
   // Resume key is the on-device filename: stable whether the library came from local
@@ -274,6 +414,7 @@ void App::reading_open_book(int index) {
   play_sound(SoundId::Click);
   nav_.push(ScreenId::ReadingBook);
   after_nav();
+  focus_.index = 1;  // "Next" — the first press turns the page
 }
 
 void App::render_reading() {

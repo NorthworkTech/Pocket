@@ -41,6 +41,9 @@ class EpdDisplay {
   /** esp_timer ms when mark_refresh_kicked() ran — drives grace + stuck-BUSY timeout. */
   uint32_t kick_ms_ = 0;
   uint8_t* panel_1bpp_ = nullptr;
+  /** What the panel is actually showing (panel layout). Written to RED RAM before every
+   * partial so the fast waveform never diffs against a stale full-refresh image. */
+  uint8_t* shown_1bpp_ = nullptr;
   uint8_t gray_threshold_ = 2;
 };
 

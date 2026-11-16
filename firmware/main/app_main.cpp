@@ -53,7 +53,7 @@ constexpr uint32_t kRtcWallMagic = 0x504B5257u;  // 'PKRW'
 static const char* TAG = "pocket";
 
 // Unique marker — must appear on Mac serial (cu.usbmodem) for this build.
-static const char* kBuildId = "POCKET-LIVE-v103-reliable";
+static const char* kBuildId = "POCKET-LIVE-v104-pocketos21";
 
 namespace {
 
@@ -354,6 +354,10 @@ struct EspDisplay : pocket::PlatformDisplay {
     epd.present_region(c, x, y, w, h);
   }
   bool busy() override { return epd.busy(); }
+  void wait_idle(uint32_t max_ms) override {
+    const int64_t until = esp_timer_get_time() + static_cast<int64_t>(max_ms) * 1000;
+    while (epd.busy() && esp_timer_get_time() < until) vTaskDelay(pdMS_TO_TICKS(10));
+  }
   void set_brightness(int percent) override { epd.set_brightness(percent); }
 };
 

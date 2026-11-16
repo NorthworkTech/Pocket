@@ -107,6 +107,9 @@ struct FirmwareUpdateInfo {
   std::string version;
   std::string url;
   int size_bytes = 0;
+  /** Human name from release.json, e.g. "PocketOS 2.1" (empty on older manifests). */
+  std::string version_name;
+  std::vector<std::string> notes;
 };
 
 struct PlatformOta {
@@ -133,6 +136,8 @@ struct PlatformDisplay {
    * applying rotary deltas — never drop PIN/nav ticks waiting on a partial.
    */
   virtual bool busy() { return false; }
+  /** Block (up to `max_ms`) until an in-flight refresh finishes. Host: no-op. */
+  virtual void wait_idle(uint32_t /*max_ms*/) {}
   /** 0–100: how aggressively midtone gray rounds to black vs white on a monochrome panel.
    * Higher reads lighter/brighter, lower reads darker/higher-contrast. No-op on displays that
    * don't expose this (e.g. host sim). */
@@ -393,6 +398,18 @@ class App {
     timer_paused_ = false;
   }
   bool ringing() const { return nav_.current() == ScreenId::ClockRinging; }
+  const std::string& status_message() const { return status_msg_; }
+  bool showing_update_welcome() const { return show_update_welcome_; }
+  void host_set_update(const FirmwareUpdateInfo& info) { update_info_ = info; }
+  void host_set_installing(bool on, int pct) { ota_installing_ = on; ota_progress_ = pct; }
+  void host_set_update_welcome(bool on) { show_update_welcome_ = on; }
+  void host_show_status(std::string_view m) { show_status(m); }
+  void host_reading_sync() { reading_sync_from_cloud(); }
+  void host_reading_load() { reading_load_local(); }
+  void host_reading_open(int i) { reading_open_book(i); }
+  const std::string& host_reading_text() const { return reading_text_; }
+  const std::string& host_reading_status() const { return reading_status_; }
+  int host_note_pages() const { return note_pages_; }
   /** Open an in-memory book page for gallery/QA. */
   void host_open_book(const std::string& text, int page = 0) {
     book_index_ = 0;
@@ -428,6 +445,12 @@ class App {
    * Critical after v90 async e-ink: never clear dirty when present was skipped.
    */
   bool try_present(bool full);
+  /**
+   * Tell the user what's happening before a blocking call (sync, transcribe, connect):
+   * paints a status pill at the bottom right now. Cleared on the next flush.
+   */
+  void show_status(std::string_view msg);
+  std::string status_msg_;
   void mark_content_dirty();
   void mark_status_dirty();
   /** Tight e-ink region update (PIN digits, focus rows, etc.). */
@@ -553,6 +576,9 @@ class App {
   void maybe_poll_sd_hotplug();
   void refresh_sd_kind();
   void begin_firmware_update();
+  void install_firmware_update();
+  void render_update();
+  void handle_update(InputEvent e);
   bool parse_firmware_latest(const std::string& json, FirmwareUpdateInfo* out);
   /** Persist SSID+pass and attempt STA connect (blocking). */
   bool connect_and_remember(const std::string& ssid, const std::string& password);
@@ -659,6 +685,9 @@ class App {
   /** One-shot snooze alarm (minutes of day), -1 = none. */
   int snooze_minutes_ = -1;
   int note_index_ = 0;
+  /** Page of a long note body on NotesDetail (reset when a note opens). */
+  int note_page_ = 0;
+  int note_pages_ = 1;
   int music_index_ = 0;
   std::vector<MusicTrack> music_tracks_;
   bool music_playing_ = false;
@@ -698,6 +727,11 @@ class App {
   bool sd_gate_active_ = false;
   ScreenId sd_return_screen_ = ScreenId::Home;
   std::string ota_status_;
+  /** SettingsUpdateProgress shows checking (false) or installing (true). */
+  bool ota_installing_ = false;
+  FirmwareUpdateInfo update_info_{};
+  /** First boot of a new build: lock face shows "Welcome to PocketOS x" until pressed. */
+  bool show_update_welcome_ = false;
   /** Download progress 0–100 while an OTA is in flight, -1 otherwise. */
   int ota_progress_ = -1;
   std::string pending_build_id_;

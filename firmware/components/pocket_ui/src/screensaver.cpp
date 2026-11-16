@@ -455,11 +455,198 @@ void piece_tide(Canvas& c, int X, int Y, int W, int H, uint32_t seed) {
   }
 }
 
+/** Fern — a fractal fern (iterated function system) leaning into a pale sky. */
+void piece_fern(Canvas& c, int X, int Y, int W, int H, uint32_t seed) {
+  Rng r(seed);
+  // Soft sky: dithered wash, lighter toward the top.
+  diffuse(c, X, Y, W, H, [&](int, int y) { return 0.04f + 0.10f * (static_cast<float>(y) / H); });
+  auto fern = [&](float cx, float base, float scale, float lean, int points, uint32_t s2) {
+    Rng fr(s2);
+    float x = 0, y = 0;
+    const float cl = std::cos(lean), sl = std::sin(lean);
+    for (int i = 0; i < points; ++i) {
+      const float p = fr.next();
+      float nx, ny;
+      if (p < 0.01f) {
+        nx = 0;
+        ny = 0.16f * y;
+      } else if (p < 0.86f) {
+        nx = 0.85f * x + 0.04f * y;
+        ny = -0.04f * x + 0.85f * y + 1.6f;
+      } else if (p < 0.93f) {
+        nx = 0.20f * x - 0.26f * y;
+        ny = 0.23f * x + 0.22f * y + 1.6f;
+      } else {
+        nx = -0.15f * x + 0.28f * y;
+        ny = 0.26f * x + 0.24f * y + 0.44f;
+      }
+      x = nx;
+      y = ny;
+      if (i < 20) continue;
+      const float rx = x * cl - y * sl, ry = x * sl + y * cl;
+      const int px = static_cast<int>(cx + rx * scale);
+      const int py = static_cast<int>(base - ry * scale);
+      if (px >= 0 && px < W && py >= 0 && py < H) c.set_pixel(X + px, Y + py, Gray::G0);
+    }
+  };
+  fern(W * r.range(0.45f, 0.58f), H * 0.98f, H / 10.8f, r.range(-0.22f, 0.05f), 220000, seed + 1);
+  fern(W * r.range(0.12f, 0.25f), H * 1.0f, H / 22.0f, r.range(0.15f, 0.35f), 60000, seed + 2);
+}
+
+/** Zen garden — raked sand rippling around a few stones. */
+void piece_zen(Canvas& c, int X, int Y, int W, int H, uint32_t seed) {
+  Rng r(seed);
+  struct Stone { float x, y, r; };
+  Stone stones[3];
+  const int n = 2 + static_cast<int>(r.next() * 2);
+  for (int i = 0; i < n; ++i) stones[i] = {W * r.range(0.2f, 0.8f), H * r.range(0.2f, 0.8f), r.range(26, 52)};
+  constexpr float kPitch = 11.0f;
+  for (int y = 0; y < H; ++y) {
+    for (int x = 0; x < W; ++x) {
+      float best = 1e9f;
+      int bi = 0;
+      for (int i = 0; i < n; ++i) {
+        const float dx = x - stones[i].x, dy = (y - stones[i].y) * 1.15f;
+        const float d = std::sqrt(dx * dx + dy * dy) - stones[i].r;
+        if (d < best) {
+          best = d;
+          bi = i;
+        }
+      }
+      bool ink;
+      if (best < 0) {
+        // Stone: lit from the upper left, crisp dithered body.
+        const float dx = (x - stones[bi].x) / stones[bi].r, dy = (y - stones[bi].y) / stones[bi].r;
+        const float lit = clamp01(0.5f - 0.45f * dx - 0.45f * dy);
+        ink = static_cast<float>(hash2(x, y, seed) & 255) / 255.0f > lit * 0.75f;
+      } else if (best < 7.0f * kPitch) {
+        ink = std::fmod(best, kPitch) < 2.2f;  // ripples around the stone
+      } else {
+        const float wave = 3.0f * std::sin(x * 0.02f + y * 0.002f);
+        ink = std::fmod(y + wave + 400.0f, kPitch) < 2.2f;  // straight rake lines
+      }
+      if (ink) c.set_pixel(X + x, Y + y, Gray::G0);
+    }
+  }
+}
+
+/** Galaxy — a dithered spiral galaxy on a dark field of stars. */
+void piece_galaxy(Canvas& c, int X, int Y, int W, int H, uint32_t seed) {
+  Rng r(seed);
+  const float cx = W * r.range(0.42f, 0.58f), cy = H * r.range(0.42f, 0.55f);
+  const float tilt = r.range(0.45f, 0.65f), rot = r.range(0, 2 * kPi);
+  const float R = W * 0.62f;
+  diffuse(c, X, Y, W, H, [&](int x, int y) {
+    float dx = x - cx, dy = (y - cy) / tilt;
+    const float cr = std::cos(rot), sr = std::sin(rot);
+    const float ux = dx * cr - dy * sr, uy = dx * sr + dy * cr;
+    const float rr = std::sqrt(ux * ux + uy * uy) + 1.0f;
+    const float th = std::atan2(uy, ux);
+    const float arm = 0.5f + 0.5f * std::cos(2.0f * (th - 2.2f * std::log(rr / 18.0f)));
+    const float core = std::exp(-rr / (R * 0.09f));
+    const float a3 = arm * arm * arm;
+    const float disk = std::exp(-rr / (R * 0.42f)) * (0.06f + 0.94f * a3);
+    const float dust = 0.85f + 0.3f * value_noise(x * 0.03f, y * 0.03f, seed);
+    const float light = clamp01((1.6f * core + 1.1f * disk) * dust);
+    if ((hash2(x, y, seed + 9) & 0x7FF) == 0) return 0.0f;  // stars
+    return 0.97f - 0.95f * light;
+  });
+}
+
+/** Night city — a skyline of lit windows, moon, and their reflection on the river. */
+void piece_city(Canvas& c, int X, int Y, int W, int H, uint32_t seed) {
+  Rng r(seed);
+  const int water = static_cast<int>(H * 0.74f);
+  diffuse(c, X, Y, W, water, [&](int, int y) { return 0.97f - 0.35f * (static_cast<float>(y) / water); });
+  // Moon.
+  const int mx = static_cast<int>(W * r.range(0.65f, 0.82f)), my = static_cast<int>(H * 0.14f);
+  c.fill_disc(X + mx, Y + my, 30, Gray::G3);
+  c.fill_disc(X + mx + 11, Y + my - 6, 26, Gray::G0);
+  // Skyline (solid ink) with lit windows (paper).
+  std::vector<uint8_t> lit;
+  int x = 0;
+  while (x < W) {
+    const int bw = static_cast<int>(r.range(28, 70));
+    const int bh = static_cast<int>(r.range(H * 0.12f, H * 0.48f));
+    const int top = water - bh;
+    c.fill_rect(X + x, Y + top, std::min(bw, W - x) - 3, bh, Gray::G0);
+    if (r.next() < 0.3f) c.fill_rect(X + x + bw / 2 - 2, Y + top - 22, 4, 22, Gray::G0);  // antenna
+    for (int wy = top + 10; wy < water - 10; wy += 14) {
+      for (int wx = x + 6; wx + 6 < x + bw - 6; wx += 11) {
+        if (r.next() < 0.36f) c.fill_rect(X + wx, Y + wy, 5, 7, Gray::G3);
+      }
+    }
+    x += bw;
+  }
+  // River: dark water, broken streaks under bright windows and the moon.
+  for (int y = water; y < H; ++y) {
+    const int sy = water - (y - water) - 1;  // mirrored row
+    const float depth = static_cast<float>(y - water) / (H - water);
+    for (int xx = 0; xx < W; ++xx) {
+      const bool bright = sy >= 0 && c.get_pixel(X + xx, Y + sy) == Gray::G3 && sy < water - 4;
+      const bool ripple = ((y + static_cast<int>(6 * std::sin(xx * 0.05f + y * 0.4f))) % 6) < 2;
+      const bool stars = (hash2(xx, y, seed) & 0x3F) == 0 && depth > 0.2f;
+      c.set_pixel(X + xx, Y + y, (bright && ripple && (hash2(xx, y, seed + 3) & 3) != 0) || stars ? Gray::G3 : Gray::G0);
+    }
+  }
+}
+
+/** Labyrinth — a generated maze, entrance top-left, exit bottom-right. */
+void piece_maze(Canvas& c, int X, int Y, int W, int H, uint32_t seed) {
+  Rng r(seed);
+  const int cell = 30;
+  const int cols = (W - 24) / cell, rows = (H - 24) / cell;
+  const int ox = X + (W - cols * cell) / 2, oy = Y + (H - rows * cell) / 2;
+  // walls bit: 1 = right wall, 2 = bottom wall.
+  std::vector<uint8_t> walls(static_cast<size_t>(cols * rows), 3);
+  std::vector<uint8_t> seen(static_cast<size_t>(cols * rows), 0);
+  std::vector<int> stack;
+  stack.push_back(0);
+  seen[0] = 1;
+  while (!stack.empty()) {
+    const int cur = stack.back();
+    const int cx = cur % cols, cy = cur / cols;
+    int opts[4], n = 0;
+    if (cx > 0 && !seen[static_cast<size_t>(cur - 1)]) opts[n++] = cur - 1;
+    if (cx < cols - 1 && !seen[static_cast<size_t>(cur + 1)]) opts[n++] = cur + 1;
+    if (cy > 0 && !seen[static_cast<size_t>(cur - cols)]) opts[n++] = cur - cols;
+    if (cy < rows - 1 && !seen[static_cast<size_t>(cur + cols)]) opts[n++] = cur + cols;
+    if (n == 0) {
+      stack.pop_back();
+      continue;
+    }
+    const int nxt = opts[static_cast<int>(r.next() * n) % n];
+    if (nxt == cur + 1) walls[static_cast<size_t>(cur)] &= ~1;
+    else if (nxt == cur - 1) walls[static_cast<size_t>(nxt)] &= ~1;
+    else if (nxt == cur + cols) walls[static_cast<size_t>(cur)] &= ~2;
+    else walls[static_cast<size_t>(nxt)] &= ~2;
+    seen[static_cast<size_t>(nxt)] = 1;
+    stack.push_back(nxt);
+  }
+  constexpr int kT = 4;
+  c.fill_rect(ox, oy, cols * cell + kT, kT, Gray::G0);  // top
+  c.fill_rect(ox, oy, kT, rows * cell + kT, Gray::G0);   // left
+  for (int yy = 0; yy < rows; ++yy) {
+    for (int xx = 0; xx < cols; ++xx) {
+      const uint8_t w = walls[static_cast<size_t>(yy * cols + xx)];
+      const int px = ox + xx * cell, py = oy + yy * cell;
+      if (w & 1) c.fill_rect(px + cell, py, kT, cell + kT, Gray::G0);
+      if (w & 2) c.fill_rect(px, py + cell, cell + kT, kT, Gray::G0);
+    }
+  }
+  // Openings + markers.
+  c.fill_rect(ox, oy + kT, kT, cell - kT, Gray::G3);
+  c.fill_rect(ox + cols * cell, oy + (rows - 1) * cell + kT, kT, cell - kT, Gray::G3);
+  c.fill_disc(ox + cell / 2 + 2, oy + cell / 2 + 2, 6, Gray::G0);
+  c.stroke_circle(ox + (cols - 1) * cell + cell / 2 + 2, oy + (rows - 1) * cell + cell / 2 + 2, 8, Gray::G0, 3);
+}
+
 }  // namespace
 
 const char* screensaver_name(int index) {
-  static const char* kNames[kScreensaverCount] = {"Ranges",   "Contours",     "Moonrise",   "Fir & fog",
-                                                  "Currents", "Halftone sun", "Tide lines"};
+  static const char* kNames[kScreensaverCount] = {"Ranges",     "Contours", "Moonrise", "Fir & fog",
+                                                  "Currents",   "Halftone sun", "Tide lines", "Fern",
+                                                  "Zen garden", "Galaxy",   "Night city", "Labyrinth"};
   if (index < 0 || index >= kScreensaverCount) return "Plain";
   return kNames[index];
 }
@@ -485,8 +672,23 @@ void draw_screensaver(Canvas& c, int index, int x, int y, int w, int h, uint32_t
     case 5:
       piece_halftone(c, x, y, w, h, seed);
       break;
-    default:
+    case 6:
       piece_tide(c, x, y, w, h, seed);
+      break;
+    case 7:
+      piece_fern(c, x, y, w, h, seed);
+      break;
+    case 8:
+      piece_zen(c, x, y, w, h, seed);
+      break;
+    case 9:
+      piece_galaxy(c, x, y, w, h, seed);
+      break;
+    case 10:
+      piece_city(c, x, y, w, h, seed);
+      break;
+    default:
+      piece_maze(c, x, y, w, h, seed);
       break;
   }
 }

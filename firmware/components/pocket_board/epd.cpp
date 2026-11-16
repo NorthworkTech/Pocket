@@ -32,7 +32,8 @@ bool EpdDisplay::init() {
   if (ready_) return true;
 
   panel_1bpp_ = alloc_fb(kMonoBytes);
-  if (!panel_1bpp_) {
+  shown_1bpp_ = alloc_fb(kMonoBytes);
+  if (!panel_1bpp_ || !shown_1bpp_) {
     ESP_LOGE(TAG, "framebuffer alloc failed");
     return false;
   }
@@ -44,6 +45,7 @@ bool EpdDisplay::init() {
   EPD_Init();
   std::memset(panel_1bpp_, 0xFF, kMonoBytes);
   EPD_Display_Base(panel_1bpp_);
+  std::memset(shown_1bpp_, 0xFF, kMonoBytes);
   ESP_LOGI(TAG, "factory wipe done");
 
   ready_ = true;
@@ -147,7 +149,8 @@ void EpdDisplay::present(const pocket::Canvas& canvas, pocket::RefreshMode mode)
   ESP_LOGD(TAG, "Waveshare fast full LUT (0xD7) mode=%s",
            mode == pocket::RefreshMode::Full ? "full" : "partial-canvas");
   EPD_Init_Fast();
-  EPD_Display_Fast_Base(panel_1bpp_);
+  EPD_Display_Fast_Base(panel_1bpp_);  // writes both RAMs
+  std::memcpy(shown_1bpp_, panel_1bpp_, kMonoBytes);
   mark_refresh_kicked();
   ESP_LOGD(TAG, "refresh kicked (async)");
 }
@@ -219,8 +222,33 @@ void EpdDisplay::present_region(const pocket::Canvas& canvas, int lx, int ly, in
 
   ESP_LOGD(TAG, "Waveshare region partial px=%d..%d py=%d..%d bytes=%u", px0, px1, py0, py1,
            static_cast<unsigned>(region_bytes));
-  EPD_Display_Partial(region, static_cast<UWORD>(px0), static_cast<UWORD>(py0),
-                      static_cast<UWORD>(px1), static_cast<UWORD>(py1));
+  // Previous contents of this window (what the panel shows) → RED RAM, new → BW RAM.
+  const size_t stride = kPanelW / 8;
+  const size_t col0 = static_cast<size_t>(px0 / 8);
+  uint8_t* old_region = full_panel ? nullptr : static_cast<uint8_t*>(malloc(region_bytes));
+  if (!full_panel && !old_region) {
+    free(region);
+    present(canvas, pocket::RefreshMode::Partial);
+    return;
+  }
+  if (!full_panel) {
+    for (int r = 0; r < rows; ++r) {
+      std::memcpy(old_region + static_cast<size_t>(r) * byte_w,
+                  shown_1bpp_ + static_cast<size_t>(py0 + r) * stride + col0, static_cast<size_t>(byte_w));
+    }
+  }
+  EPD_Display_Partial_Diff(full_panel ? shown_1bpp_ : old_region, region, static_cast<UWORD>(px0),
+                           static_cast<UWORD>(py0), static_cast<UWORD>(px1), static_cast<UWORD>(py1));
+  // The panel now shows `region` in this window.
+  if (full_panel) {
+    std::memcpy(shown_1bpp_, panel_1bpp_, kMonoBytes);
+  } else {
+    for (int r = 0; r < rows; ++r) {
+      std::memcpy(shown_1bpp_ + static_cast<size_t>(py0 + r) * stride + col0,
+                  region + static_cast<size_t>(r) * byte_w, static_cast<size_t>(byte_w));
+    }
+    free(old_region);
+  }
   if (!full_panel) free(region);
   mark_refresh_kicked();
   ESP_LOGD(TAG, "region refresh kicked (async 0xFF)");

@@ -20,6 +20,11 @@ Companion PWA, and Pocket Cloud API. See README.md and each package README.
   `components/pocket_ui/include/pocket/config.hpp`, and `kBuildId` (`POCKET-LIVE-vNNN-slug`)
   in `main/app_main.cpp`. OTA compares build IDs, so an unchanged `kBuildId` ships nothing.
 - Commit subject: `Firmware X.Y.Z (vNNN): summary`.
+- User-facing OS name, version and "What's new" notes live in `firmware/release.json`; run
+  `python3 firmware/tools/gen_release.py` to regenerate `pocket/release.hpp`. Deploy copies them into
+  the OTA manifest (`version_name`, `notes`) for the on-device update page and post-update welcome.
+- Blocking work (sync, transcribe, connect, download) calls `App::show_status("…")` first so the
+  panel says what's happening; it clears on the next flush / navigation.
 - The panel is **1-bit**: `epd.cpp` thresholds G0/G1 → black, G2/G3 → white. Never rely on
   mid grays; use dithering (`Canvas::fill_tone`, `screensaver.cpp`). Preview what the device
   shows with `host/dump_gallery` + `tools/gallery.py` (1-bit by default).

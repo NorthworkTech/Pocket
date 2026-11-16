@@ -312,6 +312,7 @@ void App::apply_dictation_transcript(const std::string& t) {
     data_.notes.push_back(n);
     note_index_ = static_cast<int>(data_.notes.size()) - 1;
     save_local_notes();
+    note_page_ = 0;
     nav_.replace(ScreenId::NotesDetail);
     after_nav();
   }
@@ -416,7 +417,8 @@ bool App::queue_offline_dictation(const std::vector<uint8_t>& pcm) {
   data_.notes.push_back(n);
   note_index_ = static_cast<int>(data_.notes.size()) - 1;
   save_local_notes();
-  nav_.replace(ScreenId::NotesDetail);
+  note_page_ = 0;
+    nav_.replace(ScreenId::NotesDetail);
   after_nav();
   error_msg_ = "Saved — will become text when online.";
   error_until_ms_ = now_ms_ + 3500;
@@ -697,6 +699,7 @@ void App::weather_refresh() {
     after_nav();
     return;
   }
+  show_status("Updating the forecast\xE2\x80\xA6");
   if (!weather_fetch_forecast()) {
     error_msg_ = "Couldn't refresh the forecast.";
     error_until_ms_ = now_ms_ + 3500;
@@ -740,6 +743,7 @@ void App::render_notes() {
     }
     ui::button(canvas_, kBottomCtaY, "New note", n == 0 || focus_.index == n, Icon::Plus, true);
   } else if (s == ScreenId::NotesDetail) {
+    note_pages_ = 1;
     std::string title = "Note";
     if (note_index_ >= 0 && note_index_ < static_cast<int>(data_.notes.size()))
       title = data_.notes[static_cast<size_t>(note_index_)].title;
@@ -752,9 +756,24 @@ void App::render_notes() {
                                                     : "Empty note. Hold to capture a voice clip; text needs Wi-Fi.",
                                   Canvas::TextRole::Secondary, Gray::G0);
       } else {
-        canvas_.draw_text_wrapped(kSideMargin, kListTop, kContentW, 8, n.body, Canvas::TextRole::Body, Gray::G0);
+        // Page the body so long notes never run under the actions.
+        const auto lines = ui::wrap_text(canvas_, n.body, Canvas::TextRole::Body, kContentW);
+        const int line_h = canvas_.text_height(Canvas::TextRole::Body) + 8;
+        int limit = bottom_action_y(1) - 72;  // room for "Listening…" / pending caption
+        int per_page = std::max(1, (limit - kListTop) / line_h);
+        if (static_cast<int>(lines.size()) > per_page) {
+          limit = bottom_action_y(2) - 60;
+          per_page = std::max(1, (limit - kListTop) / line_h);
+        }
+        note_pages_ = std::max(1, (static_cast<int>(lines.size()) + per_page - 1) / per_page);
+        note_page_ = std::clamp(note_page_, 0, note_pages_ - 1);
+        int y = kListTop;
+        for (int k = note_page_ * per_page; k < static_cast<int>(lines.size()) && k < (note_page_ + 1) * per_page; ++k) {
+          canvas_.draw_text(kSideMargin, y, lines[static_cast<size_t>(k)], Canvas::TextRole::Body, Gray::G0);
+          y += line_h;
+        }
         if (!n.pending_pcm.empty()) {
-          canvas_.draw_text_wrapped(kSideMargin, bottom_action_y(1) - 64, kContentW, kWrapGap,
+          canvas_.draw_text_wrapped(kSideMargin, bottom_action_y(note_pages_ > 1 ? 2 : 1) - 64, kContentW, kWrapGap,
                                     wifi_.connected() ? "Still waiting for the transcript \xE2\x80\x94 hold to re-record."
                                                       : "Voice clip saved \xE2\x80\x94 text arrives when online.",
                                     Canvas::TextRole::Caption, Gray::G0);
@@ -762,15 +781,23 @@ void App::render_notes() {
       }
     }
     if (ptt_active_) {
-      const int ly = bottom_action_y(1) - 40;
+      const int ly = bottom_action_y(note_pages_ > 1 ? 2 : 1) - 40;
       ui::icon(canvas_, Icon::Mic, kCanvasW / 2 - 60, ly + 13, 22, Gray::G0);
       canvas_.draw_text(kCanvasW / 2 - 42, ly, "Listening\xE2\x80\xA6", Canvas::TextRole::BodyStrong, Gray::G0);
     }
-    focus_.count = 2;
+    const int po = note_pages_ > 1 ? 1 : 0;
+    if (po) {
+      char pg[48];
+      std::snprintf(pg, sizeof(pg), "%d of %d", note_page_ + 1, note_pages_);
+      ui::row(canvas_, bottom_action_y(2),
+              Row{note_page_ + 1 < note_pages_ ? "Next page" : "Back to start", RowKind::Value, pg},
+              focus_.index == 0);
+    }
+    focus_.count = 2 + po;
     ui::row(canvas_, bottom_action_y(1), Row{"Dictate", RowKind::Action, {}, false, Icon::Mic, true},
-            focus_.index == 0);
+            focus_.index == po);
     ui::row(canvas_, bottom_action_y(0), Row{"Delete note", RowKind::Plain, {}, false, Icon::Trash, true},
-            focus_.index == 1);
+            focus_.index == po + 1);
   } else if (s == ScreenId::ListsList) {
     const int n = static_cast<int>(data_.lists.size());
     if (n == 0) {
@@ -894,6 +921,7 @@ void App::handle_notes(InputEvent e) {
       mark_content_dirty();
       return;
     }
+    show_status("Transcribing\xE2\x80\xA6");
     std::string t = cloud_.stt_transcribe(cap.pcm);
     if (t.size() == 1 && t[0] == '\x01') {
       // Online but STT unreachable — still keep the clip so it isn't lost.
@@ -932,6 +960,7 @@ void App::handle_notes(InputEvent e) {
     } else if (e == InputEvent::Select) {
       if (focus_.index < static_cast<int>(data_.notes.size())) {
         note_index_ = focus_.index;
+        note_page_ = 0;
         nav_.push(ScreenId::NotesDetail);
         after_nav();
       } else {
@@ -943,26 +972,31 @@ void App::handle_notes(InputEvent e) {
         data_.notes.push_back(n);
         note_index_ = static_cast<int>(data_.notes.size()) - 1;
         save_local_notes();
+        note_page_ = 0;
         nav_.push(ScreenId::NotesDetail);
         after_nav();
       }
     }
   } else if (s == ScreenId::NotesDetail) {
-    focus_.count = 2;
+    const int po = note_pages_ > 1 ? 1 : 0;
+    focus_.count = 2 + po;
     if (e == InputEvent::Up || e == InputEvent::Down) {
       const int prev = focus_.index;
       focus_.move(e == InputEvent::Down ? 1 : -1);
       if (focus_.index == prev) return;
-      mark_list_focus_dirty(bottom_action_y(1), prev, focus_.index);
-    } else if (e == InputEvent::Select && focus_.index == 0) {
+      mark_list_focus_dirty(bottom_action_y(1 + po), prev, focus_.index);
+    } else if (e == InputEvent::Select && po && focus_.index == 0) {
+      note_page_ = (note_page_ + 1) % note_pages_;
+      mark_content_dirty();
+    } else if (e == InputEvent::Select && focus_.index == po) {
       if (!wifi_.connected()) {
-        error_msg_ = "Hold the side button to capture. Text needs Wi‑Fi.";
+        error_msg_ = "Hold the side button to capture. Text needs Wi-Fi.";
       } else {
         error_msg_ = "Hold the side button to dictate.";
       }
       error_until_ms_ = now_ms_ + 3000;
       mark_content_dirty();
-    } else if (e == InputEvent::Select && focus_.index == 1) {
+    } else if (e == InputEvent::Select && focus_.index == po + 1) {
       if (note_index_ < static_cast<int>(data_.notes.size())) {
         if (!data_.notes[note_index_].pending_pcm.empty()) {
           delete_pending_pcm(data_.notes[note_index_].pending_pcm);

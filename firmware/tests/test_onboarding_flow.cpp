@@ -121,7 +121,7 @@ int main() {
   CHECK(app.screen() == ScreenId::OnboardingCompanionDownload);
 
   // Power must not jump to Lock during setup
-  app.handle(InputEvent::Power);
+  app.handle(InputEvent::PowerLong);
   CHECK(app.screen() == ScreenId::OnboardingCompanionDownload);
 
   // Continue → SD gate

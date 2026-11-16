@@ -9,7 +9,9 @@
  */
 #include "pocket/canvas.hpp"
 #include <cstdint>
+#include <string>
 #include <string_view>
+#include <vector>
 
 namespace pocket {
 namespace ui {
@@ -120,6 +122,12 @@ void scrollbar(Canvas& c, int top, int height, int start, int visible, int count
 
 /** Key/value line for detail pages: muted key left, value right. Returns next y. */
 int kv(Canvas& c, int y, std::string_view key, std::string_view value);
+
+/** Word-wrap `text` to `max_w`, honoring newlines (blank line = paragraph break). */
+std::vector<std::string> wrap_text(Canvas& c, std::string_view text, Canvas::TextRole role, int max_w);
+
+/** Static layered-wave illustration across the full width (installing / welcome). */
+void waves(Canvas& c, int top, int h);
 
 }  // namespace ui
 }  // namespace pocket

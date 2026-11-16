@@ -355,6 +355,13 @@ jobs:
             "channel": "stable",
             "git_sha": os.environ["GIT_SHA"],
           }
+          # Human-facing release info (shown on the device before installing).
+          rel_path = Path("release.json")
+          if rel_path.exists():
+            rel = json.loads(rel_path.read_text())
+            data["version_name"] = rel.get("name", "")
+            data["display_version"] = rel.get("version", "")
+            data["notes"] = rel.get("notes", [])
           Path("firmware-manifest.json").write_text(json.dumps(data, indent=2) + "\n")
           print(data)
           PY

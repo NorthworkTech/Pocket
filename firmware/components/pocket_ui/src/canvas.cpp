@@ -105,6 +105,11 @@ const FontGlyph* resolve(Canvas::TextRole role, uint32_t cp, const FontFace** fa
     *face_out = &fb;
     return g;
   }
+  // Invisible formatting characters draw nothing (CR from Windows files, BOM, ZWSP).
+  if (cp == '\r' || cp == 0xFEFF || cp == 0x200B || cp == 0x200D) return nullptr;
+  // Typographic stand-ins the 1bpp fonts don't carry.
+  if (cp == 0x2010 || cp == 0x2011 || cp == 0x2012 || cp == 0x2212) return resolve(role, '-', face_out);
+  if (cp == 0x00A0 || cp == 0x2009 || cp == 0x202F || cp == 0x2007) return resolve(role, ' ', face_out);
   // Last resort: '?' in the primary face, else the fallback.
   if (const FontGlyph* g = find_glyph(f, '?')) {
     *face_out = &f;
@@ -338,7 +343,8 @@ int Canvas::draw_text_wrapped(int x, int y, int max_w, int line_gap, std::string
       }
       cy += line_h;
       i = last_break;
-      while (i < n && (text[i] == ' ' || text[i] == '\t')) ++i;
+      while (i < n && (text[i] == ' ' || text[i] == '\t' || text[i] == '\r')) ++i;
+      if (i < n && text[i] == '\n') ++i;  // the newline ends this line, not a blank one
     } else if (j < n && text[j] == '\n') {
       i = j + 1;
       cy += line_h;

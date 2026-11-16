@@ -88,6 +88,30 @@ int main() {
   CHECK(m.drain_up_down_net() == 1);
   CHECK(m.poll() == InputEvent::None);
 
+  // Power: tap → Power on release; hold → PowerLong while held, nothing on release.
+  {
+    InputMapper p;
+    p.on_pwr(true, 10000);
+    p.tick(10200);
+    p.on_pwr(false, 10250);
+    CHECK(p.poll() == InputEvent::Power);
+    CHECK(p.poll() == InputEvent::None);
+    p.on_pwr(true, 11000);
+    p.tick(11500);
+    CHECK(p.poll() == InputEvent::None);
+    p.tick(11750);
+    CHECK(p.poll() == InputEvent::PowerLong);
+    p.tick(12500);
+    p.on_pwr(false, 12600);
+    CHECK(p.poll() == InputEvent::None);
+    // Quick tap shorter than the debounce window still registers once settled.
+    p.on_pwr(true, 13000);
+    p.on_pwr(false, 13020);
+    p.tick(13100);
+    CHECK(p.poll() == InputEvent::Power);
+    CHECK(p.poll() == InputEvent::None);
+  }
+
   if (failures) {
     std::printf("%d failures\n", failures);
     return 1;

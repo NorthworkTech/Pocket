@@ -93,7 +93,7 @@ int main() {
   CHECK(!app.host_data().alarms.empty() && app.host_data().alarms[0].enabled);
 
   // Lock the device; the alarm must still ring at 8:00 — over the lock screen.
-  app.handle(InputEvent::Power);
+  app.handle(InputEvent::PowerLong);
   CHECK(app.screen() == ScreenId::Lock);
   clock.m = 59;
   advance(app, clock, 500);
@@ -137,6 +137,20 @@ int main() {
   CHECK(app.screen() == ScreenId::ClockRinging);
   app.handle(InputEvent::Select);
   CHECK(app.screen() == ScreenId::ClockTimers);
+
+  // Power button: tap → Home from anywhere; hold → Lock; tap on Lock → PIN entry.
+  {
+    app.host_goto(ScreenId::NotesList);
+    app.handle(InputEvent::Power);
+    CHECK(app.screen() == ScreenId::Home);
+    app.host_goto(ScreenId::SettingsDisplay);
+    app.handle(InputEvent::Power);
+    CHECK(app.screen() == ScreenId::Home);
+    app.handle(InputEvent::PowerLong);
+    CHECK(app.screen() == ScreenId::Lock);
+    app.handle(InputEvent::Power);
+    CHECK(app.screen() == ScreenId::Pin);
+  }
 
   if (failures == 0) std::printf("test_clock: OK\n");
   return failures == 0 ? 0 : 1;

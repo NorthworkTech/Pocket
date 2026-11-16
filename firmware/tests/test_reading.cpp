@@ -105,7 +105,7 @@ int main() {
   CHECK(app.screen() == ScreenId::ReadingBook);
 
   // Next page should advance without crashing and Back should return to the list.
-  app.handle(InputEvent::Down);  // focus Next page
+  // Opening a book focuses "Next" so the first press turns the page.
   app.handle(InputEvent::Select);
   app.handle(InputEvent::Back);
   CHECK(app.screen() == ScreenId::ReadingList);

@@ -162,9 +162,7 @@ std::string EspCloud::music_list_json(const std::string& device_id, bool sd_pres
     return {};
   }
   // Prefer the tracks array payload for the device parser.
-  const size_t arr = resp.find('[');
-  if (arr == std::string::npos) return "[]";
-  return resp.substr(arr);
+  return resp;  // {"books":[...]} — parsed with json_lite on the UI side
 }
 
 std::vector<uint8_t> EspCloud::music_download(const std::string& device_id, const std::string& track_id) {

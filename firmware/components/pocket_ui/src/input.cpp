@@ -57,7 +57,7 @@ void InputMapper::discard_nav_gestures() {
   int k = 0;
   for (int i = 0; i < n; ++i) {
     const InputEvent e = queue_[(q_head_ + i) % kQueue];
-    if (e == InputEvent::Power || e == InputEvent::Home || e == InputEvent::Back ||
+    if (e == InputEvent::Power || e == InputEvent::PowerLong || e == InputEvent::Home || e == InputEvent::Back ||
         e == InputEvent::PttStart || e == InputEvent::PttStop) {
       continue;
     }
@@ -68,6 +68,8 @@ void InputMapper::discard_nav_gestures() {
   for (int i = 0; i < k; ++i) push(kept[i]);
   // SoftAP RF often leaves PWR latched low — require a clean release before next Power.
   pwr_edge_armed_ = false;
+  pwr_down_ = false;
+  pwr_long_fired_ = false;
   boot_down_ = false;
   ptt_armed_ = false;
   fn_long_fired_ = fn_down_;  // don't fire Home from a hold that spanned SoftAP start
@@ -146,13 +148,19 @@ void InputMapper::on_pwr(bool pressed, uint32_t now_ms) {
   pwr_pending_.set = false;
   pwr_level_ = pressed;
   if (pressed) {
-    if (pwr_edge_armed_) {
-      push(InputEvent::Power);
+    // A press only counts after a clean release (SoftAP RF can latch PWR low).
+    if (pwr_edge_armed_ && !pwr_down_) {
+      pwr_down_ = true;
+      pwr_down_ms_ = now_ms;
+      pwr_long_fired_ = false;
       pwr_edge_armed_ = false;
     }
-  } else {
-    pwr_edge_armed_ = true;
+    return;
   }
+  pwr_edge_armed_ = true;
+  if (!pwr_down_) return;
+  pwr_down_ = false;
+  if (!pwr_long_fired_) push(InputEvent::Power);  // tap
 }
 
 void InputMapper::tick(uint32_t now_ms) {
@@ -176,6 +184,10 @@ void InputMapper::tick(uint32_t now_ms) {
       push(InputEvent::Home);
       fn_long_fired_ = true;
     }
+  }
+  if (pwr_down_ && !pwr_long_fired_ && now_ms - pwr_down_ms_ >= InputThresholds::kPowerLongMs) {
+    push(InputEvent::PowerLong);  // fire while held — lock happens without waiting for release
+    pwr_long_fired_ = true;
   }
   if (boot_down_ && !ptt_armed_) {
     if (now_ms - boot_down_ms_ >= InputThresholds::kPttArmMs) {

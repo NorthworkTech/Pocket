@@ -108,6 +108,7 @@ void App::music_sync_from_cloud() {
       music_status_ = "Offline · " + std::to_string(music_tracks_.size()) + " local";
     return;
   }
+  show_status("Syncing music\xE2\x80\xA6");
   if (!storage_ || !storage_->music_ensure_root()) {
     music_status_ = "No storage (need SD or free internal).";
     return;
@@ -154,6 +155,7 @@ void App::music_sync_from_cloud() {
       local.push_back(t);
       continue;
     }
+    show_status("Downloading \xE2\x80\x9C" + t.title + "\xE2\x80\x9D\xE2\x80\xA6");
     int64_t got = 0;
     if (!cloud_.download_to_file("music", cfg_.device_id, t.id, path, on_sd ? 0 : kInternalMax, &got)) {
       music_status_ = "Download failed for " + t.title;

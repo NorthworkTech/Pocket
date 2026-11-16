@@ -6,7 +6,7 @@ namespace pocket {
 
 /** Generative lock/sleep screensavers, designed for the 1-bit e-ink panel
  * (tones are error-diffused or half-toned, line art is pure ink). */
-inline constexpr int kScreensaverCount = 7;
+inline constexpr int kScreensaverCount = 12;
 /** DeviceConfig::screensaver value for the quiet wordmark-only face. */
 inline constexpr uint8_t kScreensaverPlain = 255;
 

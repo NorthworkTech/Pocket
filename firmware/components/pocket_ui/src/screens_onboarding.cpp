@@ -322,7 +322,7 @@ void App::render_onboarding() {
         static const char* kBodies[3] = {
             "Turn to move between items. Press the dial to choose.",
             "Press to go back. Hold in Notes and Lists to dictate.",
-            "Press to lock. Pocket keeps its screen with no power at all."};
+            "Press to go Home. Hold to lock \xE2\x80\x94 the screen stays on with no power at all."};
         const int t = std::min(tips_page_, 3) - 1;
         canvas_.draw_text(kSideMargin, kContentTop, kTitles[t], Canvas::TextRole::ScreenTitle, Gray::G0);
         device_diagram(canvas_, t);

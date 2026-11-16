@@ -166,3 +166,13 @@ add_executable(test_clock ../tests/test_clock.cpp ${POCKET_UI_SRCS})
 target_include_directories(test_clock PRIVATE ${POCKET_UI}/include ${POCKET_UI}/vendor/qrcodegen)
 target_compile_definitions(test_clock PRIVATE POCKET_HOST=1)
 add_test(NAME test_clock COMMAND test_clock)
+
+add_executable(test_update_flow ../tests/test_update_flow.cpp ${POCKET_UI_SRCS})
+target_include_directories(test_update_flow PRIVATE ${POCKET_UI}/include ${POCKET_UI}/vendor/qrcodegen)
+target_compile_definitions(test_update_flow PRIVATE POCKET_HOST=1)
+add_test(NAME test_update_flow COMMAND test_update_flow)
+
+add_executable(test_books_library ../tests/test_books_library.cpp ${POCKET_UI_SRCS})
+target_include_directories(test_books_library PRIVATE ${POCKET_UI}/include ${POCKET_UI}/vendor/qrcodegen)
+target_compile_definitions(test_books_library PRIVATE POCKET_HOST=1)
+add_test(NAME test_books_library COMMAND test_books_library)

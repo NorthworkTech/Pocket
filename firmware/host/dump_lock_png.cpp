@@ -82,7 +82,10 @@ int main(int argc, char** argv) {
   }
 
   for (int i = 0; i < kLockMotifCount; ++i) {
-    if (i > 0) app.handle(InputEvent::Power);  // go_lock() — advances motif
+    if (i > 0) {
+      app.host_goto(ScreenId::Home);
+      app.handle(InputEvent::PowerLong);  // go_lock() — advances motif
+    }
     if (app.lock_motif_index() != i) {
       std::fprintf(stderr, "motif index %d expected %d\n", app.lock_motif_index(), i);
       return 1;

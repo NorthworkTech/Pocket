@@ -1,6 +1,7 @@
 #include "pocket/app.hpp"
 #include "pocket/ui.hpp"
 #include "pocket/json_lite.hpp"
+#include "pocket/release.hpp"
 #include <functional>
 #include <algorithm>
 #include <cmath>
@@ -9,6 +10,12 @@
 #include <ctime>
 
 namespace pocket {
+
+namespace {
+/** Bottom band repainted for the status pill (toast: up to 2 lines + margins). */
+constexpr int kStatusPillBand = 140;
+}  // namespace
+
 
 extern void draw_status_bar_impl(Canvas& c, const DeviceConfig& cfg, int hour, int minute, bool wifi_ok,
                                  int battery_pct, bool time_ok, bool time_needs_sync = false);
@@ -46,7 +53,14 @@ void App::boot() {
   }
   // Prefer identity stamped by app_main (kBuildId) when set before boot.
   if (!pending_build_id_.empty()) {
-    cfg_.fw_build_id = pending_build_id_;
+    // A different build than last boot = an update just installed → welcome screen.
+    if (cfg_.onboarding_complete && !cfg_.fw_build_id.empty() && cfg_.fw_build_id != pending_build_id_) {
+      show_update_welcome_ = true;
+    }
+    if (cfg_.fw_build_id != pending_build_id_) {
+      cfg_.fw_build_id = pending_build_id_;
+      store_.save(cfg_);
+    }
   }
   // Consumer-facing version is always the product semver — never a flash marker.
   cfg_.fw_version = kConsumerVersion;
@@ -295,7 +309,22 @@ bool App::try_present(bool full) {
   return true;
 }
 
+void App::show_status(std::string_view msg) {
+  const ScreenId s = nav_.current();
+  if (s == ScreenId::Lock || s == ScreenId::Pin || s == ScreenId::ClockRinging ||
+      s == ScreenId::SettingsUpdateProgress)
+    return;
+  status_msg_.assign(msg.data(), msg.size());
+  display_.wait_idle(2500);
+  mark_region_dirty(0, kCanvasH - kStatusPillBand, kCanvasW, kStatusPillBand);
+  if (try_present(false)) dirty_ = false;
+}
+
 void App::flush_dirty() {
+  if (!status_msg_.empty()) {
+    status_msg_.clear();
+    mark_region_dirty(0, kCanvasH - kStatusPillBand, kCanvasW, kStatusPillBand);
+  }
   if (!dirty_) return;
   // Never block the input path on a mid-flight e-ink refresh — keep dirty and
   // apply further rotary ticks to logical state; present once the panel is idle.
@@ -347,6 +376,7 @@ void App::begin_softap_link() {
 bool App::connect_and_remember(const std::string& ssid, const std::string& password) {
   if (ssid.empty()) return false;
   wifi_password_ = password;
+  show_status("Connecting to " + ssid + "\xE2\x80\xA6");
   const bool ok = wifi_.connect(ssid, password);
   if (ok) {
     wifi_known_upsert(cfg_, ssid, password);
@@ -525,6 +555,7 @@ bool App::mint_pair_session() {
 }
 
 void App::after_nav(bool full_refresh) {
+  status_msg_.clear();  // a finished blocking step never follows the user to the next screen
   focus_.index = 0;
   list_focus_spin_count_ = 0;
   // Fresh screen: clear PIN spin latch so a prior slot's digit can't leak in.
@@ -605,6 +636,10 @@ void App::go_lock() {
     sd_waiting_eject_ = false;
   }
   pin_change_ = false;
+  // An app's toast must not follow the user onto the PIN screen.
+  error_msg_.clear();
+  error_until_ms_ = 0;
+  status_msg_.clear();
   reset_armed_ = false;
   nav_.reset(ScreenId::Lock);
   pin_entry_.clear();
@@ -1002,6 +1037,7 @@ void App::tick(uint32_t now_ms) {
 void App::present_canvas(bool full) {
   canvas_.clear(Gray::G3);
   render();
+  if (!status_msg_.empty()) ui::toast(canvas_, status_msg_);
   if (full) {
     display_.present(canvas_, RefreshMode::Full);
     refresh_.on_applied(RefreshMode::Full);
@@ -1083,12 +1119,29 @@ void App::handle(InputEvent e) {
     }
     return;
   }
-  if (e == InputEvent::Power) {
+  if (e == InputEvent::Power || e == InputEvent::PowerLong) {
     // Setup incomplete: stay on onboarding — do not jump to Lock.
     if (!cfg_.onboarding_complete) return;
     // SoftAP RF often glitches PWR → ignore Power mid Add-network / SoftAP session.
     if (wifi_add_flow_active()) return;
-    go_lock();
+    const ScreenId cur = nav_.current();
+    if (cur == ScreenId::ClockRinging) {
+      stop_ringing(false);  // either press silences an alarm
+      if (e == InputEvent::PowerLong) go_lock();
+      return;
+    }
+    if (cur == ScreenId::SettingsUpdateProgress) return;  // never interrupt an install
+    if (e == InputEvent::PowerLong) {
+      // Hold → lock.
+      if (cur != ScreenId::Lock && cur != ScreenId::Pin) go_lock();
+      return;
+    }
+    // Tap → Home. From the lock face it opens PIN entry (Home is behind the PIN).
+    if (cur == ScreenId::Lock) {
+      handle_lock(InputEvent::Select);
+    } else if (cur != ScreenId::Pin) {
+      go_home();
+    }
     return;
   }
   // SoftAP RF also glitches BOOT → Back. During Add-network SoftAP, only Cancel clears
@@ -1143,6 +1196,11 @@ void App::handle(InputEvent e) {
     case ScreenId::ClockTimerRun:
     case ScreenId::ClockRinging:
       handle_clock(e);
+      break;
+    case ScreenId::SettingsUpdateProgress:
+    case ScreenId::SettingsUpdateResult:
+    case ScreenId::SettingsUpdateAvailable:
+      handle_update(e);
       break;
     case ScreenId::PassList:
     case ScreenId::PassDetail:
@@ -1216,6 +1274,11 @@ void App::render() {
     case ScreenId::ClockRinging:
       render_clock();
       break;
+    case ScreenId::SettingsUpdateProgress:
+    case ScreenId::SettingsUpdateResult:
+    case ScreenId::SettingsUpdateAvailable:
+      render_update();
+      break;
     case ScreenId::PassList:
     case ScreenId::PassDetail:
       render_pass();
@@ -1244,6 +1307,23 @@ void App::render_lock() {
   // Sleep face: a full-bleed generative print over a quiet paper plate. Static —
   // no clock, no hints — so the panel can hold it with zero refreshes.
   constexpr int kArtH = 680;
+  if (show_update_welcome_) {
+    // First boot after an update: a calm welcome card. One press → normal lock face.
+    ui::waves(canvas_, 50, 190);
+    canvas_.draw_text_centered(kCanvasW / 2, 290, "Update complete", Canvas::TextRole::Caption, Gray::G0);
+    canvas_.draw_text_centered(kCanvasW / 2, 322, "Welcome to", Canvas::TextRole::Secondary, Gray::G0);
+    canvas_.draw_text_centered(kCanvasW / 2, 356, kOsDisplayName, Canvas::TextRole::ScreenTitle, Gray::G0);
+    int y = 428;
+    canvas_.dotted_hline(kCanvasW / 2 - 60, y, 120, Gray::G0, 3);
+    y += 24;
+    for (int i = 0; i < kReleaseNoteCount && y < kBottomCtaY - 70; ++i) {
+      canvas_.fill_disc(kSideMargin + 6, y + 15, 3, Gray::G0);
+      y = canvas_.draw_text_wrapped(kSideMargin + 22, y, kContentW - 22, 2, kReleaseNotes[i],
+                                    Canvas::TextRole::Secondary, Gray::G0) + 10;
+    }
+    ui::button(canvas_, kBottomCtaY, "Press to continue", true);
+    return;
+  }
   const bool plain = cfg_.screensaver == kScreensaverPlain;
   if (plain) {
     const int wm_w = canvas_.text_width("Pocket", Canvas::TextRole::WordMark);
@@ -1264,21 +1344,19 @@ void App::render_lock() {
 
   draw_lock_motif();
 
-  // Plate: wordmark left, piece credit right, optional owner message beneath.
+  // Plate: centered wordmark, optional owner message beneath. No art credits.
   canvas_.fill_rect(0, kArtH, kCanvasW, kCanvasH - kArtH, Gray::G3);
   canvas_.hline(0, kArtH, kCanvasW, Gray::G0);
-  const int wm_y = kArtH + 22;
+  const bool has_msg = !cfg_.lock_message.empty();
   const int wm_h = canvas_.text_height(Canvas::TextRole::WordMark);
-  draw_pocket_mark(kSideMargin + 26, wm_y + wm_h / 2);
-  canvas_.draw_text(kSideMargin + 38, wm_y, "Pocket", Canvas::TextRole::WordMark, Gray::G0);
-  char credit[40];
-  std::snprintf(credit, sizeof(credit), "No. %d  \xC2\xB7  %s", lock_motif_index_ + 1,
-                screensaver_name(lock_motif_index_));
-  const int cw = canvas_.text_width(credit, Canvas::TextRole::Caption);
-  const int cap_y = wm_y + (wm_h - canvas_.text_height(Canvas::TextRole::Caption)) / 2 + 3;
-  canvas_.draw_text(kCanvasW - kSideMargin - cw, cap_y, credit, Canvas::TextRole::Caption, Gray::G0);
-  if (!cfg_.lock_message.empty()) {
-    canvas_.draw_text_fit(kSideMargin, wm_y + wm_h + 4, kContentW, cfg_.lock_message,
+  const int wm_y = kArtH + (has_msg ? 18 : 38);
+  const int wm_w = canvas_.text_width("Pocket", Canvas::TextRole::WordMark);
+  const int x0 = (kCanvasW - (wm_w + 38)) / 2;
+  draw_pocket_mark(x0 + 26, wm_y + wm_h / 2);
+  canvas_.draw_text(x0 + 38, wm_y, "Pocket", Canvas::TextRole::WordMark, Gray::G0);
+  if (has_msg) {
+    const int mw = std::min(kContentW, canvas_.text_width(cfg_.lock_message, Canvas::TextRole::Secondary));
+    canvas_.draw_text_fit((kCanvasW - mw) / 2, wm_y + wm_h + 6, kContentW, cfg_.lock_message,
                           Canvas::TextRole::Secondary, Gray::G0);
   }
 }
@@ -1302,6 +1380,13 @@ void App::draw_lock_motif() {
 }
 
 void App::handle_lock(InputEvent e) {
+  if (show_update_welcome_) {
+    if (e == InputEvent::Select || e == InputEvent::Back) {
+      show_update_welcome_ = false;
+      after_nav(true);  // full refresh into the normal lock face
+    }
+    return;
+  }
   if (e == InputEvent::Select) {
     pin_entry_.clear();
     pin_spin_count_ = 0;
@@ -1400,7 +1485,8 @@ void App::render_pin() {
   }
   draw_pin_entry(/*mask_completed=*/true, 200);
   if (now_ms_ < error_until_ms_) {
-    canvas_.draw_text_centered(kCanvasW / 2, 392, error_msg_.c_str(), Canvas::TextRole::BodyStrong, Gray::G0);
+    const int tw = std::min(kContentW, canvas_.text_width(error_msg_, Canvas::TextRole::BodyStrong));
+    canvas_.draw_text_fit((kCanvasW - tw) / 2, 392, kContentW, error_msg_, Canvas::TextRole::BodyStrong, Gray::G0);
   }
   if (now_ms_ < pin_lockout_until_ms_) {
     uint32_t rem = (pin_lockout_until_ms_ - now_ms_ + 999u) / 1000u;
@@ -1673,7 +1759,7 @@ void App::maybe_tick_transient_error() {
   error_msg_.clear();
   error_until_ms_ = 0;
   // Footer / toast band — clear residual "offline" / dictation toasts.
-  mark_region_dirty(0, kFooterY - 12, kCanvasW, kCanvasH - (kFooterY - 12));
+  mark_region_dirty(0, kCanvasH - kStatusPillBand, kCanvasW, kStatusPillBand);  // whole toast (2 lines)
   if (dirty_ && try_present(false)) {
     dirty_ = false;
   }

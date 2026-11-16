@@ -546,6 +546,73 @@ void EPD_Display_OneShot(const UBYTE *Image)
 function :	Sends the image buffer in RAM to e-Paper and displays
 parameter:
 ******************************************************************************/
+/**
+ * Partial refresh with an explicit "previous" image. The SSD1683 fast partial
+ * waveform (0x22/0xFF) drives each pixel from RED RAM (0x26, what the panel is
+ * showing) to BW RAM (0x24, the new image). Writing only 0x24 left 0x26 holding
+ * whatever the last full refresh wrote — so every partial was driven against a
+ * stale screen (e.g. Home flashing through while spinning PIN digits).
+ */
+void EPD_Display_Partial_Diff(const UBYTE *Old, const UBYTE *Image, UWORD Xstart, UWORD Ystart, UWORD Xend, UWORD Yend)
+{
+    if((Xstart % 8 + Xend % 8 == 8 && Xstart % 8 > Xend % 8) || Xstart % 8 + Xend % 8 == 0 || (Xend - Xstart)%8 == 0)
+    {
+        Xstart = Xstart / 8 ;
+        Xend = Xend / 8;
+    }
+    else
+    {
+        Xstart = Xstart / 8 ;
+        Xend = Xend % 8 == 0 ? Xend / 8 : Xend / 8 + 1;
+    }
+
+    UWORD Width = Xend - Xstart;
+    UDOUBLE IMAGE_COUNTER = Width * (Yend - Ystart);
+
+    Xend -= 1;
+    Yend -= 1;
+
+    EPD_SendCommand(0x18);
+    EPD_SendData(0x80);
+
+    EPD_SendCommand(0x3C);
+    EPD_SendData(0x80);
+
+    EPD_SendCommand(0x44);
+    EPD_SendData((Xstart*8) & 0xFF);
+    EPD_SendData(((Xstart*8) >> 8) & 0xFF);
+    EPD_SendData((Xend*8) & 0xFF);
+    EPD_SendData(((Xend*8) >> 8) & 0xFF);
+
+    EPD_SendCommand(0x45);
+    EPD_SendData(Yend & 0xFF);
+    EPD_SendData((Yend >> 8) & 0xFF);
+    EPD_SendData(Ystart & 0xFF);
+    EPD_SendData((Ystart >> 8) & 0xFF);
+
+    // Previous image → RED RAM.
+    EPD_SendCommand(0x4E);
+    EPD_SendData((Xstart*8) & 0xFF);
+    EPD_SendData(((Xstart*8) >> 8) & 0xFF);
+    EPD_SendCommand(0x4F);
+    EPD_SendData(Ystart & 0xFF);
+    EPD_SendData((Ystart >> 8) & 0xFF);
+    EPD_SendCommand(0x26);
+    EPD_SendDataBuffer(Old, IMAGE_COUNTER);
+
+    // New image → BW RAM.
+    EPD_SendCommand(0x4E);
+    EPD_SendData((Xstart*8) & 0xFF);
+    EPD_SendData(((Xstart*8) >> 8) & 0xFF);
+    EPD_SendCommand(0x4F);
+    EPD_SendData(Ystart & 0xFF);
+    EPD_SendData((Ystart >> 8) & 0xFF);
+    EPD_SendCommand(0x24);
+    EPD_SendDataBuffer(Image, IMAGE_COUNTER);
+
+    EPD_TurnOnDisplay_Part();
+}
+
 void EPD_Display_Partial(const UBYTE *Image, UWORD Xstart, UWORD Ystart, UWORD Xend, UWORD Yend)
 {
     if((Xstart % 8 + Xend % 8 == 8 && Xstart % 8 > Xend % 8) || Xstart % 8 + Xend % 8 == 0 || (Xend - Xstart)%8 == 0)

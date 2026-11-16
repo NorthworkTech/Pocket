@@ -58,6 +58,8 @@ enum class ScreenId : uint16_t {
   SettingsUpdateResult,
   /** Alarm / timer alert — shown above any screen, including Lock. */
   ClockRinging,
+  /** Software update found: name, size, release notes, Install / Later. */
+  SettingsUpdateAvailable,
 };
 
 struct NavStack {

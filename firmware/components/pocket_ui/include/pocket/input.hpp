@@ -13,12 +13,15 @@ enum class InputEvent : uint8_t {
   Back,      // Side button short (< PTT arm)
   PttStart,  // Side button hold >= 200 ms
   PttStop,   // Side button release after PTT armed
-  Power,     // Power button short
+  Power,      // Power button tap (< kPowerLongMs) → Home (or PIN from Lock)
+  PowerLong,  // Power button held ≥ kPowerLongMs → Lock
 };
 
 struct InputThresholds {
   static constexpr uint32_t kFunctionLongMs = 800;
   static constexpr uint32_t kPttArmMs = 200;
+  /** Power held this long locks; a shorter tap goes Home. */
+  static constexpr uint32_t kPowerLongMs = 700;
   /**
    * Minimum time between accepted raw edges per control. The Waveshare 3-way
    * rocker and side buttons are read with zero hardware debounce (see
@@ -80,6 +83,9 @@ class InputMapper {
   bool ptt_armed_ = false;
 
   bool pwr_edge_armed_ = true;
+  bool pwr_down_ = false;
+  uint32_t pwr_down_ms_ = 0;
+  bool pwr_long_fired_ = false;
 
   /** Debounce bookkeeping — one last-accepted-edge timestamp per control. */
   bool up_seen_ = false;
