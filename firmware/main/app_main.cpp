@@ -53,7 +53,7 @@ constexpr uint32_t kRtcWallMagic = 0x504B5257u;  // 'PKRW'
 static const char* TAG = "pocket";
 
 // Unique marker — must appear on Mac serial (cu.usbmodem) for this build.
-static const char* kBuildId = "POCKET-LIVE-v105-sync-deghost";
+static const char* kBuildId = "POCKET-LIVE-v106-setup-link";
 
 namespace {
 
@@ -307,6 +307,7 @@ struct EspClock : pocket::PlatformClock {
   bool time_valid() const override { return wall.valid(); }
   bool time_trusted() const override { return wall.trusted(); }
   bool time_needs_network_sync() const override { return wall.needs_network_sync(); }
+  void sleep_ms(uint32_t ms) override { vTaskDelay(pdMS_TO_TICKS(ms)); }
   /** Cached: the status bar asks every loop; the PMIC only needs reading every 30 s. */
   int battery_percent() override {
     const int64_t now = esp_timer_get_time();

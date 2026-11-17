@@ -26,6 +26,8 @@ struct PlatformClock {
   virtual bool time_trusted() const { return time_valid(); }
   /** Hint UX to ask for Wi‑Fi sync (unsynced or approximate). */
   virtual bool time_needs_network_sync() const { return false; }
+  /** Block the UI task briefly (network retries). Host: no-op so tests stay fast. */
+  virtual void sleep_ms(uint32_t /*ms*/) {}
   /** Battery 0–100 from PMIC; USB-only boards may report 100. */
   virtual int battery_percent() { return 100; }
 };
@@ -51,6 +53,8 @@ struct PlatformWifi {
   virtual bool take_provision_credentials(std::string* ssid, std::string* password) = 0;
   virtual std::string provision_ap_ssid() const = 0;
   virtual std::string provision_ap_password() const = 0;
+  /** Plain-language reason the last join failed (wrong password, network not found…). */
+  virtual std::string last_error() const { return {}; }
   /** SoftAP portal currently advertising (phone can join). */
   virtual bool provisioning() const { return false; }
 };
@@ -95,6 +99,8 @@ struct PlatformCloud {
   virtual std::string device_attest_json(const std::string& /*device_id*/) { return {}; }
   /** Tell Pocket Cloud whether a microSD is in (raises Companion upload limits). -1 = unknown. */
   virtual void set_sd_present(int /*sd*/) {}
+  /** Plain-language reason the last request failed (no internet, server error…). */
+  virtual std::string last_error() const { return {}; }
   /** POST /v1/device/sync — push local note/list changes, get the merged set back. */
   virtual std::string device_sync_json(const std::string& /*device_id*/, const std::string& /*body*/,
                                        int* status) {
@@ -470,6 +476,8 @@ class App {
   uint32_t last_sync_ok_ms_ = 0;
   uint32_t id_counter_ = 0;
   int last_reported_sd_ = -1;
+  /** Why the last pairing-code request failed (shown on the Link screen). */
+  std::string pair_error_;
   std::string sync_status_;
   /** Full refresh after a pause when partials have left ghosting (see RefreshPolicy). */
   void maybe_idle_clean();

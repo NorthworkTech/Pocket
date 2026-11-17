@@ -353,17 +353,14 @@ void App::flush_dirty() {
 
 void App::begin_softap_link() {
   if (wifi_.connected()) {
-    // Already on home Wi‑Fi — mint pair code; skip SoftAP.
-    if (mint_pair_session()) {
-      play_sound(SoundId::Success);
-      focus_.index = 0;
-      wifi_add_session_ = false;
-      nav_.replace(ScreenId::OnboardingCompanionQr);
-      after_nav();
-      return;
-    }
-    play_sound(SoundId::Attention);
-    // Fall through to SoftAP if mint failed (still need a path forward).
+    // Already on home Wi‑Fi — straight to Link (its error state offers Try again /
+    // Choose a different Wi-Fi if Pocket Cloud can't be reached).
+    play_sound(mint_pair_session() ? SoundId::Success : SoundId::Attention);
+    focus_.index = 0;
+    wifi_add_session_ = false;
+    nav_.replace(ScreenId::OnboardingCompanionQr);
+    after_nav(true);
+    return;
   }
   std::string ap;
   std::string pass;
@@ -555,8 +552,17 @@ void App::maybe_wifi_auto_reconnect() {
 }
 
 bool App::mint_pair_session() {
-  // Retry a few times — Cloud must register the code or claim will fail.
-  for (int attempt = 0; attempt < 3; ++attempt) {
+  // Right after joining Wi-Fi the link can need a few seconds (DHCP/DNS settle, SoftAP
+  // teardown). Retry with backoff for ~10 s and say what's happening meanwhile.
+  show_status("Connecting to Pocket Cloud\xE2\x80\xA6");
+  pair_error_.clear();
+  static constexpr uint32_t kBackoffMs[] = {0, 1000, 2000, 3000, 4000};
+  for (uint32_t wait : kBackoffMs) {
+    if (wait) clock_.sleep_ms(wait);
+    if (!wifi_.connected()) {
+      pair_error_ = "Pocket lost its Wi-Fi connection.";
+      break;
+    }
     const std::string code = cloud_.create_pair_session(cfg_.device_id);
     if (!code.empty()) {
       pair_code_ = code;
@@ -568,7 +574,9 @@ bool App::mint_pair_session() {
   }
   pair_code_.clear();
   pair_status_ = "expired";
-  error_msg_ = "Couldn't create pairing code. Try again.";
+  if (pair_error_.empty()) pair_error_ = cloud_.last_error();
+  if (pair_error_.empty()) pair_error_ = "Pocket couldn't reach Pocket Cloud.";
+  error_msg_ = "Couldn't get a pairing code \xE2\x80\x94 " + pair_error_;
   error_until_ms_ = now_ms_ + 4000;
   return false;
 }
@@ -977,19 +985,17 @@ void App::tick(uint32_t now_ms) {
             wifi_ui_page_ = 0;
             nav_.return_to(ScreenId::SettingsWifi);
             after_nav();
-          } else if (mint_pair_session()) {
-            play_sound(SoundId::Success);
+          } else {
+            // Online: always move on to Link. If the code couldn't be fetched, that screen
+            // says why and offers Try again — never back to the (now closed) setup network.
+            play_sound(mint_pair_session() ? SoundId::Success : SoundId::Attention);
             focus_.index = 0;
             nav_.replace(ScreenId::OnboardingCompanionQr);
-            after_nav();  // QR: full
-          } else {
-            play_sound(SoundId::Attention);
-            wifi_add_session_ = true;  // SoftAP still needed for retry path
-            ensure_softap_credentials_shown();
-            mark_content_dirty();
+            after_nav(true);  // QR: full
           }
         } else {
-          error_msg_ = "Couldn't connect. Check the password on your phone.";
+          const std::string why = wifi_.last_error();
+          error_msg_ = why.empty() ? std::string("Couldn't connect. Check the password on your phone.") : why;
           error_until_ms_ = now_ms_ + 4000;
           ensure_softap_credentials_shown();
           mark_content_dirty();

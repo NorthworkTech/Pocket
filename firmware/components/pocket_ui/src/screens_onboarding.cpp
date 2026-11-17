@@ -214,8 +214,19 @@ void App::render_onboarding() {
       break;
     }
     case ScreenId::OnboardingCompanionQr: {
-      if (pair_code_.empty()) mint_pair_session();
       title("Link Pocket");
+      if (pair_code_.empty()) {
+        // No network calls while drawing: the screen states what failed and how to retry.
+        std::string body = pair_error_.empty() ? std::string("Pocket couldn't reach Pocket Cloud.") : pair_error_;
+        if (!cfg_.wifi_ssid.empty() && wifi_.connected()) body += " Pocket is on " + cfg_.wifi_ssid + ".";
+        ui::empty_state(canvas_, Icon::Cloud, "Couldn't get a pairing code", body, 360);
+        focus_.count = 2;
+        ui::row(canvas_, kBottomCtaY - kRowPitch, Row{"Try again", RowKind::Action, {}, false, Icon::Update, true},
+                focus_.index == 0);
+        ui::row(canvas_, kBottomCtaY, Row{"Choose a different Wi-Fi", RowKind::Nav, {}, false, Icon::Wifi, true},
+                focus_.index == 1);
+        break;
+      }
       const int y = lead(below_title(ty) - 4, "In the Pocket app, scan this code to link Pocket to your account.");
       const int qr = 176;
       const int qy = y + 26;
@@ -566,14 +577,11 @@ void App::handle_onboarding(InputEvent e) {
           wifi_ui_page_ = 0;
           nav_.return_to(ScreenId::SettingsWifi);
           after_nav();
-        } else if (mint_pair_session()) {
-          play_sound(SoundId::Success);
+        } else {
+          play_sound(mint_pair_session() ? SoundId::Success : SoundId::Attention);
           focus_.index = 0;
           nav_.replace(ScreenId::OnboardingCompanionQr);
-          after_nav();
-        } else {
-          play_sound(SoundId::Attention);
-          mark_content_dirty();
+          after_nav(true);
         }
       } else if (focus_.index == cancel_i) {
         play_sound(SoundId::Click);
@@ -607,6 +615,24 @@ void App::handle_onboarding(InputEvent e) {
       return;
     }
     focus_.count = 2;  // Waiting… · Refresh code — no Skip
+    if (pair_code_.empty()) {
+      // Error state: Try again · Choose a different Wi-Fi.
+      if (e == InputEvent::Up || e == InputEvent::Down) {
+        focus_.move(e == InputEvent::Down ? 1 : -1);
+        mark_content_dirty();
+      } else if (e == InputEvent::Select && focus_.index == 0) {
+        play_sound(mint_pair_session() ? SoundId::Success : SoundId::Attention);
+        focus_.index = 0;
+        after_nav(true);
+      } else if (e == InputEvent::Select && focus_.index == 1) {
+        play_sound(SoundId::Click);
+        wifi_networks_ = wifi_.scan();
+        focus_.index = 0;
+        nav_.replace(ScreenId::OnboardingWifiList);
+        after_nav();
+      }
+      return;
+    }
     if (e == InputEvent::Up) {
       focus_.move(-1);
       mark_content_dirty();

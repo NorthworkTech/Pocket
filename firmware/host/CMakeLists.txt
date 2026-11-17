@@ -187,3 +187,8 @@ add_executable(test_companion_sync ../tests/test_companion_sync.cpp ${POCKET_UI_
 target_include_directories(test_companion_sync PRIVATE ${POCKET_UI}/include ${POCKET_UI}/vendor/qrcodegen)
 target_compile_definitions(test_companion_sync PRIVATE POCKET_HOST=1)
 add_test(NAME test_companion_sync COMMAND test_companion_sync)
+
+add_executable(test_setup_pairing ../tests/test_setup_pairing.cpp ${POCKET_UI_SRCS})
+target_include_directories(test_setup_pairing PRIVATE ${POCKET_UI}/include ${POCKET_UI}/vendor/qrcodegen)
+target_compile_definitions(test_setup_pairing PRIVATE POCKET_HOST=1)
+add_test(NAME test_setup_pairing COMMAND test_setup_pairing)

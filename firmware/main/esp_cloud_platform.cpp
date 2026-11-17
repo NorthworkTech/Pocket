@@ -11,6 +11,7 @@
 
 #include "esp_crt_bundle.h"
 #include "esp_http_client.h"
+#include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_random.h"
 #include "freertos/FreeRTOS.h"
@@ -126,9 +127,20 @@ std::string EspCloud::create_pair_session(const std::string& device_id) {
   const std::string url = std::string(POCKET_CLOUD_BASE) + "/v1/pair/sessions";
   int status = 0;
   std::string resp;
-  if (!http_request("POST", url, POCKET_DEVICE_API_KEY, body, status, resp) ||
-      (status != 200 && status != 201)) {
-    ESP_LOGW(TAG, "pair create HTTP %d resp=%s", status, resp.c_str());
+  last_error_.clear();
+  const bool sent = http_request("POST", url, POCKET_DEVICE_API_KEY, body, status, resp, 15000);
+  if (!sent || (status != 200 && status != 201)) {
+    ESP_LOGW(TAG, "pair create sent=%d HTTP %d resp=%s free_int=%u", sent ? 1 : 0, status, resp.c_str(),
+             static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_INTERNAL)));
+    if (!sent) {
+      last_error_ = "Pocket is on Wi-Fi but can't reach the internet yet.";
+    } else if (status == 401 || status == 403) {
+      last_error_ = "Pocket Cloud didn't accept this Pocket. Update Pocket and try again.";
+    } else if (status >= 500) {
+      last_error_ = "Pocket Cloud is having trouble right now.";
+    } else {
+      last_error_ = "Pocket Cloud answered with an error (" + std::to_string(status) + ").";
+    }
     return {};
   }
   ESP_LOGI(TAG, "pair session created code=%s", code.c_str());

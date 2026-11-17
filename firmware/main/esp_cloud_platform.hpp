@@ -18,8 +18,10 @@ struct EspCloud : pocket::PlatformCloud {
   bool push_device_settings(const std::string& device_id, int volume_percent, int brightness_percent) override;
   std::string http_get_text(const std::string& url) override;
   void set_sd_present(int sd) override { sd_present_ = sd; }
+  std::string last_error() const override { return last_error_; }
   std::string device_sync_json(const std::string& device_id, const std::string& body, int* status) override;
 
  private:
   int sd_present_ = -1;
+  std::string last_error_;
 };

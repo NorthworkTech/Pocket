@@ -46,3 +46,8 @@ CONFIG_ESP_TLS_USING_MBEDTLS=y
 # OTA safety: new images boot "pending verify" and roll back unless the app confirms
 # itself healthy (app_main marks valid after 30 s of UI).
 CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
+
+# TLS + Wi-Fi/lwIP buffers in PSRAM: during setup the SoftAP, its web server and Wi-Fi
+# buffers squeeze internal RAM, and the first HTTPS (pairing) could fail to allocate.
+CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC=y
+CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y

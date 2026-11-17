@@ -684,12 +684,7 @@ void App::handle_settings(InputEvent e) {
       }
       if (focus_.index == 2) {
         // Link companion app — mint pair session + show QR
-        if (!mint_pair_session()) {
-          error_msg_ = "Couldn't create pairing code.";
-          error_until_ms_ = now_ms_ + 2500;
-          mark_content_dirty();
-          return;
-        }
+        (void)mint_pair_session();  // Link screen shows the code, or why it couldn't get one
         focus_.index = 0;
         nav_.push(ScreenId::OnboardingCompanionQr);
         after_nav();

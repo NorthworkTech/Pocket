@@ -33,6 +33,10 @@ bool s_ap_netif_ready = false;
 bool s_provision_active = false;
 /** True only while waiting for GOT_IP / terminal fail after esp_wifi_connect(). */
 bool s_sta_connecting = false;
+/** What the phone portal (and the device UI) should say about the last join attempt. */
+volatile int s_join_state = 0;  // 0 idle, 1 connecting, 2 connected, 3 failed
+volatile uint8_t s_join_reason = 0;
+char s_join_ssid[33] = {};
 httpd_handle_t s_httpd = nullptr;
 char s_ap_ssid[33] = {};
 char s_ap_pass[17] = {};  // WPA2 short password shown on device (8 chars + NUL)
@@ -54,6 +58,7 @@ void wifi_event_handler(void* /*arg*/, esp_event_base_t base, int32_t id, void* 
              s_sta_connecting ? 1 : 0);
     // Ignore disconnects from our own esp_wifi_disconnect() / mode flips before connect().
     if (!s_sta_connecting) return;
+    s_join_reason = reason;
     if (s_wifi_events) xEventGroupSetBits(s_wifi_events, kBitFail);
   } else if (base == IP_EVENT && id == IP_EVENT_STA_GOT_IP) {
     s_sta_connected = true;
@@ -190,6 +195,27 @@ esp_err_t handle_options(httpd_req_t* req) {
   return httpd_resp_send(req, nullptr, 0);
 }
 
+/** Plain-language reason for a failed join (Wi-Fi disconnect reason codes). */
+const char* join_reason_text(uint8_t r) {
+  switch (r) {
+    case 0:
+      return "Pocket couldn't join that network in time.";
+    case 201:  // NO_AP_FOUND
+      return "Pocket can't see that network. Move closer, or check it's 2.4 GHz.";
+    case 2:    // AUTH_EXPIRE
+    case 15:   // 4WAY_HANDSHAKE_TIMEOUT
+    case 202:  // AUTH_FAIL
+    case 204:  // HANDSHAKE_TIMEOUT
+    case 210:  // NO_AP_FOUND_W_COMPATIBLE_SECURITY
+    case 211:  // NO_AP_FOUND_IN_AUTHMODE_THRESHOLD
+      return "That password didn't work. Check it and try again.";
+    case 203:  // ASSOC_FAIL
+      return "The router turned Pocket away. Try again in a moment.";
+    default:
+      return "Pocket couldn't join that network. Try again.";
+  }
+}
+
 esp_err_t handle_status(httpd_req_t* req) {
   add_cors(req);
   httpd_resp_set_type(req, "application/json");
@@ -204,10 +230,17 @@ esp_err_t handle_status(httpd_req_t* req) {
   std::string pref_esc, ap_esc;
   json_escape(preferred, pref_esc);
   json_escape(ap, ap_esc);
-  char buf[384];
+  static const char* kStates[] = {"idle", "connecting", "connected", "failed"};
+  const int js = s_join_state;
+  std::string join_esc, why_esc;
+  json_escape(s_join_ssid, join_esc);
+  json_escape(js == 3 ? join_reason_text(s_join_reason) : "", why_esc);
+  char buf[640];
   std::snprintf(buf, sizeof(buf),
-                "{\"ok\":true,\"provisioning\":true,\"ap_ssid\":\"%s\",\"preferred_ssid\":\"%s\",\"credentials_received\":%s}",
-                ap_esc.c_str(), pref_esc.c_str(), ready ? "true" : "false");
+                "{\"ok\":true,\"provisioning\":true,\"ap_ssid\":\"%s\",\"preferred_ssid\":\"%s\",\"credentials_received\":%s,"
+                "\"join\":\"%s\",\"join_ssid\":\"%s\",\"join_error\":\"%s\"}",
+                ap_esc.c_str(), pref_esc.c_str(), ready ? "true" : "false", kStates[js < 0 || js > 3 ? 0 : js],
+                join_esc.c_str(), why_esc.c_str());
   return httpd_resp_send(req, buf, HTTPD_RESP_USE_STRLEN);
 }
 
@@ -268,6 +301,9 @@ esp_err_t handle_wifi_post(httpd_req_t* req) {
   std::strncpy(s_cred_ssid, ssid, sizeof(s_cred_ssid) - 1);
   std::strncpy(s_cred_pass, pass, sizeof(s_cred_pass) - 1);
   s_creds_ready = true;
+  s_join_state = 1;
+  s_join_reason = 0;
+  std::strncpy(s_join_ssid, ssid, sizeof(s_join_ssid) - 1);
   unlock_prov();
   ESP_LOGI(TAG, "provision credentials received for %s", ssid);
 
@@ -314,7 +350,8 @@ const sel=document.getElementById('ssid');
 const manual=document.getElementById('ssidManual');
 const params=new URLSearchParams(location.search);
 let phone=params.get('mode')==='phone';
-const ret=params.get('return')||'https://bighappysmiley.github.io/Pocket/link';
+const ret0=params.get('return')||'';
+const ret=/^https:\/\/[A-Za-z0-9.\-]+(\/[A-Za-z0-9._~\/\-]*)?(\?[A-Za-z0-9._~=&%\-]*)?$/.test(ret0)?ret0:'https://bighappysmiley.github.io/Pocket/link';
 document.getElementById('returnLink').href=ret;
 const preSsid=params.get('ssid')||'';
 const prePass=params.get('password')||'';
@@ -378,12 +415,39 @@ async function sendWifi(){
     const res=await fetch('/api/wifi',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
     const j=await res.json();
     if(!res.ok){msg.textContent=j.message||'Could not send.';return false;}
-    msg.textContent=phone
-      ?'Connecting… Leave Pocket Wi‑Fi, turn Personal Hotspot back on, then open Pocket Companion.'
-      :'Connecting… Open Pocket Companion on home Wi‑Fi for the pairing code.';
-    setTimeout(()=>{ location.href=ret+(ret.includes('?')?'&':'?')+'wifi=1'; },1200);
+    msg.textContent='Pocket is joining '+ssid+'…';
+    watchJoin(ssid);
     return true;
   }catch(e){msg.textContent='Send failed. Stay on the Pocket Wi‑Fi and try again.';return false;}
+}
+function done(html){msg.innerHTML=html;document.getElementById('go').disabled=false;}
+async function watchJoin(ssid){
+  document.getElementById('go').disabled=true;
+  let seenConnecting=false;
+  for(let i=0;i<40;i++){
+    await new Promise(r=>setTimeout(r,1000));
+    let st=null;
+    try{st=await fetch('/api/status',{cache:'no-store'}).then(r=>r.json());}catch(e){st=null;}
+    if(!st){
+      // Pocket closes its setup network once it is online — that is the success path.
+      if(seenConnecting||i>3){
+        done('<strong>Pocket is online.</strong> Its setup network has closed. Rejoin your usual Wi-Fi'+
+          (phone?' (turn Personal Hotspot back on)':'')+', then link Pocket using the code on its screen.'+
+          '<br><a class="back" href="'+ret+(ret.includes('?')?'&':'?')+'wifi=1">Continue in Pocket Companion</a>');
+        return;
+      }
+      continue;
+    }
+    if(st.join==='connecting'){seenConnecting=true;msg.textContent='Pocket is joining '+ssid+'…';continue;}
+    if(st.join==='failed'){done('<strong>Couldn\'t connect.</strong> '+(st.join_error||'Check the password and try again.'));return;}
+    if(st.join==='connected'){
+      done('<strong>Pocket is online.</strong> Rejoin your usual Wi-Fi'+(phone?' (turn Personal Hotspot back on)':'')+
+        ', then link Pocket using the code on its screen.<br><a class="back" href="'+ret+(ret.includes('?')?'&':'?')+
+        'wifi=1">Continue in Pocket Companion</a>');
+      return;
+    }
+  }
+  done('Still waiting on Pocket. Check its screen — it shows what happened.');
 }
 async function load(){
   try{
@@ -518,6 +582,9 @@ bool EspWifi::connect(const std::string& ssid, const std::string& pass) {
   vTaskDelay(pdMS_TO_TICKS(100));
   if (s_wifi_events) xEventGroupClearBits(s_wifi_events, kBitConnected | kBitFail);
 
+  s_join_reason = 0;
+  std::strncpy(s_join_ssid, ssid.c_str(), sizeof(s_join_ssid) - 1);
+  s_join_state = 1;
   s_sta_connecting = true;
   esp_err_t err = esp_wifi_connect();
   if (err != ESP_OK) {
@@ -530,19 +597,23 @@ bool EspWifi::connect(const std::string& ssid, const std::string& pass) {
       xEventGroupWaitBits(s_wifi_events, kBitConnected | kBitFail, pdTRUE, pdFALSE, pdMS_TO_TICKS(20000));
   s_sta_connecting = false;
   if (bits & kBitConnected) {
+    s_join_state = 2;
     ESP_LOGI(TAG, "connected to %s", ssid.c_str());
     pocket_on_wifi_connected();
     // SoftAP no longer needed once home Wi‑Fi has an IP.
     if (keep_softap) stop_provision();
     return true;
   }
-  ESP_LOGW(TAG, "connect failed / timeout for %s", ssid.c_str());
+  ESP_LOGW(TAG, "connect failed / timeout for %s (reason %u)", ssid.c_str(), static_cast<unsigned>(s_join_reason));
+  s_join_state = 3;
   s_sta_connected = false;
   // SoftAP + httpd remain up for another password attempt.
   return false;
 }
 
 bool EspWifi::connected() const { return s_sta_connected; }
+
+std::string EspWifi::last_error() const { return join_reason_text(s_join_reason); }
 
 bool EspWifi::peek_provision_identity(std::string* ap_ssid_out, std::string* ap_pass_out) {
   // Identity only — do not flip WIFI_MODE_APSTA here (RF must wait until SoftAP UI painted).
