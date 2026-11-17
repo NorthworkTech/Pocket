@@ -24,6 +24,7 @@ set(POCKET_UI_SRCS
   ${POCKET_UI}/src/screens_settings.cpp
   ${POCKET_UI}/src/screens_sd.cpp
   ${POCKET_UI}/src/screens_update.cpp
+  ${POCKET_UI}/src/sync.cpp
   ${POCKET_UI}/src/cloud_client.cpp
   ${POCKET_UI}/src/screensaver.cpp
   ${POCKET_UI}/src/ui.cpp
@@ -176,3 +177,13 @@ add_executable(test_books_library ../tests/test_books_library.cpp ${POCKET_UI_SR
 target_include_directories(test_books_library PRIVATE ${POCKET_UI}/include ${POCKET_UI}/vendor/qrcodegen)
 target_compile_definitions(test_books_library PRIVATE POCKET_HOST=1)
 add_test(NAME test_books_library COMMAND test_books_library)
+
+add_executable(test_ghosting ../tests/test_ghosting.cpp ${POCKET_UI_SRCS})
+target_include_directories(test_ghosting PRIVATE ${POCKET_UI}/include ${POCKET_UI}/vendor/qrcodegen)
+target_compile_definitions(test_ghosting PRIVATE POCKET_HOST=1)
+add_test(NAME test_ghosting COMMAND test_ghosting)
+
+add_executable(test_companion_sync ../tests/test_companion_sync.cpp ${POCKET_UI_SRCS})
+target_include_directories(test_companion_sync PRIVATE ${POCKET_UI}/include ${POCKET_UI}/vendor/qrcodegen)
+target_compile_definitions(test_companion_sync PRIVATE POCKET_HOST=1)
+add_test(NAME test_companion_sync COMMAND test_companion_sync)

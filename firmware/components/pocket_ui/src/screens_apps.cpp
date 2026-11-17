@@ -292,6 +292,7 @@ void App::apply_dictation_transcript(const std::string& t) {
   const ScreenId s = nav_.current();
   if (s == ScreenId::ListsDetail && note_index_ < static_cast<int>(data_.lists.size())) {
     ListItem it;
+    it.id = new_local_id("i");
     it.text = t;
     data_.lists[note_index_].items.push_back(it);
     save_local_lists();
@@ -305,7 +306,7 @@ void App::apply_dictation_transcript(const std::string& t) {
     save_local_notes();
   } else {
     Note n;
-    n.id = std::to_string(now_ms_) + "-" + std::to_string(data_.notes.size() + 1);
+    n.id = new_local_id("n");
     n.title = t.substr(0, 40);
     n.body = t;
     n.created_at = n.updated_at = now_ms_;
@@ -344,6 +345,7 @@ bool App::queue_offline_dictation(const std::vector<uint8_t>& pcm) {
     std::string name;
     if (!save_pending_pcm(pcm, &name)) return false;
     ListItem it;
+    it.id = new_local_id("i");
     it.text = kVoicePendingText;
     it.pending_pcm = name;
     L.items.push_back(it);
@@ -361,7 +363,7 @@ bool App::queue_offline_dictation(const std::vector<uint8_t>& pcm) {
       std::string name;
       if (!save_pending_pcm(pcm, &name)) return false;
       Note extra;
-      extra.id = std::to_string(now_ms_) + "-" + std::to_string(data_.notes.size() + 1);
+      extra.id = new_local_id("n");
       extra.title = n.title + " (2)";
       extra.body = kVoicePendingText;
       extra.pending_pcm = name;
@@ -409,7 +411,7 @@ bool App::queue_offline_dictation(const std::vector<uint8_t>& pcm) {
   std::string name;
   if (!save_pending_pcm(pcm, &name)) return false;
   Note n;
-  n.id = std::to_string(now_ms_) + "-" + std::to_string(data_.notes.size() + 1);
+  n.id = new_local_id("n");
   n.title = "Voice note";
   n.body = kVoicePendingText;
   n.pending_pcm = name;
@@ -965,7 +967,7 @@ void App::handle_notes(InputEvent e) {
         after_nav();
       } else {
         Note n;
-        n.id = std::to_string(now_ms_) + "-" + std::to_string(data_.notes.size() + 1);
+        n.id = new_local_id("n");
         n.title = "Note";
         n.body = "";
         n.created_at = n.updated_at = now_ms_;
@@ -1026,7 +1028,7 @@ void App::handle_notes(InputEvent e) {
         after_nav();
       } else {
         TodoList L;
-        L.id = std::to_string(now_ms_) + "-L" + std::to_string(data_.lists.size() + 1);
+        L.id = new_local_id("L");
         L.title = "List";
         data_.lists.push_back(L);
         note_index_ = static_cast<int>(data_.lists.size()) - 1;

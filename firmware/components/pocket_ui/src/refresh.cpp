@@ -11,21 +11,30 @@ RefreshMode RefreshPolicy::plan(bool wants_partial) {
 void RefreshPolicy::on_screen_enter_full() {
   partial_count_ = 0;
   tiny_credit_ = 0;
+  clean_debt_ = 0;
 }
 
-void RefreshPolicy::on_applied(RefreshMode mode) {
+void RefreshPolicy::on_applied(RefreshMode mode, int weight) {
   if (mode == RefreshMode::Full) {
     partial_count_ = 0;
     tiny_credit_ = 0;
+    clean_debt_ = 0;
   } else {
-    ++partial_count_;
+    partial_count_ += weight;
+    clean_debt_ += weight;
   }
+}
+
+void RefreshPolicy::on_applied_band() {
+  on_applied_tiny(RefreshMode::Partial);
+  ++clean_debt_;
 }
 
 void RefreshPolicy::on_applied_tiny(RefreshMode mode) {
   if (mode == RefreshMode::Full) {
     partial_count_ = 0;
     tiny_credit_ = 0;
+    clean_debt_ = 0;
     return;
   }
   // Two tiny region refreshes ≈ one partial toward ghosting budget.

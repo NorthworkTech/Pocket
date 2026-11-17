@@ -58,7 +58,8 @@ CREATE TABLE IF NOT EXISTS device_links (
   device_name TEXT NOT NULL DEFAULT 'Pocket',
   linked_at TEXT NOT NULL,
   last_seen_at TEXT,
-  device_token_hash TEXT NOT NULL
+  device_token_hash TEXT NOT NULL,
+  sd_present INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS subscription_mirrors (

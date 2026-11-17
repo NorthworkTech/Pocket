@@ -333,6 +333,161 @@ function serializeList(row) {
   };
 }
 
+// ---- Device ↔ cloud notes/lists sync (POST /v1/device/sync) ----
+// Ported from cloud/src/lib/lww.ts + cloud/src/lib/device-sync.ts — keep them in step.
+const SYNC_MAX_RECORDS = 1000; // per kind (notes / lists) per request
+const SYNC_MAX_LIST_ITEMS = 500;
+const SYNC_MAX_TITLE_CHARS = 300;
+const SYNC_MAX_NOTE_BODY_BYTES = 200 * 1024;
+const SYNC_MAX_ID_CHARS = 200;
+const SYNC_TOMBSTONE_DAYS = 30;
+
+/** Clamp future client clocks: >1h ahead of server ⇒ server now. Invalid/missing ⇒ server now. */
+function normalizeUpdatedAt(clientIso, serverNow) {
+  if (!clientIso) return serverNow.toISOString();
+  const t = Date.parse(clientIso);
+  if (!Number.isFinite(t)) return serverNow.toISOString();
+  if (t - serverNow.getTime() > 60 * 60 * 1000) return serverNow.toISOString();
+  return new Date(t).toISOString();
+}
+
+/** Conflict instant = max(deleted_at, updated_at) — a newer tombstone beats an older edit. */
+function lwwConflictInstant(row) {
+  const tombstone = row.deleted_at ? Date.parse(row.deleted_at) : NaN;
+  const updated = Date.parse(row.updated_at);
+  if (Number.isFinite(tombstone) && Number.isFinite(updated)) return Math.max(tombstone, updated);
+  if (Number.isFinite(tombstone)) return tombstone;
+  if (Number.isFinite(updated)) return updated;
+  return 0;
+}
+
+/** True when `incoming` should replace `existing` (tie ⇒ higher updated_by_device_id). */
+function incomingWinsLww(incoming, existing) {
+  const a = lwwConflictInstant(incoming);
+  const b = lwwConflictInstant(existing);
+  if (a > b) return true;
+  if (a < b) return false;
+  return String(incoming.updated_by_device_id || "") > String(existing.updated_by_device_id || "");
+}
+
+/** NUL can't live in a Postgres text value (and would cut a simple-query message short). */
+function syncCleanText(v) {
+  return typeof v === "string" ? v.replace(/\u0000/g, "") : "";
+}
+
+function syncId(v) {
+  if (typeof v !== "string") return null;
+  const s = v.trim();
+  if (!s || s.length > SYNC_MAX_ID_CHARS || s.includes("\u0000")) return null;
+  return s;
+}
+
+function syncTitle(v) {
+  const s = syncCleanText(v);
+  const cps = Array.from(s);
+  return cps.length > SYNC_MAX_TITLE_CHARS ? cps.slice(0, SYNC_MAX_TITLE_CHARS).join("") : s;
+}
+
+/** Shared envelope (id + timestamps) for an incoming note/list. Returns null when unusable. */
+function syncEnvelope(raw, serverNow, deviceId) {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const id = syncId(raw.id);
+  if (!id) return null;
+  const updated_at = normalizeUpdatedAt(typeof raw.updated_at === "string" ? raw.updated_at : undefined, serverNow);
+  const created_at = normalizeUpdatedAt(typeof raw.created_at === "string" ? raw.created_at : updated_at, serverNow);
+  const deleted_at =
+    typeof raw.deleted_at === "string" && raw.deleted_at
+      ? normalizeUpdatedAt(raw.deleted_at, serverNow)
+      : null;
+  return { id, created_at, updated_at, deleted_at, updated_by_device_id: deviceId };
+}
+
+function syncNormalizeNote(raw, serverNow, deviceId) {
+  const env = syncEnvelope(raw, serverNow, deviceId);
+  if (!env) return { skip: { id: typeof raw?.id === "string" ? raw.id.slice(0, SYNC_MAX_ID_CHARS) : null, reason: "invalid" } };
+  const body = syncCleanText(raw.body);
+  if (Buffer.byteLength(body, "utf8") > SYNC_MAX_NOTE_BODY_BYTES) {
+    return { skip: { id: env.id, reason: "too_large" } };
+  }
+  return { rec: { ...env, fields: { title: syncTitle(raw.title), body } } };
+}
+
+function syncNormalizeItems(v) {
+  if (!Array.isArray(v)) return [];
+  const out = [];
+  for (const it of v) {
+    if (out.length >= SYNC_MAX_LIST_ITEMS) break;
+    if (!it || typeof it !== "object") continue;
+    if (typeof it.id !== "string" || !it.id) continue;
+    if (typeof it.text !== "string" || typeof it.checked !== "boolean" || typeof it.updated_at !== "string") continue;
+    out.push({
+      id: syncCleanText(it.id),
+      text: syncCleanText(it.text),
+      checked: it.checked,
+      updated_at: syncCleanText(it.updated_at),
+    });
+  }
+  return out;
+}
+
+function syncNormalizeList(raw, serverNow, deviceId) {
+  const env = syncEnvelope(raw, serverNow, deviceId);
+  if (!env) return { skip: { id: typeof raw?.id === "string" ? raw.id.slice(0, SYNC_MAX_ID_CHARS) : null, reason: "invalid" } };
+  return {
+    rec: {
+      ...env,
+      fields: { title: syncTitle(raw.title), items_json: JSON.stringify(syncNormalizeItems(raw.items)) },
+    },
+  };
+}
+
+/**
+ * Apply device records to cloud_notes / cloud_lists with LWW. `table` and the field column
+ * names are fixed identifiers from this file; every value goes through sqlStr/sqlNullable.
+ */
+async function applySyncRecords(table, recs, userId, skipped) {
+  if (!recs.length) return;
+  const ids = [...new Set(recs.map((r) => r.id))];
+  const rows = await query(
+    `SELECT id, user_id, updated_at, deleted_at, updated_by_device_id FROM ${table} WHERE id IN (${ids.map(sqlStr).join(",")})`,
+  );
+  const existing = new Map(rows.map((r) => [r.id, r]));
+  for (const r of recs) {
+    const cols = Object.keys(r.fields);
+    const ex = existing.get(r.id);
+    if (!ex) {
+      await query(
+        `INSERT INTO ${table} (id,user_id,${cols.join(",")},created_at,updated_at,updated_by_device_id,deleted_at,version) VALUES (${sqlStr(r.id)},${sqlStr(userId)},${cols.map((c) => sqlStr(r.fields[c])).join(",")},${sqlStr(r.created_at)},${sqlStr(r.updated_at)},${sqlStr(r.updated_by_device_id)},${sqlNullable(r.deleted_at)},1) ON CONFLICT (id) DO NOTHING`,
+      );
+      existing.set(r.id, { id: r.id, user_id: userId, updated_at: r.updated_at, deleted_at: r.deleted_at, updated_by_device_id: r.updated_by_device_id });
+      continue;
+    }
+    if (ex.user_id !== userId) {
+      skipped.push({ id: r.id, reason: "unavailable" });
+      continue;
+    }
+    if (!incomingWinsLww(r, ex)) continue; // cloud copy is newer; it comes back in the response
+    await query(
+      `UPDATE ${table} SET ${cols.map((c) => `${c}=${sqlStr(r.fields[c])}`).join(", ")}, updated_at=${sqlStr(r.updated_at)}, deleted_at=${sqlNullable(r.deleted_at)}, updated_by_device_id=${sqlStr(r.updated_by_device_id)}, version=version+1 WHERE id=${sqlStr(r.id)} AND user_id=${sqlStr(userId)}`,
+    );
+    existing.set(r.id, { ...ex, updated_at: r.updated_at, deleted_at: r.deleted_at, updated_by_device_id: r.updated_by_device_id });
+  }
+}
+
+/** Postgres text timestamps ("2026-11-17 09:30:00+00") → ISO-8601 for the device's parser. */
+function syncIsoTimestamps(o) {
+  for (const k of ["created_at", "updated_at", "deleted_at"]) {
+    if (o[k] == null) continue;
+    const t = Date.parse(o[k]);
+    if (Number.isFinite(t)) o[k] = new Date(t).toISOString();
+  }
+  return o;
+}
+
+function pgBool(v) {
+  return v === true || v === "t" || v === "true";
+}
+
 function serializeBookMeta(row) {
   return {
     id: row.id,
@@ -1080,7 +1235,7 @@ export default {
     // Health does not depend on DB schema readiness so it stays useful for diagnosing DB-layer issues.
     if (path === "/health" || path === "/" || path === "/v1/health") {
       const sha256 = await getSelfSourceSha256();
-      return json(req, { ok: true, build: "scram-api-v16-stt", sourceSha256: sha256 });
+      return json(req, { ok: true, build: "scram-api-v17-device-sync", sourceSha256: sha256 });
     }
     try {
       await readySchema();
@@ -1403,12 +1558,22 @@ export default {
         if (!userId) return json(req, { message: "Sign in to continue." }, 401);
         const now = new Date().toISOString();
         const links = await query(
-          `SELECT id, device_id, device_name, pending_wifi_ssid, pending_wifi_password, pending_wifi_at, parental_json, lock_message, volume_percent, brightness_percent
+          `SELECT id, device_id, device_name, pending_wifi_ssid, pending_wifi_password, pending_wifi_at, parental_json, lock_message, volume_percent, brightness_percent, sd_present
            FROM device_links WHERE device_id='${esc(deviceId)}' ORDER BY linked_at DESC LIMIT 1`,
         );
         const link = links[0];
         if (!link) return json(req, { message: "That device wasn't found." }, 404);
-        await query(`UPDATE device_links SET last_seen_at='${now}' WHERE id='${esc(link.id)}'`);
+        // microSD report on the heartbeat: header x-pocket-sd: 1|0 or ?sd=1|0 (only when sent).
+        const sdHeader = (req.headers.get("x-pocket-sd") || "").trim();
+        const sdParam = (u.searchParams.get("sd") || "").trim();
+        const sdRaw = sdHeader === "1" || sdHeader === "0" ? sdHeader : sdParam === "1" || sdParam === "0" ? sdParam : "";
+        let sdPresent = pgBool(link.sd_present);
+        if (sdRaw) {
+          sdPresent = sdRaw === "1";
+          await query(`UPDATE device_links SET last_seen_at='${now}', sd_present=${sdPresent ? "true" : "false"} WHERE id='${esc(link.id)}'`);
+        } else {
+          await query(`UPDATE device_links SET last_seen_at='${now}' WHERE id='${esc(link.id)}'`);
+        }
         const subs = await query(`SELECT status, trial_ends_at, current_period_end FROM subscription_mirrors WHERE user_id='${esc(userId)}'`);
         const sub = subs[0];
         const entitled = sub?.status === "active" || sub?.status === "trialing";
@@ -1441,6 +1606,7 @@ export default {
           hide_pass_share: parental.hide_pass_share === true,
           block_connectors: parental.block_connectors === true,
           pending_wifi,
+          sd_present: sdPresent,
         });
       }
 
@@ -1525,7 +1691,8 @@ export default {
         });
       }
 
-      const musicIdMatch = path.match(/^\/v1\/music\/([^/]+)$/);
+      // "/v1/music/limits" is its own route further down — don't treat "limits" as a track id.
+      const musicIdMatch = path === "/v1/music/limits" ? null : path.match(/^\/v1\/music\/([^/]+)$/);
       if (musicIdMatch) {
         const gate = await requireEntitledUser(req);
         if (gate.error) return gate.error;
@@ -1570,7 +1737,8 @@ export default {
         const gate = await requireEntitledUser(req);
         if (gate.error) return gate.error;
         const rows = await query(
-          `SELECT COALESCE(BOOL_OR(sd_present), false) AS sd FROM device_links WHERE user_id='${esc(gate.user.id)}'`,
+          // Only devices seen in the last 30 days count — a Pocket unplugged long ago shouldn't keep limits raised.
+          `SELECT COALESCE(BOOL_OR(sd_present), false) AS sd FROM device_links WHERE user_id='${esc(gate.user.id)}' AND last_seen_at IS NOT NULL AND last_seen_at > ${sqlStr(new Date(Date.now() - 30 * 86400000).toISOString())}`,
         );
         const sd = Boolean(rows[0]?.sd === true || rows[0]?.sd === "t" || rows[0]?.sd === "true");
         return json(req, {
@@ -1706,6 +1874,75 @@ export default {
         return json(req, { books: rows.map(serializeBookMeta) });
       }
 
+      // Device ↔ cloud notes/lists sync (x-device-key + device_id). Body carries only records
+      // changed on the device since its last good sync (tombstones have deleted_at); the response
+      // is the user's full live set plus tombstones from the last 30 days.
+      if (req.method === "POST" && path === "/v1/device/sync") {
+        const deviceId = u.searchParams.get("device_id") || req.headers.get("x-device-id") || "";
+        const userId = await userIdForDeviceKey(req, deviceId);
+        if (!userId) return json(req, { message: "Sign in to continue." }, 401);
+        const body = await req.json().catch(() => null);
+        if (!body || typeof body !== "object" || Array.isArray(body)) {
+          return json(req, { message: "That sync request couldn't be read." }, 400);
+        }
+        const rawNotes = body.notes == null ? [] : body.notes;
+        const rawLists = body.lists == null ? [] : body.lists;
+        if (!Array.isArray(rawNotes) || !Array.isArray(rawLists)) {
+          return json(req, { message: "That sync request couldn't be read." }, 400);
+        }
+        if (rawNotes.length > SYNC_MAX_RECORDS || rawLists.length > SYNC_MAX_RECORDS) {
+          return json(
+            req,
+            { message: "Too many changes in one sync. Send them in smaller batches.", max_records: SYNC_MAX_RECORDS },
+            413,
+          );
+        }
+        const serverNow = new Date();
+        const nowIso = serverNow.toISOString();
+        const sdSet = typeof body.sd_present === "boolean" ? `, sd_present=${body.sd_present ? "true" : "false"}` : "";
+        await query(`UPDATE device_links SET last_seen_at=${sqlStr(nowIso)}${sdSet} WHERE device_id=${sqlStr(deviceId)}`);
+
+        const subs = await query(`SELECT status FROM subscription_mirrors WHERE user_id=${sqlStr(userId)}`);
+        const st = subs[0]?.status;
+        if (st !== "active" && st !== "trialing") {
+          return json(req, { message: "Pocket Cloud is needed to sync notes and lists.", entitled: false }, 402);
+        }
+
+        const skipped = { notes: [], lists: [] };
+        const noteRecs = [];
+        for (const raw of rawNotes) {
+          const r = syncNormalizeNote(raw, serverNow, deviceId);
+          if (r.rec) noteRecs.push(r.rec);
+          else skipped.notes.push(r.skip);
+        }
+        const listRecs = [];
+        for (const raw of rawLists) {
+          const r = syncNormalizeList(raw, serverNow, deviceId);
+          if (r.rec) listRecs.push(r.rec);
+          else skipped.lists.push(r.skip);
+        }
+        await applySyncRecords("cloud_notes", noteRecs, userId, skipped.notes);
+        await applySyncRecords("cloud_lists", listRecs, userId, skipped.lists);
+
+        const cutoff = sqlStr(new Date(serverNow.getTime() - SYNC_TOMBSTONE_DAYS * 86400000).toISOString());
+        const notes = await query(
+          `SELECT * FROM cloud_notes WHERE user_id=${sqlStr(userId)} AND (deleted_at IS NULL OR deleted_at > ${cutoff}) ORDER BY updated_at DESC`,
+        );
+        const lists = await query(
+          `SELECT * FROM cloud_lists WHERE user_id=${sqlStr(userId)} AND (deleted_at IS NULL OR deleted_at > ${cutoff}) ORDER BY updated_at DESC`,
+        );
+        const links = await query(
+          `SELECT sd_present FROM device_links WHERE device_id=${sqlStr(deviceId)} ORDER BY linked_at DESC LIMIT 1`,
+        );
+        return json(req, {
+          server_time: nowIso,
+          sd_present: pgBool(links[0]?.sd_present),
+          notes: notes.map((row) => syncIsoTimestamps(serializeNote(row))),
+          lists: lists.map((row) => syncIsoTimestamps(serializeList(row))),
+          skipped,
+        });
+      }
+
       // Device OTA discovery — points at firmware-latest app image (A/B OTA, not merged USB bin).
       // Prefer Pages mirror (no GitHub 302 / release-delete race), then the release asset.
       if (req.method === "GET" && path === "/v1/firmware/latest") {
@@ -1748,7 +1985,7 @@ export default {
         const secrets = await loadSttSecrets();
         return json(req, {
           ok: true,
-          build: "scram-api-v16-stt",
+          build: "scram-api-v17-device-sync",
           providers: {
             openai: Boolean(secrets.openai),
             groq: Boolean(secrets.groq),

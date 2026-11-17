@@ -93,6 +93,14 @@ struct PlatformCloud {
    * Returns raw JSON body; empty on failure.
    */
   virtual std::string device_attest_json(const std::string& /*device_id*/) { return {}; }
+  /** Tell Pocket Cloud whether a microSD is in (raises Companion upload limits). -1 = unknown. */
+  virtual void set_sd_present(int /*sd*/) {}
+  /** POST /v1/device/sync — push local note/list changes, get the merged set back. */
+  virtual std::string device_sync_json(const std::string& /*device_id*/, const std::string& /*body*/,
+                                       int* status) {
+    if (status) *status = 0;
+    return {};
+  }
   /** Best-effort mirror of a rotary-set volume/brightness change up to Companion. Fire-and-forget. */
   virtual bool push_device_settings(const std::string& /*device_id*/, int /*volume_percent*/,
                                     int /*brightness_percent*/) {
@@ -404,6 +412,7 @@ class App {
   void host_set_installing(bool on, int pct) { ota_installing_ = on; ota_progress_ = pct; }
   void host_set_update_welcome(bool on) { show_update_welcome_ = on; }
   void host_show_status(std::string_view m) { show_status(m); }
+  bool host_cloud_sync() { return cloud_sync(false); }
   void host_reading_sync() { reading_sync_from_cloud(); }
   void host_reading_load() { reading_load_local(); }
   void host_reading_open(int i) { reading_open_book(i); }
@@ -450,6 +459,23 @@ class App {
    * paints a status pill at the bottom right now. Cleared on the next flush.
    */
   void show_status(std::string_view msg);
+  // ---- Companion sync (sync.cpp) ----
+  bool cloud_sync_possible() const;
+  /** Push local note/list changes and adopt the merged result. Blocking; true on success. */
+  bool cloud_sync(bool show_progress);
+  void maybe_cloud_sync();
+  bool sd_present() { return storage_ && storage_->present(); }
+  std::string new_local_id(const char* prefix);
+  uint32_t last_sync_attempt_ms_ = 0;
+  uint32_t last_sync_ok_ms_ = 0;
+  uint32_t id_counter_ = 0;
+  int last_reported_sd_ = -1;
+  std::string sync_status_;
+  /** Full refresh after a pause when partials have left ghosting (see RefreshPolicy). */
+  void maybe_idle_clean();
+  static constexpr uint32_t kIdleCleanAfterMs = 2500;
+  uint32_t last_present_ms_ = 0;
+  bool want_full_ = false;
   std::string status_msg_;
   void mark_content_dirty();
   void mark_status_dirty();

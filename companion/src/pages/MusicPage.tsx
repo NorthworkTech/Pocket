@@ -76,7 +76,7 @@ export function MusicPage() {
       setError(
         sdPresent
           ? `Keep each WAV under ${formatBytes(maxBytes)}.`
-          : `Keep each WAV under ${formatBytes(FALLBACK_INTERNAL)} without an SD card, or insert a microSD in Pocket and Sync once to unlock up to ${formatBytes(FALLBACK_SD)}.`,
+          : `Keep each WAV under ${formatBytes(FALLBACK_INTERNAL)} without an SD card, or put a microSD card in Pocket to unlock up to ${formatBytes(FALLBACK_SD)} — it's detected automatically when Pocket is online.`,
       )
       return
     }
@@ -139,7 +139,7 @@ export function MusicPage() {
         <p className="muted" style={{ fontSize: '0.875rem' }}>
           {sdPresent
             ? `microSD detected — WAV uploads up to ${formatBytes(maxBytes)}. Sync on Pocket saves them to the card.`
-            : `WAV files under ${formatBytes(FALLBACK_INTERNAL)} fit internal storage. Add a microSD card and Sync once for up to ${formatBytes(FALLBACK_SD)}.`}
+            : `WAV files under ${formatBytes(FALLBACK_INTERNAL)} fit internal storage. Put a microSD card in Pocket for up to ${formatBytes(FALLBACK_SD)} — Pocket reports it automatically when it's online.`}
         </p>
       </div>
 

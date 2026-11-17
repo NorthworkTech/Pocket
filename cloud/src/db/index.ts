@@ -49,6 +49,12 @@ function migrateSchema(database: Db): void {
   if (!cols.has("email_verified_at")) {
     database.run("ALTER TABLE users ADD COLUMN email_verified_at TEXT");
   }
+  const linkCols = new Set(
+    allFrom(database, "PRAGMA table_info(device_links)").map((r) => String(r.name)),
+  );
+  if (!linkCols.has("sd_present")) {
+    database.run("ALTER TABLE device_links ADD COLUMN sd_present INTEGER NOT NULL DEFAULT 0");
+  }
 }
 
 function allFrom(database: Db, sql: string): Record<string, unknown>[] {

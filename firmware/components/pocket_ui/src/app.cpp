@@ -309,6 +309,21 @@ bool App::try_present(bool full) {
   return true;
 }
 
+void App::maybe_idle_clean() {
+  // Kindle-style: once partials have left residue and the user pauses, one clean full
+  // refresh wipes the ghosting instead of letting it pile up until a forced flash mid-use.
+  const int need = cfg_.ghosting_frequent ? RefreshPolicy::kIdleCleanDebtFrequent : RefreshPolicy::kIdleCleanDebt;
+  if (refresh_.clean_debt() < need) return;
+  if (now_ms_ < last_input_ms_ || now_ms_ - last_input_ms_ < kIdleCleanAfterMs) return;
+  if (now_ms_ < last_present_ms_ || now_ms_ - last_present_ms_ < 1200) return;
+  const ScreenId s = nav_.current();
+  if (s == ScreenId::Pin || s == ScreenId::OnboardingPinSet || s == ScreenId::OnboardingPinConfirm ||
+      s == ScreenId::ClockRinging || s == ScreenId::SettingsUpdateProgress || ptt_active_)
+    return;
+  if (display_.busy()) return;
+  present_canvas(true);
+}
+
 void App::show_status(std::string_view msg) {
   const ScreenId s = nav_.current();
   if (s == ScreenId::Lock || s == ScreenId::Pin || s == ScreenId::ClockRinging ||
@@ -325,11 +340,15 @@ void App::flush_dirty() {
     status_msg_.clear();
     mark_region_dirty(0, kCanvasH - kStatusPillBand, kCanvasW, kStatusPillBand);
   }
-  if (!dirty_) return;
+  if (!dirty_) {
+    maybe_idle_clean();
+    return;
+  }
   // Never block the input path on a mid-flight e-ink refresh — keep dirty and
   // apply further rotary ticks to logical state; present once the panel is idle.
-  if (!try_present(false)) return;
+  if (!try_present(want_full_)) return;
   dirty_ = false;
+  want_full_ = false;
 }
 
 void App::begin_softap_link() {
@@ -651,7 +670,8 @@ void App::go_lock() {
     lock_motif_index_ = (lock_motif_index_ + 1) % kLockMotifCount;
   }
   lock_seed_ = lock_seed_ * 1664525u + 1013904223u + (clock_.now_ms() & 0xFFFFu);
-  after_nav();
+  // The lock face sits for hours: always a clean full refresh, never a partial over old UI.
+  after_nav(true);
 }
 
 bool App::parental_requires_pin(HomeApp app) const {
@@ -705,6 +725,11 @@ void App::launch_home_app(HomeApp launch) {
       return;
   }
   after_nav();
+  // Opening Notes or Lists pulls Companion edits first (and pushes ours), visibly.
+  if (launch == HomeApp::Notes && cloud_sync_possible() &&
+      (last_sync_ok_ms_ == 0 || now_ms_ - last_sync_ok_ms_ > 20000u)) {
+    if (cloud_sync(true)) mark_content_dirty();
+  }
 }
 
 void App::apply_cloud_offline_grace() {
@@ -735,8 +760,13 @@ void App::maybe_cloud_attest() {
   // While locked nobody is looking: check in every 10 min instead of every 20 s
   // (still picks up remote lock / Wi-Fi hand-offs, at a fraction of the radio time).
   const uint32_t attest_every = nav_.current() == ScreenId::Lock ? 600000u : 20000u;
-  if (last_attest_ms_ != 0 && now_ms_ - last_attest_ms_ < attest_every) return;
+  // A card inserted/removed is reported right away so Companion's upload limits follow it.
+  const int sd_now = sd_present() ? 1 : 0;
+  const bool sd_changed = sd_now != last_reported_sd_;
+  if (!sd_changed && last_attest_ms_ != 0 && now_ms_ - last_attest_ms_ < attest_every) return;
+  last_reported_sd_ = sd_now;
   last_attest_ms_ = now_ms_;
+  cloud_.set_sd_present(sd_present() ? 1 : 0);
   const std::string body = cloud_.device_attest_json(cfg_.device_id);
   if (body.empty()) {
     apply_cloud_offline_grace();
@@ -1018,6 +1048,7 @@ void App::tick(uint32_t now_ms) {
   maybe_poll_sd_hotplug();
   maybe_wifi_auto_reconnect();
   maybe_cloud_attest();
+  maybe_cloud_sync();
   // Retry queued offline voice clips (cloud STT) — notify_wifi covers the fast path.
   if (wifi_.connected() && notes_have_pending_dictation() &&
       (last_pending_stt_ms_ == 0 || now_ms - last_pending_stt_ms_ >= 60000u)) {
@@ -1035,6 +1066,7 @@ void App::tick(uint32_t now_ms) {
 }
 
 void App::present_canvas(bool full) {
+  last_present_ms_ = now_ms_;
   canvas_.clear(Gray::G3);
   render();
   if (!status_msg_.empty()) ui::toast(canvas_, status_msg_);
@@ -1064,23 +1096,27 @@ void App::present_canvas(bool full) {
   } else if (dirty_kind_ == DirtyKind::FullCanvas) {
     // Whole-panel 0xFF partial (~0.3 s) — fastest valid update that still paints everything.
     display_.present_region(canvas_, 0, 0, kCanvasW, kCanvasH);
-    refresh_.on_applied(RefreshMode::Partial);
+    refresh_.on_applied(RefreshMode::Partial, RefreshPolicy::kScreenChangeWeight);
   } else {
     // ContentBand (Home/list focus): below status bar. Count as half a partial so
     // ~16 focus spins don't surprise-trigger a slow 0xD7 mid-browse (v97).
     display_.present_region(canvas_, 0, kStatusBarH, kCanvasW, kCanvasH - kStatusBarH);
-    refresh_.on_applied_tiny(RefreshMode::Partial);
+    refresh_.on_applied_band();
   }
   dirty_kind_ = DirtyKind::FullCanvas;
 }
 
 void App::redraw(bool full) {
-  if (full) dirty_kind_ = DirtyKind::FullCanvas;
+  if (full) {
+    dirty_kind_ = DirtyKind::FullCanvas;
+    want_full_ = true;  // survives a busy panel: the deferred flush stays a full refresh
+  }
   dirty_ = true;
   // Lock→PIN (and every after_nav) used to clear dirty even when present was
   // skipped for busy — screen stayed on Lock with dead-looking buttons.
-  if (!try_present(full)) return;
+  if (!try_present(full || want_full_)) return;
   dirty_ = false;
+  want_full_ = false;
 }
 
 #ifdef POCKET_HOST

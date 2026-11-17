@@ -56,8 +56,10 @@ CREATE TABLE IF NOT EXISTS device_links (
   device_name TEXT NOT NULL DEFAULT 'Pocket',
   linked_at TIMESTAMPTZ NOT NULL,
   last_seen_at TIMESTAMPTZ,
-  device_token_hash TEXT NOT NULL
+  device_token_hash TEXT NOT NULL,
+  sd_present BOOLEAN NOT NULL DEFAULT false
 );
+ALTER TABLE device_links ADD COLUMN IF NOT EXISTS sd_present BOOLEAN NOT NULL DEFAULT false;
 
 CREATE TABLE IF NOT EXISTS subscription_mirrors (
   user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,

@@ -11,7 +11,7 @@ import {
   type ListItem,
 } from "../lib/lww.js";
 
-type ListRow = {
+export type ListRow = {
   id: string;
   user_id: string;
   title: string;
@@ -32,7 +32,7 @@ function parseItems(json: string): ListItem[] {
   }
 }
 
-function serializeList(row: ListRow) {
+export function serializeList(row: ListRow) {
   return {
     id: row.id,
     title: row.title,

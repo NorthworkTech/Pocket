@@ -1,12 +1,1 @@
-{
-  "os": "PocketOS",
-  "version": "2.1",
-  "name": "PocketOS 2.1",
-  "notes": [
-    "Tap the power button for Home. Hold it to lock.",
-    "Smooth PIN entry and cleaner screen updates everywhere.",
-    "Five new screensavers, and a quieter lock screen.",
-    "Faster, longer dictation with clear progress.",
-    "A new update experience — like this one."
-  ]
-}
+{"os":"PocketOS","version":"2.1.1","name":"PocketOS 2.1.1","notes":["Notes and lists now sync with Companion, both ways.","Much less ghosting: Pocket cleans the screen when you pause.","A microSD card raises Companion upload limits automatically.","Lock screen always draws crisp, with no leftovers."]}

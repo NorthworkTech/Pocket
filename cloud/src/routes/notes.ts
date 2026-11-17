@@ -7,7 +7,7 @@ import { Errors } from "../lib/errors.js";
 import { incomingWinsLww, normalizeUpdatedAt } from "../lib/lww.js";
 import { config } from "../config.js";
 
-type NoteRow = {
+export type NoteRow = {
   id: string;
   user_id: string;
   title: string;
@@ -19,7 +19,7 @@ type NoteRow = {
   version: number;
 };
 
-function serializeNote(row: NoteRow) {
+export function serializeNote(row: NoteRow) {
   return {
     id: row.id,
     title: row.title,

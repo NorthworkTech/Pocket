@@ -299,9 +299,24 @@ std::string EspCloud::books_list_json(const std::string& device_id) {
     ESP_LOGW(TAG, "books list HTTP %d", status);
     return {};
   }
-  const size_t arr = resp.find('[');
-  if (arr == std::string::npos) return "[]";
-  return resp.substr(arr);
+  return resp;  // {"books":[...]} — parsed with json_lite on the UI side
+}
+
+std::string EspCloud::device_sync_json(const std::string& device_id, const std::string& body, int* status_out) {
+  if (status_out) *status_out = 0;
+  if (device_id.empty()) return {};
+  const std::string url = std::string(POCKET_CLOUD_BASE) + "/v1/device/sync?device_id=" + device_id;
+  int status = 0;
+  std::string resp;
+  const char* sd = sd_present_ < 0 ? nullptr : (sd_present_ ? "1" : "0");
+  if (!http_request("POST", url, POCKET_DEVICE_API_KEY, body, status, resp, 25000, "application/json",
+                    "x-device-id", device_id.c_str(), "application/json", sd ? "x-pocket-sd" : nullptr, sd)) {
+    ESP_LOGW(TAG, "sync transport failed");
+    return {};
+  }
+  if (status_out) *status_out = status;
+  if (status != 200) ESP_LOGW(TAG, "sync HTTP %d resp=%s", status, resp.substr(0, 160).c_str());
+  return resp;
 }
 
 std::vector<uint8_t> EspCloud::book_download(const std::string& device_id, const std::string& book_id) {
@@ -411,7 +426,8 @@ bool EspCloud::push_device_settings(const std::string& device_id, int volume_per
 std::string EspCloud::device_attest_json(const std::string& device_id) {
   if (device_id.empty()) return {};
   const std::string url =
-      std::string(POCKET_CLOUD_BASE) + "/v1/device/attest?device_id=" + device_id;
+      std::string(POCKET_CLOUD_BASE) + "/v1/device/attest?device_id=" + device_id +
+      (sd_present_ < 0 ? "" : (sd_present_ ? "&sd=1" : "&sd=0"));  // raises Companion limits with an SD
   int status = 0;
   std::string resp;
   if (!http_request("GET", url, POCKET_DEVICE_API_KEY, {}, status, resp, 15000, "application/json",
