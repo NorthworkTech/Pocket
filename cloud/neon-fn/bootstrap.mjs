@@ -11,11 +11,11 @@ let modPromise = null;
 export default {
   async fetch(r) {
     const u = new URL(r.url);
-    const P = "961f8990dd8c998f36f9a1c97d249ff260cbd9cc";
+    const P = "e88e37b7a5e86e29e739cbae8cbad8166aa91a1b";
     const U =
       "https://raw.githubusercontent.com/bighappysmiley/Pocket/" +
       P +
-      "/cloud/neon-fn/scram-api.mjs?cb=v56ota1";
+      "/cloud/neon-fn/scram-api.mjs?cb=v105sync";
     if (u.pathname === "/v1/bootstrap") {
       return Response.json({ ok: true, pin: P, src: U });
     }
@@ -28,7 +28,7 @@ export default {
           const res = await globalThis.fetch(U, { cache: "no-store" });
           if (!res.ok) throw new Error("fetch " + res.status);
           const body = await res.text();
-          if (!body.includes("scram-api-v16-stt") || !body.includes("stt_proxy_url")) {
+          if (!body.includes("scram-api-v17-device-sync") || !body.includes("stt_proxy_url")) {
             throw new Error("bad source len=" + body.length);
           }
           if (!body.includes("bighappysmiley.github.io/Pocket/firmware-manifest.json")) {
