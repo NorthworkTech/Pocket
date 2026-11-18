@@ -11,6 +11,8 @@ import {
   type DeviceProvisionStatus,
 } from '../lib/deviceWifi'
 import { ErrorState } from '../components/ErrorState'
+import { Icon } from '../components/Icon'
+import { QrScanner } from '../components/QrScanner'
 import { useDocumentTitle } from '../components/useDocumentTitle'
 import { WordMark } from '../components/WordMark'
 
@@ -73,6 +75,7 @@ export function LinkPage() {
   const [code, setCode] = useState(codeFromQuery)
   const [pairBusy, setPairBusy] = useState(false)
   const [pairError, setPairError] = useState<string | null>(null)
+  const [scanOpen, setScanOpen] = useState(false)
 
   const orderedNetworks = useMemo(() => {
     const uniq = [...new Set(networks.filter(Boolean))]
@@ -179,14 +182,15 @@ export function LinkPage() {
     }
   }
 
-  async function onClaim(e?: FormEvent) {
+  async function onClaim(e?: FormEvent, scanned?: string) {
     e?.preventDefault()
+    const useCode = scanned ?? code
     if (!isAuthenticated) {
-      const returnTo = `/link${code ? `?code=${encodeURIComponent(code)}` : ''}`
+      const returnTo = `/link${useCode ? `?code=${encodeURIComponent(useCode)}` : ''}`
       navigate(`/login?return_to=${encodeURIComponent(returnTo)}`)
       return
     }
-    const trimmed = code.trim().toUpperCase()
+    const trimmed = useCode.trim().toUpperCase()
     if (!trimmed) {
       setPairError('Enter the code shown on your Pocket.')
       return
@@ -258,7 +262,7 @@ export function LinkPage() {
         <h1>{addNetwork ? 'Add a Wi‑Fi network' : 'Link Pocket Classic'}</h1>
         <p className="muted">
           {skipWifi || codeFromQuery
-            ? 'Enter the pairing code from Pocket to link this Pocket Cloud account.'
+            ? 'Scan the code on Pocket, or type its pairing code, to link it to this Pocket Cloud account.'
             : addNetwork
               ? 'Enter the network here. If Pocket is already online, we send it through Pocket Cloud — no SoftAP hop.'
               : phone
@@ -385,7 +389,7 @@ export function LinkPage() {
         <div className="panel stack">
           <p>
             {skipWifi || codeFromQuery
-              ? 'Enter the pairing code shown on Pocket to finish linking.'
+              ? 'Scan the code on Pocket, or type the pairing code, to finish linking.'
               : addNetwork
                 ? 'Pocket is saving that network and will use it when online. No pairing code needed.'
                 : phone
@@ -418,8 +422,8 @@ export function LinkPage() {
                   onClick={() => setOnlineReady(true)}
                 >
                   {phone
-                    ? 'Hotspot is on — enter pairing code'
-                    : 'I’m online — enter pairing code'}
+                    ? 'Hotspot is on — link Pocket'
+                    : 'I’m online — link Pocket'}
                 </button>
               ) : !isAuthenticated ? (
                 <Link
@@ -431,6 +435,19 @@ export function LinkPage() {
               ) : (
                 <form className="stack" onSubmit={(e) => void onClaim(e)}>
                   {!codeFromQuery ? (
+                    <>
+                    <button
+                      type="button"
+                      className="btn btn-primary btn-block"
+                      onClick={() => {
+                        setPairError(null)
+                        setScanOpen(true)
+                      }}
+                      disabled={pairBusy}
+                    >
+                      <Icon name="qr" size={20} /> Scan the code on Pocket
+                    </button>
+                    <div className="or-divider">or type the code</div>
                     <div className="field">
                       <label htmlFor="code">Pairing code from Pocket</label>
                       <input
@@ -443,9 +460,9 @@ export function LinkPage() {
                         autoCorrect="off"
                         spellCheck={false}
                         placeholder="XXXXXXXX"
-                        autoFocus
                       />
                     </div>
+                    </>
                   ) : (
                     <p className="chip">Code · {code}</p>
                   )}
@@ -458,9 +475,23 @@ export function LinkPage() {
                       </p>
                     )
                   ) : null}
-                  <button type="submit" className="btn btn-primary btn-block" disabled={pairBusy}>
+                  <button
+                    type="submit"
+                    className={codeFromQuery ? 'btn btn-primary btn-block' : 'btn btn-block'}
+                    disabled={pairBusy}
+                  >
                     {pairBusy ? 'Linking…' : 'Link this Pocket'}
                   </button>
+                  {scanOpen ? (
+                    <QrScanner
+                      onCode={(c) => {
+                        setScanOpen(false)
+                        setCode(c)
+                        void onClaim(undefined, c)
+                      }}
+                      onClose={() => setScanOpen(false)}
+                    />
+                  ) : null}
                 </form>
               )}
             </>
