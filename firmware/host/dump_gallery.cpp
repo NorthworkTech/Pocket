@@ -121,6 +121,15 @@ int main(int argc, char** argv) {
     std::snprintf(path, sizeof(path), "%s/%02d-%s.ppm", out.c_str(), i++, kNames[sidx]);
     if (!write_ppm(path, app.canvas())) return 1;
   }
+  for (int t = 1; t <= 3; ++t) {
+    app.host_goto(ScreenId::OnboardingDone);
+    app.host_set_tips_page(t);
+    app.redraw(true);
+    char path[512];
+    std::snprintf(path, sizeof(path), "%s/%02d-controls-%d.ppm", out.c_str(), i++, t);
+    if (!write_ppm(path, app.canvas())) return 1;
+  }
+  app.host_set_tips_page(0);
   {
     std::string body;
     for (int k = 0; k < 5; ++k)

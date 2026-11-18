@@ -418,6 +418,7 @@ class App {
   void host_set_installing(bool on, int pct) { ota_installing_ = on; ota_progress_ = pct; }
   void host_set_update_welcome(bool on) { show_update_welcome_ = on; }
   void host_show_status(std::string_view m) { show_status(m); }
+  void host_set_tips_page(int p) { tips_page_ = p; }
   bool host_cloud_sync() { return cloud_sync(false); }
   void host_reading_sync() { reading_sync_from_cloud(); }
   void host_reading_load() { reading_load_local(); }

@@ -35,35 +35,35 @@ void centered(Canvas& c, int y, std::string_view text, Canvas::TextRole role) {
   c.draw_text_fit((kCanvasW - w) / 2, y, kContentW, text, role, Gray::G0);
 }
 
-/** Simple Pocket silhouette for the controls tour; `hl` = 0 dial, 1 side, 2 power. */
+/** Pocket silhouette for the controls tour; `hl` = 0 dial, 1 back button, 2 power.
+ * Real layout: the dial is on the left edge; on the right edge the power button sits
+ * just above the back (function) button. Nothing on the top edge. */
 void device_diagram(Canvas& c, int hl) {
   const int w = 150, h = 230;
   const int x = (kCanvasW - w) / 2, y = 196;
   c.stroke_round_rect(x, y, w, h, 22, Gray::G0, 3, Gray::G3);
   c.stroke_round_rect(x + 16, y + 18, w - 32, h - 60, 6, Gray::G0, 2, Gray::G3);
   for (int i = 0; i < 4; ++i) c.hline(x + 30, y + 44 + i * 20, w - 60 - (i == 3 ? 30 : 0), Gray::G0);
-  // Dial on the right edge.
-  const int dx = x + w, dy = y + 70;
-  if (hl == 0) c.fill_round_rect(dx - 2, dy, 16, 64, 6, Gray::G0);
-  else c.stroke_round_rect(dx - 2, dy, 16, 64, 6, Gray::G0, 2, Gray::G3);
-  for (int i = 0; i < 5; ++i) c.hline(dx + 1, dy + 10 + i * 11, 10, hl == 0 ? Gray::G3 : Gray::G0);
-  // Side button on the left edge.
-  if (hl == 1) c.fill_round_rect(x - 12, y + 80, 14, 46, 5, Gray::G0);
-  else c.stroke_round_rect(x - 12, y + 80, 14, 46, 5, Gray::G0, 2, Gray::G3);
-  // Power on the top edge.
-  if (hl == 2) c.fill_round_rect(x + w - 64, y - 12, 40, 14, 5, Gray::G0);
-  else c.stroke_round_rect(x + w - 64, y - 12, 40, 14, 5, Gray::G0, 2, Gray::G3);
-  // Callout arrows.
+  // Dial on the left edge.
+  const int dx = x - 14, dy = y + 70;
+  if (hl == 0) c.fill_round_rect(dx, dy, 16, 64, 6, Gray::G0);
+  else c.stroke_round_rect(dx, dy, 16, 64, 6, Gray::G0, 2, Gray::G3);
+  for (int i = 0; i < 5; ++i) c.hline(dx + 3, dy + 10 + i * 11, 10, hl == 0 ? Gray::G3 : Gray::G0);
+  // Right edge: power on top, back button just below it.
+  const int bx = x + w - 2;
+  const int py = y + 64, by = y + 116;
+  if (hl == 2) c.fill_round_rect(bx, py, 14, 40, 5, Gray::G0);
+  else c.stroke_round_rect(bx, py, 14, 40, 5, Gray::G0, 2, Gray::G3);
+  if (hl == 1) c.fill_round_rect(bx, by, 14, 40, 5, Gray::G0);
+  else c.stroke_round_rect(bx, by, 14, 40, 5, Gray::G0, 2, Gray::G3);
+  // Callout arrows pointing at the highlighted control.
   if (hl == 0) {
-    ui::icon(c, ui::Icon::ChevronLeft, dx + 40, dy + 32, 26, Gray::G0);
-    c.thick_line(dx + 34, dy + 32, dx + 74, dy + 32, 3, Gray::G0);
-  } else if (hl == 1) {
-    ui::icon(c, ui::Icon::ChevronRight, x - 40, y + 103, 26, Gray::G0);
-    c.thick_line(x - 76, y + 103, x - 34, y + 103, 3, Gray::G0);
+    ui::icon(c, ui::Icon::ChevronRight, dx - 28, dy + 32, 26, Gray::G0);
+    c.thick_line(dx - 64, dy + 32, dx - 22, dy + 32, 3, Gray::G0);
   } else {
-    c.thick_line(x + w - 44, y - 56, x + w - 44, y - 24, 3, Gray::G0);
-    c.thick_line(x + w - 54, y - 34, x + w - 44, y - 22, 3, Gray::G0);
-    c.thick_line(x + w - 34, y - 34, x + w - 44, y - 22, 3, Gray::G0);
+    const int cy = hl == 2 ? py + 20 : by + 20;
+    ui::icon(c, ui::Icon::ChevronLeft, bx + 42, cy, 26, Gray::G0);
+    c.thick_line(bx + 36, cy, bx + 78, cy, 3, Gray::G0);
   }
 }
 
@@ -329,11 +329,12 @@ void App::render_onboarding() {
         ui::button(canvas_, kBottomCtaY - kRowPitch, "Go to Home", focus_.index == 0);
         ui::row(canvas_, kBottomCtaY, Row{"Controls tour", RowKind::Nav}, focus_.index == 1);
       } else {
-        static const char* kTitles[3] = {"The dial", "Side button", "Power"};
+        static const char* kTitles[3] = {"The dial", "Back button", "Power"};
         static const char* kBodies[3] = {
-            "Turn to move between items. Press the dial to choose.",
-            "Press to go back. Hold in Notes and Lists to dictate.",
-            "Press to go Home. Hold to lock \xE2\x80\x94 the screen stays on with no power at all."};
+            "On the left side. Turn to move between items, press the dial to choose.",
+            "On the right side, below Power. Press to go back. Hold in Notes and Lists to dictate.",
+            "On the right side, above the back button. Press to go Home. Hold to lock \xE2\x80\x94 the screen "
+            "stays on with no power at all."};
         const int t = std::min(tips_page_, 3) - 1;
         canvas_.draw_text(kSideMargin, kContentTop, kTitles[t], Canvas::TextRole::ScreenTitle, Gray::G0);
         device_diagram(canvas_, t);
