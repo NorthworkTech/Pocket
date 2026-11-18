@@ -15,7 +15,7 @@ void RefreshPolicy::on_screen_enter_full() {
 }
 
 void RefreshPolicy::on_applied(RefreshMode mode, int weight) {
-  if (mode == RefreshMode::Full) {
+  if (mode != RefreshMode::Partial) {
     partial_count_ = 0;
     tiny_credit_ = 0;
     clean_debt_ = 0;
@@ -31,7 +31,7 @@ void RefreshPolicy::on_applied_band() {
 }
 
 void RefreshPolicy::on_applied_tiny(RefreshMode mode) {
-  if (mode == RefreshMode::Full) {
+  if (mode != RefreshMode::Partial) {
     partial_count_ = 0;
     tiny_credit_ = 0;
     clean_debt_ = 0;

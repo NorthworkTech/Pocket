@@ -23,7 +23,7 @@ class EpdDisplay {
   void set_brightness(int percent);
 
  private:
-  void mark_refresh_kicked();
+  void mark_refresh_kicked(uint32_t stuck_after_ms = 3000);
   void rotate_canvas_to_mono(const pocket::Canvas& src, uint8_t* dst);
   /** Same rotation, but only for the panel-coordinate window [px0,px1)×[py0,py1) — writes a
    * tightly packed (py1-py0) rows × (px1-px0)/8 bytes buffer. Used by present_region() so a
@@ -40,6 +40,10 @@ class EpdDisplay {
   bool saw_busy_high_ = false;
   /** esp_timer ms when mark_refresh_kicked() ran — drives grace + stuck-BUSY timeout. */
   uint32_t kick_ms_ = 0;
+  /** BUSY longer than this is treated as stuck (a deep 0xF7 refresh runs ~3.5 s). */
+  uint32_t stuck_after_ms_ = 3000;
+  /** Fast (0xD7) full refreshes since the last deep clean. */
+  int fast_fulls_ = 0;
   uint8_t* panel_1bpp_ = nullptr;
   /** What the panel is actually showing (panel layout). Written to RED RAM before every
    * partial so the fast waveform never diffs against a stale full-refresh image. */

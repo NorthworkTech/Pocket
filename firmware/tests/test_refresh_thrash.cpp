@@ -114,7 +114,8 @@ int main() {
   // Unlock/Home enter now use 0xFF windows (they count as partials), so drive until
   // the next full rather than assuming a zeroed counter.
   int safety = 0;
-  while (disp.full_or_fast == full_before && safety < RefreshPolicy::kGhostingN + 8) {
+  // Screen enters are full refreshes (budget starts at zero); band partials count half.
+  while (disp.full_or_fast == full_before && safety < 2 * RefreshPolicy::kGhostingN + 8) {
     t += 500;
     mapper.on_button_up(true, t);
     mapper.on_button_up(false, t + 50);

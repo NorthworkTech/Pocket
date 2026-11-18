@@ -90,7 +90,8 @@ void EpdDisplay::rotate_canvas_to_mono_region(const pocket::Canvas& src, uint8_t
   }
 }
 
-void EpdDisplay::mark_refresh_kicked() {
+void EpdDisplay::mark_refresh_kicked(uint32_t stuck_after_ms) {
+  stuck_after_ms_ = stuck_after_ms;
   refresh_inflight_ = true;
   saw_busy_high_ = false;
   kick_ms_ = static_cast<uint32_t>(esp_timer_get_time() / 1000LL);
@@ -106,8 +107,7 @@ bool EpdDisplay::busy() {
     // v90 async path removed EPD_ReadBusy's 8s soft-timeout. Without a ceiling,
     // a stuck-high BUSY pin (or never-falling edge) freezes every present forever
     // and the lock screen looks like dead buttons. Force idle so input + paint recover.
-    constexpr uint32_t kStuckBusyMs = 3000;
-    if (elapsed > kStuckBusyMs) {
+    if (elapsed > stuck_after_ms_) {
       ESP_LOGW(TAG, "BUSY stuck high for %u ms — forcing idle", static_cast<unsigned>(elapsed));
       refresh_inflight_ = false;
       saw_busy_high_ = false;
@@ -148,10 +148,18 @@ void EpdDisplay::present(const pocket::Canvas& canvas, pocket::RefreshMode mode)
   // Kick and return — do not block the input loop on the ~1.5 s busy wait.
   ESP_LOGD(TAG, "Waveshare fast full LUT (0xD7) mode=%s",
            mode == pocket::RefreshMode::Full ? "full" : "partial-canvas");
-  EPD_Init_Fast();
-  EPD_Display_Fast_Base(panel_1bpp_);  // writes both RAMs
+  // Deep (0xF7, ~3.5 s) when asked (lock face) and on every 8th full, so residue from the
+  // fast LUT never builds up; otherwise the fast 0xD7 full (~1.5 s).
+  const bool deep = mode == pocket::RefreshMode::Deep || ++fast_fulls_ >= 8;
+  if (deep) {
+    fast_fulls_ = 0;
+    EPD_Display_Deep_Base(panel_1bpp_);
+  } else {
+    EPD_Init_Fast();
+    EPD_Display_Fast_Base(panel_1bpp_);  // writes both RAMs
+  }
   std::memcpy(shown_1bpp_, panel_1bpp_, kMonoBytes);
-  mark_refresh_kicked();
+  mark_refresh_kicked(deep ? 6000 : 3000);
   ESP_LOGD(TAG, "refresh kicked (async)");
 }
 

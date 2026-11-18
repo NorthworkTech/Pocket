@@ -63,9 +63,32 @@ void App::maybe_poll_sd_hotplug() {
   }
 }
 
+bool App::reformat_sd_with_feedback() {
+  if (!storage_) return false;
+  // Say what's happening before the (blocking, often 10–60 s) erase starts.
+  sd_formatting_ = true;
+  display_.wait_idle(2000);
+  redraw(false);
+  display_.wait_idle(2000);
+  const bool ok = storage_->erase_card();
+  sd_formatting_ = false;
+  last_input_ms_ = clock_.now_ms();  // the wait wasn't idleness — no idle-lock right after
+  if (!ok) {
+    error_msg_ = "Couldn't reformat the card. Try again, or eject it.";
+    error_until_ms_ = now_ms_ + 4000;
+  }
+  return ok;
+}
+
 void App::render_sd_gate() {
   draw_status_bar();
   ui::header(canvas_, "microSD card");
+  if (sd_formatting_) {
+    ui::empty_state(canvas_, ui::Icon::Sd, "Reformatting the card\xE2\x80\xA6",
+                    "This can take up to a minute. Keep the card in.", 380);
+    focus_.count = 0;
+    return;
+  }
   if (sd_waiting_eject_) {
     ui::empty_state(canvas_, ui::Icon::Sd, "Remove the card", "Waiting for the card to be ejected\xE2\x80\xA6", 380);
     focus_.count = 1;
@@ -85,6 +108,7 @@ void App::render_sd_gate() {
   focus_.count = 2;
   ui::row(canvas_, kBottomCtaY - kRowPitch, ui::Row{"Reformat and continue", ui::RowKind::Action}, focus_.index == 0);
   ui::row(canvas_, kBottomCtaY, ui::Row{"Eject", ui::RowKind::Plain}, focus_.index == 1);
+  if (now_ms_ < error_until_ms_ && !error_msg_.empty()) ui::toast(canvas_, error_msg_);
 }
 
 void App::handle_sd_gate(InputEvent e) {
@@ -108,7 +132,7 @@ void App::handle_sd_gate(InputEvent e) {
   play_sound(SoundId::Click);
 
   if (focus_.index == 0) {
-    if (storage_ && storage_->erase_card()) {
+    if (reformat_sd_with_feedback()) {
       storage_->unmount();
       storage_->probe();
       storage_->music_ensure_root();
@@ -116,8 +140,6 @@ void App::handle_sd_gate(InputEvent e) {
       play_sound(SoundId::Success);
       leave_sd_gate();
     } else {
-      error_msg_ = "Couldn't reformat the card.";
-      error_until_ms_ = now_ms_ + 3000;
       play_sound(SoundId::Attention);
       mark_content_dirty();
     }

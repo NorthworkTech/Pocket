@@ -128,6 +128,12 @@ void App::render_onboarding() {
     }
     case ScreenId::OnboardingSdCard: {
       title("Storage");
+      if (sd_formatting_) {
+        ui::empty_state(canvas_, Icon::Sd, "Reformatting the card\xE2\x80\xA6",
+                        "This can take up to a minute. Keep the card in.", 380);
+        focus_.count = 0;
+        break;
+      }
       if (sd_waiting_eject_) {
         ui::empty_state(canvas_, Icon::Sd, "Remove the card", "Waiting for the card to be ejected\xE2\x80\xA6", 380);
         focus_.count = 1;
@@ -156,6 +162,7 @@ void App::render_onboarding() {
       focus_.count = 2;
       ui::row(canvas_, kBottomCtaY - kRowPitch, Row{acts[0], RowKind::Action}, focus_.index == 0);
       ui::row(canvas_, kBottomCtaY, Row{acts[1], RowKind::Plain}, focus_.index == 1);
+      if (now_ms_ < error_until_ms_ && !error_msg_.empty()) ui::toast(canvas_, error_msg_);
       break;
     }
     case ScreenId::OnboardingWifiList: {
@@ -499,14 +506,12 @@ void App::handle_onboarding(InputEvent e) {
     }
     // Present card: Reformat and continue | Eject (same as anytime SD gate).
     if (focus_.index == 0) {
-      if (storage_ && storage_->erase_card()) {
+      if (reformat_sd_with_feedback()) {
         storage_->unmount();
         if (storage_->probe()) storage_->music_ensure_root();
         play_sound(SoundId::Success);
         begin_softap_link();
       } else {
-        error_msg_ = "Couldn't reformat the card.";
-        error_until_ms_ = now_ms_ + 3000;
         play_sound(SoundId::Attention);
         mark_content_dirty();
       }

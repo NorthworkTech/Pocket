@@ -43,6 +43,7 @@ void EPD_Display(const UBYTE* Image);
 void EPD_Display_Base(const UBYTE* Image);
 void EPD_Display_Fast(const UBYTE* Image);
 void EPD_Display_Fast_Base(const UBYTE* Image);
+void EPD_Display_Deep_Base(const UBYTE* Image);
 void EPD_Display_Partial(const UBYTE* Image, UWORD Xstart, UWORD Ystart, UWORD Xend, UWORD Yend);
 /** Partial refresh that also writes the previously displayed window to RED RAM (0x26). */
 void EPD_Display_Partial_Diff(const UBYTE* Old, const UBYTE* Image, UWORD Xstart, UWORD Ystart, UWORD Xend,

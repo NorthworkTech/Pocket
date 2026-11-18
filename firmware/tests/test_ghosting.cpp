@@ -85,12 +85,24 @@ int main() {
   CHECK(app.screen() == ScreenId::Home);
   pump(app, clock, 4000);  // settle (unlock may itself earn a clean)
 
-  // Open an app (whole-screen partial) → after a pause, exactly one clean full refresh.
+  // Opening an app is itself a clean full refresh (no ghost of Home underneath)…
   int f = disp.full_or_fast;
   app.handle(InputEvent::Select);
   app.flush_dirty();
   CHECK(app.screen() != ScreenId::Home);
-  CHECK(disp.full_or_fast == f);  // the screen change itself stays fast
+  CHECK(disp.full_or_fast == f + 1);
+  pump(app, clock, 6000);
+  CHECK(disp.full_or_fast == f + 1);  // …and nothing more to clean afterwards
+  // In-screen changes stay fast; after a pause they get exactly one clean.
+  app.host_goto(ScreenId::Home);
+  app.redraw(true);
+  pump(app, clock, 6000);
+  f = disp.full_or_fast;
+  for (int i = 0; i < 3; ++i) {
+    app.apply_home_focus_delta(1);
+    app.flush_dirty();
+  }
+  CHECK(disp.full_or_fast == f);  // focus moves are partial
   pump(app, clock, 1000);
   CHECK(disp.full_or_fast == f);  // not while the user is still active
   pump(app, clock, 3000);

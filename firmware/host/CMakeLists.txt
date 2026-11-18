@@ -192,3 +192,8 @@ add_executable(test_setup_pairing ../tests/test_setup_pairing.cpp ${POCKET_UI_SR
 target_include_directories(test_setup_pairing PRIVATE ${POCKET_UI}/include ${POCKET_UI}/vendor/qrcodegen)
 target_compile_definitions(test_setup_pairing PRIVATE POCKET_HOST=1)
 add_test(NAME test_setup_pairing COMMAND test_setup_pairing)
+
+add_executable(test_sd_reformat ../tests/test_sd_reformat.cpp ${POCKET_UI_SRCS})
+target_include_directories(test_sd_reformat PRIVATE ${POCKET_UI}/include ${POCKET_UI}/vendor/qrcodegen)
+target_compile_definitions(test_sd_reformat PRIVATE POCKET_HOST=1)
+add_test(NAME test_sd_reformat COMMAND test_sd_reformat)

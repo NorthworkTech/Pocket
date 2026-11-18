@@ -3,7 +3,8 @@
 
 namespace pocket {
 
-enum class RefreshMode : uint8_t { Partial, Full };
+/** Deep = slow temperature-compensated full refresh (deghost), e.g. the lock face. */
+enum class RefreshMode : uint8_t { Partial, Full, Deep };
 
 /**
  * Ghosting mitigation: after N consecutive partials → force full (Spec §6).

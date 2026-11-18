@@ -495,6 +495,32 @@ void EPD_Display_Fast(const UBYTE *Image)
     EPD_TurnOnDisplay_Fast();
 }
 
+/* Deep clean: standard OTP waveform (0xF7, temperature-compensated, ~3.5 s) writing both
+ * RAMs. Clears ghosting the 0xD7 fast LUT leaves behind. Kicked async like the fast path. */
+void EPD_Display_Deep_Base(const UBYTE *Image)
+{
+    if (!s_controller_ready) {
+        EPD_Init();
+    } else {
+        EPD_SetFullRamWindow();
+    }
+    EPD_SendCommand(0x3C); //BorderWavefrom
+    EPD_SendData(0x01);
+    EPD_SendCommand(0x18); // internal temperature sensor → normal LUT
+    EPD_SendData(0x80);
+
+    UWORD Width = (EPD_WIDTH % 8 == 0)? (EPD_WIDTH / 8 ): (EPD_WIDTH / 8 + 1);
+    UDOUBLE buffer_size = Width * EPD_HEIGHT;
+    EPD_SendCommand(0x24);
+    EPD_SendDataBuffer(Image, buffer_size);
+    EPD_SendCommand(0x26);
+    EPD_SendDataBuffer(Image, buffer_size);
+
+    EPD_SendCommand(0x22);
+    EPD_SendData(0xF7);
+    EPD_SendCommand(0x20);
+}
+
 void EPD_Display_Fast_Base(const UBYTE *Image)
 {
     UWORD Width, Height;

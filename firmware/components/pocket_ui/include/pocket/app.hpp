@@ -481,6 +481,9 @@ class App {
   std::string pair_error_;
   /** Setup was interrupted by a restart after Wi-Fi joined: rejoin, then go to Link. */
   bool setup_rejoin_pending_ = false;
+  /** SD erase in progress — the SD screens show "Reformatting…" instead of looking frozen. */
+  bool sd_formatting_ = false;
+  bool reformat_sd_with_feedback();
   void maybe_setup_rejoin();
   std::string sync_status_;
   /** Full refresh after a pause when partials have left ghosting (see RefreshPolicy). */
@@ -488,6 +491,7 @@ class App {
   static constexpr uint32_t kIdleCleanAfterMs = 2500;
   uint32_t last_present_ms_ = 0;
   bool want_full_ = false;
+  bool want_deep_ = false;
   std::string status_msg_;
   void mark_content_dirty();
   void mark_status_dirty();

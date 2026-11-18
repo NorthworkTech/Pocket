@@ -719,7 +719,8 @@ void App::go_lock() {
     lock_motif_index_ = (lock_motif_index_ + 1) % kLockMotifCount;
   }
   lock_seed_ = lock_seed_ * 1664525u + 1013904223u + (clock_.now_ms() & 0xFFFFu);
-  // The lock face sits for hours: always a clean full refresh, never a partial over old UI.
+  // The lock face sits for hours: a deep, temperature-compensated refresh wipes all ghosting.
+  want_deep_ = true;
   after_nav(true);
 }
 
@@ -1119,8 +1120,10 @@ void App::present_canvas(bool full) {
   render();
   if (!status_msg_.empty()) ui::toast(canvas_, status_msg_);
   if (full) {
-    display_.present(canvas_, RefreshMode::Full);
-    refresh_.on_applied(RefreshMode::Full);
+    const RefreshMode m = want_deep_ ? RefreshMode::Deep : RefreshMode::Full;
+    want_deep_ = false;
+    display_.present(canvas_, m);
+    refresh_.on_applied(m);
     dirty_kind_ = DirtyKind::FullCanvas;
     return;
   }

@@ -126,21 +126,17 @@ inline bool long_home_blocked(ScreenId s, bool onboarding_complete) {
   return false;
 }
 
-/** Spec §6: full refresh on major enters; focus/routine UI stays partial. */
+/**
+ * Entering a screen is a full refresh: a whole-screen partial over different content is
+ * what leaves ghost images on this panel. Changes *within* a screen (focus, dial, PIN
+ * digits, page turns, clock ticks) stay partial and fast.
+ */
 inline bool screen_requires_full_enter(ScreenId s) {
   switch (s) {
-    case ScreenId::Lock:
-    case ScreenId::Pin:  // must fully clear lock/sleep motif — 0xFF partial ghosts wallpaper under slots
-    case ScreenId::PassDetail:
-    case ScreenId::SettingsUpdateProgress:
-    case ScreenId::OnboardingWelcome:
-    case ScreenId::OnboardingCompanionDownload:  // QR clarity
-    case ScreenId::OnboardingCompanionQr:        // QR clarity
-    case ScreenId::OnboardingWifiPassword:       // SoftAP Link QR
-    case ScreenId::ClockRinging:                 // alert over lock art
-      return true;
-    default:
+    case ScreenId::OnboardingWifiConnecting:  // transient; the radio starts right after it paints
       return false;
+    default:
+      return true;
   }
 }
 
