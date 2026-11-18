@@ -129,6 +129,34 @@ int main() {
     CHECK(app.screen() == ScreenId::OnboardingWifiPassword);
     CHECK(cloud.calls == 0);
   }
+  // 4) Pocket restarts after joining Wi-Fi (crash / power dip): it rejoins the saved network
+  //    and goes on to Link — never back to "Connect to Wi-Fi".
+  {
+    MemoryConfigStore store;
+    TClock clock; TWifi wifi; TCloud cloud; TDisp disp;
+    {
+      App app(store, clock, wifi, cloud, disp);
+      app.boot();
+      app.host_goto(ScreenId::OnboardingWifiPassword);
+      wifi.creds = true;
+      pump(app, clock, 1000);
+      CHECK(app.screen() == ScreenId::OnboardingCompanionQr);
+    }
+    wifi.online = false;  // restart: radio comes up disconnected
+    App again(store, clock, wifi, cloud, disp);
+    again.boot();
+    CHECK(again.screen() == ScreenId::OnboardingWifiConnecting);
+    pump(again, clock, 1000);
+    CHECK(again.screen() == ScreenId::OnboardingCompanionQr);
+    CHECK(wifi.online);
+    // …and if the saved network is gone, it falls back to phone setup with a reason.
+    wifi.online = false;
+    wifi.join_ok = false;
+    App third(store, clock, wifi, cloud, disp);
+    third.boot();
+    pump(third, clock, 1000);
+    CHECK(third.screen() == ScreenId::OnboardingWifiPassword);
+  }
   if (failures) { std::printf("%d failure(s)\n", failures); return 1; }
   std::puts("test_setup_pairing OK");
   return 0;

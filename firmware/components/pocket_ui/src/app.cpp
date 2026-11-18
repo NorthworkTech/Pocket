@@ -87,6 +87,14 @@ void App::boot() {
   if (!cfg_.onboarding_complete) {
     const ScreenId resume = resume_onboarding_screen();
     if (resume == ScreenId::OnboardingWifiPassword || resume == ScreenId::OnboardingCompanionQr) {
+      // Pocket already knows a network (it joined before this restart): rejoin it and go
+      // straight on to Link. The phone setup network only comes back if rejoining fails.
+      if (!cfg_.wifi_known.empty()) {
+        setup_rejoin_pending_ = true;
+        nav_.reset(ScreenId::OnboardingWifiConnecting);
+        after_nav();
+        return;
+      }
       // SoftAP / pair need live sessions — restart Link without Welcome → Download → SD.
       begin_softap_link();
       return;
@@ -359,7 +367,7 @@ void App::begin_softap_link() {
     focus_.index = 0;
     wifi_add_session_ = false;
     nav_.replace(ScreenId::OnboardingCompanionQr);
-    after_nav(true);
+    after_nav();
     return;
   }
   std::string ap;
@@ -413,6 +421,38 @@ void App::arm_wifi_rf_guard() {
 
 bool App::wifi_rf_guard_active() const {
   return wifi_rf_guard_until_ms_ != 0 && now_ms_ < wifi_rf_guard_until_ms_;
+}
+
+void App::maybe_setup_rejoin() {
+  if (!setup_rejoin_pending_ || nav_.current() != ScreenId::OnboardingWifiConnecting) return;
+  // Let "Connecting…" paint and the panel settle before the radio works (power peaks).
+  if (dirty_ || display_.busy()) return;
+  setup_rejoin_pending_ = false;
+  std::vector<WifiKnownNetwork> order = cfg_.wifi_known;
+  for (size_t i = 0; i < order.size(); ++i) {
+    if (order[i].ssid == cfg_.wifi_ssid && i != 0) {
+      std::swap(order[0], order[i]);
+      break;
+    }
+  }
+  bool ok = wifi_.connected();
+  for (size_t i = 0; !ok && i < order.size() && i < 3; ++i) {
+    wifi_sta_connecting_ = true;
+    ok = connect_and_remember(order[i].ssid, order[i].password);
+    wifi_sta_connecting_ = false;
+    if (ok) cfg_.wifi_ssid = order[i].ssid;
+  }
+  if (ok) {
+    play_sound(mint_pair_session() ? SoundId::Success : SoundId::Attention);
+    focus_.index = 0;
+    nav_.replace(ScreenId::OnboardingCompanionQr);
+    after_nav();
+    return;
+  }
+  error_msg_ = "Couldn't rejoin " + (cfg_.wifi_ssid.empty() ? std::string("your Wi-Fi") : cfg_.wifi_ssid) +
+               ". Send it again from your phone.";
+  error_until_ms_ = now_ms_ + 6000;
+  begin_softap_link();
 }
 
 void App::maybe_start_pending_softap_radio() {
@@ -555,6 +595,7 @@ bool App::mint_pair_session() {
   // Right after joining Wi-Fi the link can need a few seconds (DHCP/DNS settle, SoftAP
   // teardown). Retry with backoff for ~10 s and say what's happening meanwhile.
   show_status("Connecting to Pocket Cloud\xE2\x80\xA6");
+  display_.wait_idle(1500);  // don't overlap the panel refresh with TLS (power peaks)
   pair_error_.clear();
   static constexpr uint32_t kBackoffMs[] = {0, 1000, 2000, 3000, 4000};
   for (uint32_t wait : kBackoffMs) {
@@ -963,6 +1004,7 @@ void App::tick(uint32_t now_ms) {
     go_lock();
     return;
   }
+  maybe_setup_rejoin();
   // SoftAP Wi‑Fi provision: wait for phone to POST credentials
   if (nav_.current() == ScreenId::OnboardingWifiPassword && !wifi_sta_connecting_) {
     if (now_ms - last_wifi_prov_poll_ms_ >= 400) {
@@ -991,7 +1033,7 @@ void App::tick(uint32_t now_ms) {
             play_sound(mint_pair_session() ? SoundId::Success : SoundId::Attention);
             focus_.index = 0;
             nav_.replace(ScreenId::OnboardingCompanionQr);
-            after_nav(true);  // QR: full
+            after_nav();  // fast refresh — a full flash while the radio works risks a brownout
           }
         } else {
           const std::string why = wifi_.last_error();

@@ -478,6 +478,9 @@ class App {
   int last_reported_sd_ = -1;
   /** Why the last pairing-code request failed (shown on the Link screen). */
   std::string pair_error_;
+  /** Setup was interrupted by a restart after Wi-Fi joined: rejoin, then go to Link. */
+  bool setup_rejoin_pending_ = false;
+  void maybe_setup_rejoin();
   std::string sync_status_;
   /** Full refresh after a pause when partials have left ghosting (see RefreshPolicy). */
   void maybe_idle_clean();

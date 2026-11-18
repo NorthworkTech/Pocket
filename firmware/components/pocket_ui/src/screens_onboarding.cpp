@@ -581,7 +581,7 @@ void App::handle_onboarding(InputEvent e) {
           play_sound(mint_pair_session() ? SoundId::Success : SoundId::Attention);
           focus_.index = 0;
           nav_.replace(ScreenId::OnboardingCompanionQr);
-          after_nav(true);
+          after_nav();
         }
       } else if (focus_.index == cancel_i) {
         play_sound(SoundId::Click);
@@ -623,7 +623,7 @@ void App::handle_onboarding(InputEvent e) {
       } else if (e == InputEvent::Select && focus_.index == 0) {
         play_sound(mint_pair_session() ? SoundId::Success : SoundId::Attention);
         focus_.index = 0;
-        after_nav(true);
+        after_nav();
       } else if (e == InputEvent::Select && focus_.index == 1) {
         play_sound(SoundId::Click);
         wifi_networks_ = wifi_.scan();
