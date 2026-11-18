@@ -236,6 +236,10 @@ bool App::is_pin_entry_screen() const {
 
 void App::apply_coalesced_rotary(int delta) {
   if (delta == 0) return;
+  // Turning the dial is using Pocket — Home/PIN spins skip handle(), so stamp it here
+  // (they used to let idle-lock fire mid-browse).
+  now_ms_ = clock_.now_ms();
+  last_input_ms_ = now_ms_;
   if (is_pin_entry_screen()) {
     apply_pin_digit_delta(delta);
     return;
@@ -317,6 +321,26 @@ bool App::try_present(bool full) {
   return true;
 }
 
+bool App::keeps_awake() const {
+  // Things you're doing even when not pressing anything.
+  if (ptt_active_ || mic_capturing_ || ota_installing_ || sd_formatting_) return true;
+  if (music_playing_) return true;
+  const ScreenId s = nav_.current();
+  if (s == ScreenId::ClockTimerRun && timer_running_) return true;
+  if (s == ScreenId::SettingsUpdateProgress || s == ScreenId::SettingsUpdateAvailable) return true;
+  return false;
+}
+
+uint32_t App::idle_lock_after_ms() const {
+  uint32_t ms = static_cast<uint32_t>(cfg_.idle_lock_s) * 1000u;
+  // Reading a page or a note takes longer than the auto-lock delay — give it 10 minutes.
+  const ScreenId s = nav_.current();
+  if (s == ScreenId::ReadingBook || s == ScreenId::NotesDetail || s == ScreenId::WeatherMain ||
+      s == ScreenId::PassDetail || s == ScreenId::ClockFace)
+    ms = std::max<uint32_t>(ms, 10u * 60u * 1000u);
+  return ms;
+}
+
 void App::maybe_idle_clean() {
   // Kindle-style: once partials have left residue and the user pauses, one clean full
   // refresh wipes the ghosting instead of letting it pile up until a forced flash mid-use.
@@ -346,6 +370,8 @@ void App::show_status(std::string_view msg) {
 void App::flush_dirty() {
   if (!status_msg_.empty()) {
     status_msg_.clear();
+    now_ms_ = clock_.now_ms();
+    last_input_ms_ = now_ms_;  // the user was waiting on Pocket, not away from it
     mark_region_dirty(0, kCanvasH - kStatusPillBand, kCanvasW, kStatusPillBand);
   }
   if (!dirty_) {
@@ -751,8 +777,9 @@ void App::launch_home_app(HomeApp launch) {
       focus_.index = 0;
       // Fetch after the screen paints when the forecast is missing or over an hour old.
       weather_refresh_pending_ =
-          wifi_.connected() && (data_.weather.days.empty() || data_.weather.fetched_at == 0 ||
-                                now_ms_ - static_cast<uint32_t>(data_.weather.fetched_at) > 3600u * 1000u);
+          wifi_.connected() &&
+          (data_.weather.days.empty() || data_.weather.fetched_at < 1000000000LL || !clock_.time_valid() ||
+           std::time(nullptr) - static_cast<time_t>(data_.weather.fetched_at) > 3600);
       nav_.push(ScreenId::WeatherMain);
       break;
     case HomeApp::Music:
@@ -1000,8 +1027,8 @@ void App::tick(uint32_t now_ms) {
   // Guard now_ms < last_input_ms_ (unsigned underflow): host pumps often tick(0) while
   // handle() samples the real clock, and a wrap must not force Lock.
   if (cfg_.onboarding_complete && nav_.current() != ScreenId::Lock && nav_.current() != ScreenId::Pin &&
-      nav_.current() != ScreenId::ClockRinging && !wifi_add_flow_active() && now_ms >= last_input_ms_ &&
-      now_ms - last_input_ms_ >= static_cast<uint32_t>(cfg_.idle_lock_s) * 1000u) {
+      nav_.current() != ScreenId::ClockRinging && !wifi_add_flow_active() && !keeps_awake() &&
+      now_ms >= last_input_ms_ && now_ms - last_input_ms_ >= idle_lock_after_ms()) {
     go_lock();
     return;
   }

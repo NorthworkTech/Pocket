@@ -61,7 +61,7 @@ void App::begin_firmware_update() {
     nav_.replace(ScreenId::SettingsUpdateResult);
     after_nav();
   };
-  if (!wifi_.connected()) return result("Connect to Wi-Fi to check for updates.");
+  if (!wifi_.connected()) return result("Connect to the internet to check for updates. Pocket needs Wi-Fi for this.");
   const std::string meta = cloud_.firmware_latest_json();
   FirmwareUpdateInfo info;
   if (!parse_firmware_latest(meta, &info)) return result("Couldn't reach the update server. Try again later.");

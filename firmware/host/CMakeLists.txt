@@ -197,3 +197,8 @@ add_executable(test_sd_reformat ../tests/test_sd_reformat.cpp ${POCKET_UI_SRCS})
 target_include_directories(test_sd_reformat PRIVATE ${POCKET_UI}/include ${POCKET_UI}/vendor/qrcodegen)
 target_compile_definitions(test_sd_reformat PRIVATE POCKET_HOST=1)
 add_test(NAME test_sd_reformat COMMAND test_sd_reformat)
+
+add_executable(test_offline_day ../tests/test_offline_day.cpp ${POCKET_UI_SRCS})
+target_include_directories(test_offline_day PRIVATE ${POCKET_UI}/include ${POCKET_UI}/vendor/qrcodegen)
+target_compile_definitions(test_offline_day PRIVATE POCKET_HOST=1)
+add_test(NAME test_offline_day COMMAND test_offline_day)

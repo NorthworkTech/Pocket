@@ -7,6 +7,7 @@
 #include <cctype>
 #include <cstdio>
 #include <cstring>
+#include <ctime>
 #include <fstream>
 #include <string>
 #include <sys/stat.h>
@@ -350,7 +351,7 @@ bool App::queue_offline_dictation(const std::vector<uint8_t>& pcm) {
     it.pending_pcm = name;
     L.items.push_back(it);
     save_local_lists();
-    error_msg_ = "Saved — will become text when online.";
+    error_msg_ = "Audio saved — it will transcribe when connected to Wi-Fi.";
     error_until_ms_ = now_ms_ + 3500;
     return true;
   }
@@ -383,7 +384,8 @@ bool App::queue_offline_dictation(const std::vector<uint8_t>& pcm) {
       if (old != name) delete_pending_pcm(old);
       n.pending_pcm = name;
       // Keep a single placeholder line — don't stack markers.
-      if (n.body.find(kVoicePendingText) == std::string::npos) {
+      if (n.body.find(kVoicePendingText) == std::string::npos &&
+          n.body.find(kVoicePendingTextLegacy) == std::string::npos) {
         n.body += (n.body.empty() ? "" : "\n");
         n.body += kVoicePendingText;
       }
@@ -403,7 +405,7 @@ bool App::queue_offline_dictation(const std::vector<uint8_t>& pcm) {
     n.updated_at = now_ms_;
     if (n.title == "Note" || n.title.empty()) n.title = "Voice note";
     save_local_notes();
-    error_msg_ = "Saved — will become text when online.";
+    error_msg_ = "Audio saved — it will transcribe when connected to Wi-Fi.";
     error_until_ms_ = now_ms_ + 3500;
     return true;
   }
@@ -422,7 +424,7 @@ bool App::queue_offline_dictation(const std::vector<uint8_t>& pcm) {
   note_page_ = 0;
     nav_.replace(ScreenId::NotesDetail);
   after_nav();
-  error_msg_ = "Saved — will become text when online.";
+  error_msg_ = "Audio saved — it will transcribe when connected to Wi-Fi.";
   error_until_ms_ = now_ms_ + 3500;
   return true;
 }
@@ -443,12 +445,13 @@ void App::flush_pending_dictation() {
   };
 
   auto replace_pending_text = [](std::string& body, const std::string& transcript) {
-    const std::string marker = kVoicePendingText;
-    const size_t p = body.find(marker);
-    if (p != std::string::npos) {
-      body.replace(p, marker.size(), transcript);
-      // Drop a dangling newline left if transcript empty (shouldn't happen).
-      return;
+    for (const char* m : {kVoicePendingText, kVoicePendingTextLegacy}) {
+      const std::string marker = m;
+      const size_t p = body.find(marker);
+      if (p != std::string::npos) {
+        body.replace(p, marker.size(), transcript);
+        return;
+      }
     }
     body += (body.empty() ? "" : "\n") + transcript;
   };
@@ -620,7 +623,8 @@ bool App::weather_fetch_forecast() {
     data_.weather.today_condition = wmo_condition(static_cast<int>(cur->get_int("weather_code")));
   }
   if (data_.weather.today_condition.empty()) data_.weather.today_condition = data_.weather.days[0].condition;
-  data_.weather.fetched_at = static_cast<int64_t>(now_ms_);
+  // Wall-clock seconds (survives restarts) so the screen can say when it was last updated.
+  data_.weather.fetched_at = clock_.time_valid() ? static_cast<int64_t>(std::time(nullptr)) : 0;
   if (clock_.time_valid()) {
     int h = 0, m = 0, wd = 0, mo = 0, dd = 0;
     clock_.local_hm(h, m, wd, mo, dd);
@@ -777,7 +781,7 @@ void App::render_notes() {
         if (!n.pending_pcm.empty()) {
           canvas_.draw_text_wrapped(kSideMargin, bottom_action_y(note_pages_ > 1 ? 2 : 1) - 64, kContentW, kWrapGap,
                                     wifi_.connected() ? "Still waiting for the transcript \xE2\x80\x94 hold to re-record."
-                                                      : "Voice clip saved \xE2\x80\x94 text arrives when online.",
+                                                      : "Audio recording saved \xE2\x80\x94 it will transcribe on Wi-Fi.",
                                     Canvas::TextRole::Caption, Gray::G0);
         }
       }
@@ -1244,21 +1248,49 @@ void App::render_weather() {
     }
   }
 
-  // Status line + actions.
-  char upd[64];
-  if (!wifi_.connected()) std::snprintf(upd, sizeof(upd), "Offline \xC2\xB7 saved forecast");
-  else if (data_.weather.fetched_hm >= 0) {
-    const int hh = data_.weather.fetched_hm / 60, mm = data_.weather.fetched_hm % 60;
-    if (cfg_.time_format == 24) std::snprintf(upd, sizeof(upd), "Updated %02d:%02d", hh, mm);
-    else std::snprintf(upd, sizeof(upd), "Updated %d:%02d %s", hh % 12 == 0 ? 12 : hh % 12, mm, hh < 12 ? "AM" : "PM");
-  } else {
-    upd[0] = '\0';
-  }
-  if (upd[0]) canvas_.draw_text(kSideMargin, kBottomCtaY - kRowPitch - 34, upd, Canvas::TextRole::Caption, Gray::G0);
+  // Status line: always say how fresh the forecast is ("Last updated yesterday at 6:10 PM").
+  std::string upd = weather_updated_label();
+  if (!wifi_.connected() && !data_.weather.days.empty()) upd = "Offline \xC2\xB7 " + upd;
+  if (!upd.empty())
+    canvas_.draw_text_fit(kSideMargin, kBottomCtaY - kRowPitch - 34, kContentW, upd, Canvas::TextRole::Caption,
+                          Gray::G0);
   ui::row(canvas_, kBottomCtaY - kRowPitch, Row{"Refresh", RowKind::Plain, {}, false, Icon::Update, true},
           focus_.index == 0);
   ui::row(canvas_, kBottomCtaY, Row{"Change city", RowKind::Nav, {}, false, Icon::Weather, true}, focus_.index == 1);
   if (now_ms_ < error_until_ms_ && !error_msg_.empty()) ui::toast(canvas_, error_msg_);
+}
+
+std::string App::weather_updated_label() const {
+  if (data_.weather.days.empty()) return {};
+  auto clock_str = [&](int h, int m) {
+    char b[24];
+    if (cfg_.time_format == 24) std::snprintf(b, sizeof(b), "%02d:%02d", h, m);
+    else std::snprintf(b, sizeof(b), "%d:%02d %s", h % 12 == 0 ? 12 : h % 12, m, h < 12 ? "AM" : "PM");
+    return std::string(b);
+  };
+  const int64_t at = data_.weather.fetched_at;
+  if (at > 1000000000LL && clock_.time_valid()) {  // wall-clock seconds
+    const time_t then_t = static_cast<time_t>(at), now_t = std::time(nullptr);
+    struct tm then {}, now {};
+    localtime_r(&then_t, &then);
+    localtime_r(&now_t, &now);
+    const std::string hm = clock_str(then.tm_hour, then.tm_min);
+    // Whole days between the two local dates.
+    struct tm a = then, b = now;
+    a.tm_hour = b.tm_hour = 12;
+    a.tm_min = b.tm_min = a.tm_sec = b.tm_sec = 0;
+    const long days = std::lround(std::difftime(std::mktime(&b), std::mktime(&a)) / 86400.0);
+    static const char* kDays[7] = {"Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"};
+    static const char* kMon[12] = {"Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"};
+    if (days <= 0) return "Last updated today at " + hm;
+    if (days == 1) return "Last updated yesterday at " + hm;
+    if (days < 7) return std::string("Last updated ") + kDays[then.tm_wday] + " at " + hm;
+    return std::string("Last updated ") + kMon[then.tm_mon] + " " + std::to_string(then.tm_mday);
+  }
+  // Older cache (no wall time stored): best we know is the time of day.
+  if (data_.weather.fetched_hm >= 0)
+    return "Last updated at " + clock_str(data_.weather.fetched_hm / 60, data_.weather.fetched_hm % 60);
+  return "Saved forecast";
 }
 
 void App::handle_weather(InputEvent e) {

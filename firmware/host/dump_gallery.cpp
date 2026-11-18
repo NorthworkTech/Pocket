@@ -3,6 +3,7 @@
  *  tools/gallery.py stitches these into a contact sheet. */
 #include "pocket/app.hpp"
 #include <cstdio>
+#include <ctime>
 #include <string>
 #include <vector>
 
@@ -74,7 +75,8 @@ int main(int argc, char** argv) {
   app.boot();
 
   auto& d = app.host_data();
-  d.notes = {{"n1", "Grocery ideas", "Oat milk, lemons, basil, the good bread from the corner.", 0, 0, {}},
+  d.notes = {{"n0", "Voice note", pocket::kVoicePendingText, 0, 0, "clip.pcm"},
+             {"n1", "Grocery ideas", "Oat milk, lemons, basil, the good bread from the corner.", 0, 0, {}},
              {"n2", "Call Sam after lunch", "About the cabin weekend.", 0, 0, {}},
              {"n3", "Weekend packing", "Boots, rain shell, book.", 0, 0, {}}};
   TodoList l;
@@ -85,7 +87,7 @@ int main(int argc, char** argv) {
   d.alarms = {{"a1", 7 * 60, true, "Wake"}, {"a2", 22 * 60 + 30, false, "Wind down"}};
   app.host_start_timer(5u * 60u * 1000u - 17000u);
   d.weather.city = "Lisbon";
-  d.weather.fetched_at = 1;
+  d.weather.fetched_at = static_cast<int64_t>(std::time(nullptr)) - 26 * 3600;
   d.weather.today_temp = 19;
   d.weather.today_condition = "Partly cloudy";
   d.weather.days = {{"2026-11-16", 20, 13, "Partly cloudy"}, {"2026-11-17", 18, 12, "Rain"},

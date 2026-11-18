@@ -419,6 +419,7 @@ class App {
   void host_set_update_welcome(bool on) { show_update_welcome_ = on; }
   void host_show_status(std::string_view m) { show_status(m); }
   void host_set_tips_page(int p) { tips_page_ = p; }
+  std::string host_weather_label() const { return weather_updated_label(); }
   bool host_cloud_sync() { return cloud_sync(false); }
   void host_reading_sync() { reading_sync_from_cloud(); }
   void host_reading_load() { reading_load_local(); }
@@ -483,11 +484,17 @@ class App {
   bool setup_rejoin_pending_ = false;
   /** SD erase in progress — the SD screens show "Reformatting…" instead of looking frozen. */
   bool sd_formatting_ = false;
+  /** "Last updated today at 9:41 AM" / "…yesterday at…" / "…Monday at…" / "…Nov 12". */
+  std::string weather_updated_label() const;
   bool reformat_sd_with_feedback();
   void maybe_setup_rejoin();
   std::string sync_status_;
   /** Full refresh after a pause when partials have left ghosting (see RefreshPolicy). */
   void maybe_idle_clean();
+  /** Music, recording, a running timer, an install… — don't auto-lock under them. */
+  bool keeps_awake() const;
+  /** Auto-lock delay for the current screen (reading screens get at least 10 min). */
+  uint32_t idle_lock_after_ms() const;
   static constexpr uint32_t kIdleCleanAfterMs = 2500;
   uint32_t last_present_ms_ = 0;
   bool want_full_ = false;
