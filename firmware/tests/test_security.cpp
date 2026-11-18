@@ -61,6 +61,7 @@ struct Rig {
   App app{store, clock, wifi, cloud, disp};
   explicit Rig(uint16_t gated = 0) {
     store.mut().onboarding_complete = true;
+  store.mut().home_visible &= static_cast<uint16_t>(~(1u << 9));  // classic Home grid (no Today)
     store.mut().pin_length = 4;
     store.mut().parental_pin_gated = gated;
     set_pin(store.mut(), "2468");

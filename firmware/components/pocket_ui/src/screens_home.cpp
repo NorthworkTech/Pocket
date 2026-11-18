@@ -11,7 +11,7 @@ namespace {
 
 static const char* kAppLabels[kHomeGridSlots] = {
     "Notes", "Ledger", "Clock", "Pass", "Weather", "Music", "Settings", "Update",
-    "Reading", "",     "",      "",     "",        "",      "",         "",
+    "Reading", "Today", "",     "",     "",        "",      "",         "",
 };
 
 /** Home tile icon for each app (vector set in ui.cpp — one stroke weight throughout). */
@@ -33,6 +33,8 @@ ui::Icon app_icon(HomeApp app) {
       return ui::Icon::Settings;
     case HomeApp::Update:
       return ui::Icon::Update;
+    case HomeApp::Today:
+      return ui::Icon::Calendar;
     case HomeApp::Reading:
     default:
       return ui::Icon::Reading;
@@ -45,9 +47,20 @@ void draw_app_glyph(Canvas& c, HomeApp app, int cx, int cy, int size, Gray g) {
 
 /** Display order: real content apps, then Reading, then the always-on Settings/Update tiles —
  * keeps the utility tiles last regardless of HomeApp's underlying (bitmask-compatible) index. */
-constexpr int kHomeOrder[kHomeGridSlots] = {0, 1, 2, 3, 4, 5, 8, 6, 7, 9, 10, 11, 12, 13, 14, 15};
+constexpr int kHomeOrder[kHomeGridSlots] = {9, 0, 2, 4, 5, 8, 3, 6, 7, 1, 10, 11, 12, 13, 14, 15};
 
-HomeApp slot_app(int i) { return static_cast<HomeApp>(kHomeOrder[i]); }
+/** Effective Home order: the Companion-chosen order first, then anything it left out. */
+std::vector<HomeApp> home_order(const DeviceConfig& cfg) {
+  std::vector<HomeApp> out;
+  auto add = [&](int v) {
+    if (v < 0 || v >= kHomeGridSlots) return;
+    const HomeApp a = static_cast<HomeApp>(v);
+    if (std::find(out.begin(), out.end(), a) == out.end()) out.push_back(a);
+  };
+  for (uint8_t v : cfg.home_order) add(v);
+  for (int v : kHomeOrder) add(v);
+  return out;
+}
 
 /** Home: editorial header (greeting + date) over an evenly spaced 3-column grid
  * that uses the whole page — no dead band at the bottom. */
@@ -131,8 +144,8 @@ void draw_label_wrapped_centered(Canvas& c, int cx, int top_y, int max_w, int ma
 
 int count_home_focusable(const DeviceConfig& cfg, bool has_passes, HomeApp* out, int cap) {
   int n = 0;
-  for (int i = 0; i < kHomeGridSlots && n < cap; ++i) {
-    const HomeApp a = slot_app(i);
+  for (const HomeApp a : home_order(cfg)) {
+    if (n >= cap) break;
     if (!home_app_visible(cfg, a)) continue;
     // Never show placeholders on Home: Ledger isn't built yet, and Pass only has
     // something to open once passes exist on the device.

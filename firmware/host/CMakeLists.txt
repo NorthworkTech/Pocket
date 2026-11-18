@@ -25,6 +25,7 @@ set(POCKET_UI_SRCS
   ${POCKET_UI}/src/screens_sd.cpp
   ${POCKET_UI}/src/screens_update.cpp
   ${POCKET_UI}/src/sync.cpp
+  ${POCKET_UI}/src/screens_today.cpp
   ${POCKET_UI}/src/cloud_client.cpp
   ${POCKET_UI}/src/screensaver.cpp
   ${POCKET_UI}/src/ui.cpp
@@ -202,3 +203,8 @@ add_executable(test_offline_day ../tests/test_offline_day.cpp ${POCKET_UI_SRCS})
 target_include_directories(test_offline_day PRIVATE ${POCKET_UI}/include ${POCKET_UI}/vendor/qrcodegen)
 target_compile_definitions(test_offline_day PRIVATE POCKET_HOST=1)
 add_test(NAME test_offline_day COMMAND test_offline_day)
+
+add_executable(test_features_22 ../tests/test_features_22.cpp ${POCKET_UI_SRCS})
+target_include_directories(test_features_22 PRIVATE ${POCKET_UI}/include ${POCKET_UI}/vendor/qrcodegen)
+target_compile_definitions(test_features_22 PRIVATE POCKET_HOST=1)
+add_test(NAME test_features_22 COMMAND test_features_22)

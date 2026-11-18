@@ -55,6 +55,12 @@ function migrateSchema(database: Db): void {
   if (!linkCols.has("sd_present")) {
     database.run("ALTER TABLE device_links ADD COLUMN sd_present INTEGER NOT NULL DEFAULT 0");
   }
+  if (!linkCols.has("ring_requested_at")) {
+    database.run("ALTER TABLE device_links ADD COLUMN ring_requested_at TEXT");
+  }
+  if (!linkCols.has("home_order_json")) {
+    database.run("ALTER TABLE device_links ADD COLUMN home_order_json TEXT NOT NULL DEFAULT '[]'");
+  }
 }
 
 function allFrom(database: Db, sql: string): Record<string, unknown>[] {

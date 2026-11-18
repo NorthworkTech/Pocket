@@ -38,6 +38,12 @@ export type IconName =
   | 'code'
   | 'logout'
   | 'sparkle'
+  | 'chevron-up'
+  | 'chevron-down'
+  | 'bell'
+  | 'clock'
+  | 'sun'
+  | 'calendar'
 
 const paths: Record<IconName, ReactElement> = {
   home: <path d="M3.5 11.5 12 4l8.5 7.5M6 9.5V20h12V9.5" />,
@@ -173,6 +179,32 @@ const paths: Record<IconName, ReactElement> = {
   code: <path d="m8.5 7-5 5 5 5M15.5 7l5 5-5 5" />,
   logout: <path d="M14.5 4H19v16h-4.5M10 8l-4 4 4 4M6 12h10" />,
   sparkle: <path d="M12 3.5 13.8 10 20.5 12l-6.7 2L12 20.5 10.2 14 3.5 12l6.7-2Z" />,
+  'chevron-up': <path d="M5.5 14.5 12 8l6.5 6.5" />,
+  'chevron-down': <path d="M5.5 9.5 12 16l6.5-6.5" />,
+  bell: (
+    <>
+      <path d="M6 16.5V11a6 6 0 0 1 12 0v5.5l1.5 2h-15Z" />
+      <path d="M10 20.5a2 2 0 0 0 4 0" />
+    </>
+  ),
+  clock: (
+    <>
+      <circle cx="12" cy="12" r="9" />
+      <path d="M12 7v5l3.5 2" />
+    </>
+  ),
+  sun: (
+    <>
+      <circle cx="12" cy="12" r="4" />
+      <path d="M12 2.5v2M12 19.5v2M2.5 12h2M19.5 12h2M5.3 5.3l1.4 1.4M17.3 17.3l1.4 1.4M5.3 18.7l1.4-1.4M17.3 6.7l1.4-1.4" />
+    </>
+  ),
+  calendar: (
+    <>
+      <rect x="3.5" y="5" width="17" height="15.5" rx="2.5" />
+      <path d="M3.5 10h17M8 3v4M16 3v4" />
+    </>
+  ),
 }
 
 export function Icon({

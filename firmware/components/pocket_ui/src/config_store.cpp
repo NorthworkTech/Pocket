@@ -1,3 +1,4 @@
+#include <algorithm>
 #include "pocket/config.hpp"
 #include <cstdio>
 #include <cstring>
@@ -7,7 +8,7 @@ namespace pocket {
 namespace {
 
 constexpr uint32_t kMagic = 0x314B4350u;  // 'PCK1' LE
-constexpr uint16_t kVersion = 10;
+constexpr uint16_t kVersion = 11;
 constexpr size_t kMaxString = 128;
 constexpr size_t kMaxBlob = 8192;
 
@@ -182,6 +183,13 @@ bool pack_device_config(const DeviceConfig& cfg, std::vector<uint8_t>& out) {
   put_u32(out, cfg.cloud_last_ok_unix);
   // v10: Settings → Display → Screensaver
   put_u8(out, cfg.screensaver);
+  // v11: lock info, quiet hours, Home order
+  put_u8(out, cfg.lock_info ? 1 : 0);
+  put_u8(out, cfg.quiet_enabled ? 1 : 0);
+  put_u16(out, cfg.quiet_start_min);
+  put_u16(out, cfg.quiet_end_min);
+  put_u8(out, static_cast<uint8_t>(std::min<size_t>(cfg.home_order.size(), 16)));
+  for (size_t i = 0; i < cfg.home_order.size() && i < 16; ++i) put_u8(out, cfg.home_order[i]);
   return out.size() <= kMaxBlob;
 }
 
@@ -193,7 +201,7 @@ bool unpack_device_config(const uint8_t* data, size_t len, DeviceConfig& out) {
   uint16_t flags = 0;
   if (!get_u32(data, len, off, magic) || magic != kMagic) return false;
   if (!get_u16(data, len, off, ver) ||
-      (ver != 2 && ver != 3 && ver != 4 && ver != 5 && ver != 6 && ver != 7 && ver != 8 && ver != 9 && ver != 10)) {
+      (ver != 2 && ver != 3 && ver != 4 && ver != 5 && ver != 6 && ver != 7 && ver != 8 && ver != 9 && ver != 10 && ver != 11)) {
     return false;
   }
   if (!get_u16(data, len, off, flags)) return false;
@@ -279,6 +287,25 @@ bool unpack_device_config(const uint8_t* data, size_t len, DeviceConfig& out) {
 
   if (ver >= 10) {
     if (!get_u8(data, len, off, cfg.screensaver)) return false;
+  }
+
+  if (ver >= 11) {
+    uint8_t v = 0;
+    if (!get_u8(data, len, off, v)) return false;
+    cfg.lock_info = v != 0;
+    if (!get_u8(data, len, off, v)) return false;
+    cfg.quiet_enabled = v != 0;
+    if (!get_u16(data, len, off, cfg.quiet_start_min)) return false;
+    if (!get_u16(data, len, off, cfg.quiet_end_min)) return false;
+    uint8_t n = 0;
+    if (!get_u8(data, len, off, n) || n > 16) return false;
+    cfg.home_order.clear();
+    for (uint8_t i = 0; i < n; ++i) {
+      if (!get_u8(data, len, off, v)) return false;
+      cfg.home_order.push_back(v);
+    }
+  } else {
+    cfg.home_visible |= 1u << static_cast<uint8_t>(HomeApp::Today);  // new app: on by default
   }
 
   out = std::move(cfg);

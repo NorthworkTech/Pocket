@@ -12,6 +12,35 @@ namespace {
 
 constexpr int kTitleY = kContentTop;
 
+struct RootEntry {
+  const char* label;    // nullptr = section header
+  const char* section;  // section title when label == nullptr
+  ui::Icon icon;
+  ScreenId dest;
+};
+
+/** Settings home, grouped. Order here = focus order. */
+const std::vector<RootEntry>& settings_root_entries() {
+  using ui::Icon;
+  static const std::vector<RootEntry> k = {
+      {nullptr, "CONNECTIONS", Icon::Home, ScreenId::SettingsRoot},
+      {"Wi-Fi", nullptr, Icon::Wifi, ScreenId::SettingsWifi},
+      {"Pocket Cloud", nullptr, Icon::Cloud, ScreenId::SettingsCloud},
+      {nullptr, "PERSONALIZE", Icon::Home, ScreenId::SettingsRoot},
+      {"Display", nullptr, Icon::Display, ScreenId::SettingsDisplay},
+      {"Sound & quiet hours", nullptr, Icon::Sound, ScreenId::SettingsSound},
+      {"Home apps", nullptr, Icon::Home, ScreenId::SettingsHomeApps},
+      {"Units", nullptr, Icon::Weather, ScreenId::SettingsUnits},
+      {nullptr, "DEVICE", Icon::Home, ScreenId::SettingsRoot},
+      {"PIN & security", nullptr, Icon::Lock, ScreenId::SettingsSecurity},
+      {"Battery & storage", nullptr, Icon::Battery, ScreenId::SettingsStorage},
+      {"Software update", nullptr, Icon::Update, ScreenId::SettingsUpdate},
+      {"About", nullptr, Icon::Info, ScreenId::SettingsAbout},
+      {"Advanced", nullptr, Icon::Settings, ScreenId::SettingsAdvanced},
+  };
+  return k;
+}
+
 
 }  // namespace
 
@@ -82,23 +111,103 @@ void App::render_settings() {
 
   if (s == ScreenId::SettingsRoot) {
     ui::header(canvas_, "Settings");
-    const char* wifi_val = wifi_.connected() ? cfg_.wifi_ssid.c_str() : "Off";
+    const std::string wifi_val = wifi_.connected() ? cfg_.wifi_ssid : std::string("Off");
     const char* cloud_val = cfg_.cloud_status == "active"     ? "Active"
                             : cfg_.cloud_status == "trialing" ? "Trial"
                                                               : "";
-    struct Item { const char* label; Icon icon; const char* value; };
-    const Item items[9] = {
-        {"PIN & security", Icon::Lock, ""},     {"Wi-Fi", Icon::Wifi, wifi_val},
-        {"Display", Icon::Display, ""},         {"Sound & mic", Icon::Sound, ""},
-        {"Home apps", Icon::Home, ""},          {"Units", Icon::Weather, cfg_.weather_units ? "\xC2\xB0" "C" : "\xC2\xB0" "F"},
-        {"Pocket Cloud", Icon::Cloud, cloud_val}, {"Software update", Icon::Update, kOsVersion},
-        {"About", Icon::Info, ""},
-    };
-    focus_.count = 9;
-    for (int i = 0; i < 9; ++i) {
-      Row r{items[i].label, RowKind::Nav, items[i].value, false, items[i].icon, true};
-      ui::row(canvas_, row_y(kListTop, i), r, i == focus_.index);
+    char batt[16] = "";
+    {
+      const int b = clock_.battery_percent();
+      if (b >= 0) std::snprintf(batt, sizeof(batt), "%d%%", b);
     }
+    const auto& entries = settings_root_entries();
+    const std::string values[] = {wifi_val, cloud_val, "", "", "", cfg_.weather_units ? "\xC2\xB0" "C" : "\xC2\xB0" "F",
+                                  "", batt, kOsVersion, "", ""};
+    // Lay out sections + rows, then scroll so the focused row stays on screen.
+    std::vector<int> ys;
+    int y = kListTop, focus_y = kListTop, item = 0;
+    for (const auto& en : entries) {
+      if (!en.label) {  // section
+        ys.push_back(y);
+        y += 34;
+        continue;
+      }
+      ys.push_back(y);
+      if (item == focus_.index) focus_y = y;
+      ++item;
+      y += kRowPitch;
+    }
+    focus_.count = item;
+    const int bottom = kCanvasH - 12;
+    const int offset = std::max(0, focus_y + kRowPitch + 20 - bottom);
+    item = 0;
+    for (size_t k = 0; k < entries.size(); ++k) {
+      const int ey = ys[k] - offset;
+      const auto& en = entries[k];
+      if (!en.label) {
+        if (ey >= kListTop - 2 && ey + 30 <= bottom) ui::section(canvas_, ey, en.section);
+        continue;
+      }
+      if (ey >= kListTop - 2 && ey + kFocusRowH <= bottom) {
+        Row r{en.label, RowKind::Nav, values[item], false, en.icon, true};
+        ui::row(canvas_, ey, r, item == focus_.index);
+      }
+      ++item;
+    }
+    if (offset > 0) ui::scrollbar(canvas_, kListTop, bottom - kListTop, offset, bottom - kListTop, y - kListTop);
+    return;
+  }
+
+  if (s == ScreenId::SettingsStorage) {
+    ui::header(canvas_, "Battery & storage", true);
+    int y = kListTop + 4;
+    const int b = clock_.battery_percent();
+    char buf[64];
+    if (b >= 0) std::snprintf(buf, sizeof(buf), "%d%%", b);
+    y = ui::kv(canvas_, y, "Battery", b >= 0 ? std::string(buf) : std::string("Unknown"));
+    const bool sd = sd_present();
+    auto gb = [](uint64_t bytes) {
+      char t[32];
+      if (bytes >= (1ull << 30)) std::snprintf(t, sizeof(t), "%.1f GB", bytes / double(1ull << 30));
+      else std::snprintf(t, sizeof(t), "%u MB", static_cast<unsigned>(bytes >> 20));
+      return std::string(t);
+    };
+    std::string card = "Not inserted";
+    if (sd && storage_) {
+      const std::string root = storage_->music_on_sd() ? storage_->music_root() : storage_->book_root();
+      card = "In use \xC2\xB7 " + gb(storage_->free_bytes(root)) + " free";
+    }
+    y = ui::kv(canvas_, y, "microSD card", card);
+    if (storage_ && !storage_->data_root().empty()) {
+      y = ui::kv(canvas_, y, sd ? "Notes & data" : "Internal storage",
+                 gb(storage_->free_bytes(storage_->data_root())) + " free");
+    }
+    ui::section(canvas_, y + 6, "On Pocket");
+    y += 40;
+    y = ui::kv(canvas_, y, "Books", std::to_string(books_.size()));
+    y = ui::kv(canvas_, y, "Music", std::to_string(music_tracks_.size()) + (music_tracks_.size() == 1 ? " track" : " tracks"));
+    y = ui::kv(canvas_, y, "Notes", std::to_string(data_.notes.size()));
+    y = ui::kv(canvas_, y, "Lists", std::to_string(data_.lists.size()));
+    canvas_.draw_text_wrapped(kSideMargin, y + 12, kContentW, kWrapGap,
+                              sd ? "With a microSD card, Companion lets you upload music up to 80 MB per track."
+                                 : "Add a microSD card for more books and music \xE2\x80\x94 Companion raises its upload limits automatically.",
+                              Canvas::TextRole::Caption, Gray::G0);
+    focus_.count = 1;
+    ui::row(canvas_, kBottomCtaY, Row{"Back", RowKind::Back}, true);
+    return;
+  }
+
+  if (s == ScreenId::SettingsAdvanced) {
+    ui::header(canvas_, "Advanced", true);
+    const Row rows[3] = {{"Refresh screen now", RowKind::Plain, {}, false, Icon::Display, true},
+                         {"Deep refresh more often", RowKind::Toggle, {}, cfg_.ghosting_frequent},
+                         {"Back", RowKind::Back}};
+    focus_.count = 3;
+    for (int i = 0; i < 3; ++i) ui::row(canvas_, row_y(kListTop, i), rows[i], i == focus_.index);
+    canvas_.draw_text_wrapped(kSideMargin, row_y(kListTop, 3) + 4, kContentW, kWrapGap,
+                              "Pocket already cleans the screen on every screen change and when you pause. Turn this "
+                              "on only if you still notice faint ghosting.",
+                              Canvas::TextRole::Caption, Gray::G0);
     return;
   }
 
@@ -164,20 +273,20 @@ void App::render_settings() {
                          : cfg_.brightness_percent < 67 ? "Normal"
                                                         : "Lighter";
     const std::string lockmsg = cfg_.lock_message.empty() ? "Off" : cfg_.lock_message;
-    const Row rows[8] = {
+    const Row rows[7] = {
         {"Auto-lock", RowKind::Value, idle},
         {"Battery percentage", RowKind::Toggle, {}, cfg_.show_batt_pct},
         {"Lock message", RowKind::Value, lockmsg},
+        {"Lock screen info", RowKind::Toggle, {}, cfg_.lock_info},
         {"Screensaver", RowKind::Value, saver},
         {"Contrast", RowKind::Value, bright},
-        {"Refresh screen", RowKind::Plain},
-        {"Deep refresh", RowKind::Toggle, {}, cfg_.ghosting_frequent},
         {"Back", RowKind::Back},
     };
-    focus_.count = 8;
-    for (int i = 0; i < 8; ++i) ui::row(canvas_, row_y(kListTop, i), rows[i], i == focus_.index);
-    canvas_.draw_text_wrapped(kSideMargin, row_y(kListTop, 8) + 4, kContentW, kWrapGap,
-                              "Deep refresh clears ghosting more often. Set a custom lock message in Companion.",
+    focus_.count = 7;
+    for (int i = 0; i < 7; ++i) ui::row(canvas_, row_y(kListTop, i), rows[i], i == focus_.index);
+    canvas_.draw_text_wrapped(kSideMargin, row_y(kListTop, 7) + 4, kContentW, kWrapGap,
+                              "Lock screen info shows the date, your next alarm and the weather under the "
+                              "screensaver. Set a custom lock message in Companion.",
                               Canvas::TextRole::Caption, Gray::G0);
     return;
   }
@@ -186,21 +295,32 @@ void App::render_settings() {
     ui::header(canvas_, "Sound & mic", true);
     char vol[16];
     std::snprintf(vol, sizeof(vol), "%d%%", cfg_.volume_percent);
-    const Row rows[3] = {{"Volume", RowKind::Value, vol, false, Icon::Sound, true},
+    auto hm = [&](int mins) {
+      char b[16];
+      const int h = mins / 60;
+      if (cfg_.time_format == 24) std::snprintf(b, sizeof(b), "%02d:00", h);
+      else std::snprintf(b, sizeof(b), "%d %s", h % 12 == 0 ? 12 : h % 12, h < 12 ? "AM" : "PM");
+      return std::string(b);
+    };
+    const std::string qs = hm(cfg_.quiet_start_min), qe = hm(cfg_.quiet_end_min);
+    const Row rows[6] = {{"Volume", RowKind::Value, vol, false, Icon::Sound, true},
+                         {"Quiet hours", RowKind::Toggle, {}, cfg_.quiet_enabled},
+                         {"Quiet from", RowKind::Value, qs},
+                         {"Quiet until", RowKind::Value, qe},
                          {"Mic test", RowKind::Plain, {}, false, Icon::Mic, true},
                          {"Back", RowKind::Back}};
-    focus_.count = 3;
-    for (int i = 0; i < 3; ++i) ui::row(canvas_, row_y(kListTop, i), rows[i], i == focus_.index);
+    focus_.count = 6;
+    for (int i = 0; i < 6; ++i) ui::row(canvas_, row_y(kListTop, i), rows[i], i == focus_.index);
     const char* mic = ptt_active_                ? "Listening\xE2\x80\xA6 release to finish."
-                      : mic_last_level_ < 0      ? "Hold the side button to test the microphone."
+                      : mic_last_level_ < 0      ? "Hold the back button to test the microphone."
                       : mic_last_ok_             ? "Microphone OK \xE2\x80\x94 sound picked up."
                                                  : "No sound detected \xE2\x80\x94 check the microphone.";
-    ui::section(canvas_, row_y(kListTop, 3) + 8, "Microphone");
-    canvas_.draw_text_wrapped(kSideMargin, row_y(kListTop, 3) + 42, kContentW, kWrapGap, mic,
+    ui::section(canvas_, row_y(kListTop, 6) + 8, "Microphone");
+    canvas_.draw_text_wrapped(kSideMargin, row_y(kListTop, 6) + 42, kContentW, kWrapGap, mic,
                               Canvas::TextRole::Secondary, Gray::G0);
     if (mic_last_level_ >= 0 && !ptt_active_) {
       // Level meter from the last test.
-      const int my = row_y(kListTop, 3) + 110;
+      const int my = row_y(kListTop, 6) + 110;
       canvas_.stroke_round_rect(kSideMargin, my, kContentW, 14, 7, Gray::G0, 2, Gray::G3);
       const int fill = (kContentW - 8) * std::clamp(mic_last_level_, 0, 100) / 100;
       if (fill > 0) canvas_.fill_round_rect(kSideMargin + 4, my + 4, std::max(6, fill), 6, 3, Gray::G0);
@@ -225,18 +345,16 @@ void App::render_settings() {
     ui::header(canvas_, "Home apps", true);
     canvas_.draw_text(kSideMargin, kListTop - 6, "Choose what appears on Home.",
                       Canvas::TextRole::Caption, Gray::G0);
-    static const int kOrder[] = {0, 1, 2, 3, 4, 5, 8, 6, 7};
-    static const char* names[] = {"Notes", "Ledger", "Clock", "Pass", "Weather", "Music", "Reading", "Settings",
+    static const int kOrder[] = {9, 0, 2, 4, 5, 8, 3, 6, 7};
+    static const char* names[] = {"Today", "Notes", "Clock", "Weather", "Music", "Reading", "Pass", "Settings",
                                   "Update"};
-    static const Icon icons[] = {Icon::Notes, Icon::Ledger, Icon::Clock,    Icon::Pass,  Icon::Weather,
-                                 Icon::Music, Icon::Reading, Icon::Settings, Icon::Update};
+    static const Icon icons[] = {Icon::Calendar, Icon::Notes,   Icon::Clock,    Icon::Weather, Icon::Music,
+                                 Icon::Reading,  Icon::Pass,    Icon::Settings, Icon::Update};
     focus_.count = 9;
     for (int i = 0; i < 9; ++i) {
       const HomeApp a = static_cast<HomeApp>(kOrder[i]);
-      const bool placeholder = a == HomeApp::Ledger;
-      Row r{names[i], (i < 7 && !placeholder) ? RowKind::Toggle : RowKind::Value,
-            placeholder ? "Coming soon" : (i < 7 ? (a == HomeApp::Pass ? "" : "") : "Always on"),
-            home_app_visible(cfg_, a), icons[i], true};
+      Row r{names[i], i < 7 ? RowKind::Toggle : RowKind::Value, i < 7 ? "" : "Always on", home_app_visible(cfg_, a),
+            icons[i], true};
       ui::row(canvas_, row_y(kListTop + 28, i), r, i == focus_.index);
     }
     return;
@@ -275,6 +393,24 @@ void App::render_settings() {
       return;
     }
 
+    if (wifi_ui_page_ == 3 && wifi_detail_index_ >= 0 &&
+        wifi_detail_index_ < static_cast<int>(cfg_.wifi_known.size())) {
+      const auto& net = cfg_.wifi_known[static_cast<size_t>(wifi_detail_index_)];
+      const bool cur = wifi_.connected() && net.ssid == cfg_.wifi_ssid;
+      ui::icon(canvas_, Icon::Wifi, kSideMargin + 14, kListTop + 22, 28, Gray::G0);
+      canvas_.draw_text_fit(kSideMargin + 42, kListTop + 5, kContentW - 42, net.ssid, Canvas::TextRole::BodyStrong,
+                            Gray::G0);
+      canvas_.draw_text(kSideMargin + 42, kListTop + 36, cur ? "Connected" : "Saved", Canvas::TextRole::Caption,
+                        Gray::G0);
+      focus_.count = 3;
+      const Row acts[3] = {{cur ? "Reconnect" : "Connect", RowKind::Action, {}, false, Icon::Wifi, true},
+                           {"Forget this network", RowKind::Plain, {}, false, Icon::Trash, true},
+                           {"Back", RowKind::Back}};
+      for (int i = 0; i < 3; ++i) ui::row(canvas_, row_y(kListTop + 80, i), acts[i], i == focus_.index);
+      if (now_ms_ < error_until_ms_ && !error_msg_.empty()) ui::toast(canvas_, error_msg_);
+      return;
+    }
+
     if (wifi_ui_page_ == 2) {
       ui::section(canvas_, kListTop, "Remove a saved network");
       const int n_known = static_cast<int>(cfg_.wifi_known.size());
@@ -302,7 +438,7 @@ void App::render_settings() {
       }
     }
     const int n_known = static_cast<int>(cfg_.wifi_known.size());
-    const int n_actions = n_known > 0 ? 3 : 2;
+    const int n_actions = 2;  // Add network · Back
     focus_.count = std::max(1, n_known + n_actions);
     int y = kListTop + 80;
     if (n_known == 0) {
@@ -316,10 +452,9 @@ void App::render_settings() {
     for (int i = 0; i < n_known; ++i) {
       const auto& net = cfg_.wifi_known[static_cast<size_t>(i)];
       const bool cur = online && net.ssid == cfg_.wifi_ssid;
-      rows.push_back(Row{net.ssid, cur ? RowKind::Value : RowKind::Plain, cur ? "Connected" : "", false, Icon::Wifi, true});
+      rows.push_back(Row{net.ssid, cur ? RowKind::Value : RowKind::Nav, cur ? "Connected" : "", false, Icon::Wifi, true});
     }
     rows.push_back(Row{"Add network", RowKind::Nav, {}, false, Icon::Plus, true});
-    if (n_known > 0) rows.push_back(Row{"Remove network", RowKind::Nav, {}, false, Icon::Trash, true});
     rows.push_back(Row{"Back", RowKind::Back});
     const int total = static_cast<int>(rows.size());
     const int visible = std::max(1, (kCanvasH - 16 - y) / kRowPitch);
@@ -367,16 +502,48 @@ void App::handle_settings(InputEvent e) {
   }
 
   if (s == ScreenId::SettingsRoot) {
-    focus_.count = 9;
+    std::vector<ScreenId> dest;
+    for (const auto& en : settings_root_entries())
+      if (en.label) dest.push_back(en.dest);
+    focus_.count = static_cast<int>(dest.size());
     if (e == InputEvent::Up || e == InputEvent::Down) {
-      settings_move_focus(e == InputEvent::Down ? 1 : -1);
-    } else if (e == InputEvent::Select) {
-      ScreenId dest[] = {ScreenId::SettingsSecurity, ScreenId::SettingsWifi,     ScreenId::SettingsDisplay,
-                         ScreenId::SettingsSound,    ScreenId::SettingsHomeApps, ScreenId::SettingsUnits,
-                         ScreenId::SettingsCloud,    ScreenId::SettingsUpdate,   ScreenId::SettingsAbout};
+      const int prev = focus_.index;
+      focus_.move(e == InputEvent::Down ? 1 : -1);
+      if (focus_.index != prev) mark_content_dirty();  // grouped list may scroll
+    } else if (e == InputEvent::Select && focus_.index < focus_.count) {
       if (dest[focus_.index] == ScreenId::SettingsWifi) wifi_ui_page_ = 0;
       nav_.push(dest[focus_.index]);
       after_nav();
+    }
+    return;
+  }
+
+  if (s == ScreenId::SettingsStorage) {
+    if (e == InputEvent::Select) {
+      nav_.return_to(ScreenId::SettingsRoot);
+      after_nav();
+    }
+    return;
+  }
+
+  if (s == ScreenId::SettingsAdvanced) {
+    focus_.count = 3;
+    if (e == InputEvent::Up || e == InputEvent::Down) {
+      settings_move_focus(e == InputEvent::Down ? 1 : -1);
+    } else if (e == InputEvent::Select) {
+      if (focus_.index == 0) {
+        want_deep_ = true;
+        redraw(true);
+      } else if (focus_.index == 1) {
+        cfg_.ghosting_frequent = !cfg_.ghosting_frequent;
+        refresh_.set_ghosting_budget(cfg_.ghosting_frequent ? RefreshPolicy::kGhostingNFrequent
+                                                             : RefreshPolicy::kGhostingN);
+        store_.save(cfg_);
+        redraw(true);
+      } else {
+        nav_.return_to(ScreenId::SettingsRoot);
+        after_nav();
+      }
     }
     return;
   }
@@ -394,13 +561,13 @@ void App::handle_settings(InputEvent e) {
   }
 
   if (s == ScreenId::SettingsHomeApps) {
-    static const int kOrder[] = {0, 1, 2, 3, 4, 5, 8, 6, 7};
+    static const int kOrder[] = {9, 0, 2, 4, 5, 8, 3, 6, 7};
     focus_.count = 9;
     if (e == InputEvent::Up || e == InputEvent::Down) {
       settings_move_focus(e == InputEvent::Down ? 1 : -1);
     } else if (e == InputEvent::Select) {
       // Settings + Update (last two rows) always on
-      if (focus_.index < 7 && static_cast<HomeApp>(kOrder[focus_.index]) != HomeApp::Ledger) {
+      if (focus_.index < 7) {
         cfg_.home_visible ^= static_cast<uint16_t>(1u << kOrder[focus_.index]);
         store_.save(cfg_);
         mark_content_dirty();
@@ -489,38 +656,71 @@ void App::handle_settings(InputEvent e) {
       return;
     }
 
-    const int n_actions = n_known > 0 ? 3 : 2;
+    if (wifi_ui_page_ == 3) {
+      focus_.count = 3;
+      if (wifi_detail_index_ < 0 || wifi_detail_index_ >= n_known) {
+        wifi_ui_page_ = 0;
+        focus_.index = 0;
+        mark_content_dirty();
+        return;
+      }
+      if (e == InputEvent::Up || e == InputEvent::Down) {
+        settings_move_focus(e == InputEvent::Down ? 1 : -1);
+        return;
+      }
+      if (e == InputEvent::Back || (e == InputEvent::Select && focus_.index == 2)) {
+        wifi_ui_page_ = 0;
+        focus_.index = wifi_detail_index_;
+        mark_content_dirty();
+        return;
+      }
+      if (e != InputEvent::Select) return;
+      if (focus_.index == 1) {
+        wifi_known_forget(cfg_, cfg_.wifi_known[static_cast<size_t>(wifi_detail_index_)].ssid);
+        store_.save(cfg_);
+        play_sound(SoundId::Click);
+        wifi_ui_page_ = 0;
+        focus_.index = 0;
+        mark_content_dirty();
+        return;
+      }
+      const WifiKnownNetwork net = cfg_.wifi_known[static_cast<size_t>(wifi_detail_index_)];  // copy: upsert reorders
+      play_sound(SoundId::Click);
+      wifi_sta_connecting_ = true;
+      const bool ok = connect_and_remember(net.ssid, net.password);
+      wifi_sta_connecting_ = false;
+      play_sound(ok ? SoundId::Success : SoundId::Attention);
+      if (ok) {
+        error_msg_.clear();
+        wifi_ui_page_ = 0;
+        focus_.index = 0;
+      } else {
+        const std::string why = wifi_.last_error();
+        error_msg_ = why.empty() ? std::string("Couldn't join that network.") : why;
+        error_until_ms_ = now_ms_ + 4000;
+      }
+      mark_content_dirty();
+      return;
+    }
+
+    const int n_actions = 2;  // Add network · Back
     focus_.count = std::max(1, n_known + n_actions);
     if (e == InputEvent::Up || e == InputEvent::Down) {
       settings_move_focus(e == InputEvent::Down ? 1 : -1);
     } else if (e == InputEvent::Select) {
       if (focus_.index < n_known) {
-        const WifiKnownNetwork net = cfg_.wifi_known[static_cast<size_t>(focus_.index)];  // copy: upsert reorders
+        // A saved network → its page (Connect / Forget).
+        wifi_detail_index_ = focus_.index;
+        wifi_ui_page_ = 3;
+        focus_.index = 0;
+        mark_content_dirty();
+        return;
+      }
+      if (focus_.index == n_known) {
+        // Add network → straight to phone setup (the phone page offers home Wi-Fi or hotspot).
         play_sound(SoundId::Click);
-        error_msg_ = "Connecting…";
-        error_until_ms_ = now_ms_ + 2000;
-        mark_content_dirty();
-        wifi_sta_connecting_ = true;
-        const bool ok = connect_and_remember(net.ssid, net.password);
-        wifi_sta_connecting_ = false;
-        if (ok) {
-          play_sound(SoundId::Success);
-          error_msg_.clear();
-        } else {
-          play_sound(SoundId::Attention);
-          error_msg_ = "Couldn't join that network.";
-          error_until_ms_ = now_ms_ + 3000;
-        }
-        mark_content_dirty();
-      } else if (focus_.index == n_known) {
-        // Add network…
-        wifi_ui_page_ = 1;
-        focus_.index = 0;
-        mark_content_dirty();
-      } else if (n_known > 0 && focus_.index == n_known + 1) {
-        wifi_ui_page_ = 2;
-        focus_.index = 0;
-        mark_content_dirty();
+        wifi_ui_page_ = 0;
+        begin_add_wifi_network();
       } else {
         wifi_ui_page_ = 0;
         nav_.return_to(ScreenId::SettingsRoot);
@@ -531,7 +731,7 @@ void App::handle_settings(InputEvent e) {
   }
 
   if (s == ScreenId::SettingsDisplay) {
-    focus_.count = 8;
+    focus_.count = 7;
     if (e == InputEvent::Up || e == InputEvent::Down) {
       settings_move_focus(e == InputEvent::Down ? 1 : -1);
     } else if (e == InputEvent::Select) {
@@ -553,13 +753,17 @@ void App::handle_settings(InputEvent e) {
         store_.save(cfg_);
         mark_content_dirty();
       } else if (focus_.index == 3) {
+        cfg_.lock_info = !cfg_.lock_info;
+        store_.save(cfg_);
+        mark_content_dirty();
+      } else if (focus_.index == 4) {
         // Rotate → each piece → Plain → Rotate.
         if (cfg_.screensaver == kScreensaverPlain) cfg_.screensaver = 0;
         else if (cfg_.screensaver >= kScreensaverCount) cfg_.screensaver = kScreensaverPlain;
         else ++cfg_.screensaver;
         store_.save(cfg_);
         mark_content_dirty();
-      } else if (focus_.index == 4) {
+      } else if (focus_.index == 5) {
         const uint8_t opts[] = {20, 50, 80};
         int cur = 1;
         for (int i = 0; i < 3; ++i)
@@ -571,15 +775,7 @@ void App::handle_settings(InputEvent e) {
           cloud_.push_device_settings(cfg_.device_id, cfg_.volume_percent, cfg_.brightness_percent);
         }
         redraw(true);  // full refresh so the new contrast is visible immediately
-      } else if (focus_.index == 5) {
-        redraw(true);
       } else if (focus_.index == 6) {
-        cfg_.ghosting_frequent = !cfg_.ghosting_frequent;
-        refresh_.set_ghosting_budget(cfg_.ghosting_frequent ? RefreshPolicy::kGhostingNFrequent
-                                                             : RefreshPolicy::kGhostingN);
-        store_.save(cfg_);
-        redraw(true);  // full refresh now also clears any ghosting already on screen
-      } else if (focus_.index == 7) {
         nav_.return_to(ScreenId::SettingsRoot);
         after_nav();
       }
@@ -588,7 +784,7 @@ void App::handle_settings(InputEvent e) {
   }
 
   if (s == ScreenId::SettingsSound) {
-    focus_.count = 3;
+    focus_.count = 6;
     if (e == InputEvent::PttStart) {
       ptt_active_ = true;
       mic_capturing_ = true;
@@ -618,7 +814,27 @@ void App::handle_settings(InputEvent e) {
         }
         play_sound(SoundId::Click);
         mark_content_dirty();
+      } else if (focus_.index == 1) {
+        cfg_.quiet_enabled = !cfg_.quiet_enabled;
+        store_.save(cfg_);
+        mark_content_dirty();
       } else if (focus_.index == 2) {
+        static const uint16_t kFrom[] = {20 * 60, 21 * 60, 22 * 60, 23 * 60};
+        int cur = 0;
+        for (int i = 0; i < 4; ++i)
+          if (kFrom[i] == cfg_.quiet_start_min) cur = i;
+        cfg_.quiet_start_min = kFrom[(cur + 1) % 4];
+        store_.save(cfg_);
+        mark_content_dirty();
+      } else if (focus_.index == 3) {
+        static const uint16_t kUntil[] = {5 * 60, 6 * 60, 7 * 60, 8 * 60, 9 * 60};
+        int cur = 0;
+        for (int i = 0; i < 5; ++i)
+          if (kUntil[i] == cfg_.quiet_end_min) cur = i;
+        cfg_.quiet_end_min = kUntil[(cur + 1) % 5];
+        store_.save(cfg_);
+        mark_content_dirty();
+      } else if (focus_.index == 5) {
         nav_.return_to(ScreenId::SettingsRoot);
         after_nav();
       }

@@ -59,7 +59,9 @@ CREATE TABLE IF NOT EXISTS device_links (
   linked_at TEXT NOT NULL,
   last_seen_at TEXT,
   device_token_hash TEXT NOT NULL,
-  sd_present INTEGER NOT NULL DEFAULT 0
+  sd_present INTEGER NOT NULL DEFAULT 0,
+  ring_requested_at TEXT,
+  home_order_json TEXT NOT NULL DEFAULT '[]'
 );
 
 CREATE TABLE IF NOT EXISTS subscription_mirrors (
@@ -140,6 +142,30 @@ CREATE TABLE IF NOT EXISTS sync_cursors (
   cursor TEXT NOT NULL,
   updated_at TEXT NOT NULL,
   UNIQUE(user_id, actor_key)
+);
+
+CREATE TABLE IF NOT EXISTS books (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  title TEXT NOT NULL DEFAULT '',
+  author TEXT NOT NULL DEFAULT '',
+  format TEXT NOT NULL DEFAULT 'txt',
+  filename TEXT NOT NULL DEFAULT '',
+  size_bytes INTEGER NOT NULL DEFAULT 0,
+  text_b64 TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  deleted_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS reading_progress (
+  user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  book_id TEXT NOT NULL,
+  device_id TEXT NOT NULL DEFAULT '',
+  page INTEGER NOT NULL DEFAULT 0,
+  pages INTEGER NOT NULL DEFAULT 0,
+  percent INTEGER NOT NULL DEFAULT 0,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (user_id, book_id)
 );
 
 CREATE TABLE IF NOT EXISTS stripe_events (

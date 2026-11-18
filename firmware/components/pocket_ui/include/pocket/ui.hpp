@@ -48,6 +48,8 @@ enum class Icon : uint8_t {
   Sound,
   Display,
   Home,
+  Calendar,
+  Battery,
 };
 
 /** Draw `icon` centered on (cx, cy) in a `size`×`size` box. */

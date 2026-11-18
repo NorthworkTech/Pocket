@@ -63,6 +63,32 @@ export interface Device {
   volume_percent?: number
   /** e-ink "brightness" — how light/dark midtones render, 0–100. */
   brightness_percent?: number
+  /** Home screen app order; empty/absent = Pocket's default order. */
+  home_order?: HomeAppKey[]
+}
+
+/** Home screen app keys Pocket knows (firmware contract). */
+export type HomeAppKey =
+  | 'today'
+  | 'notes'
+  | 'clock'
+  | 'weather'
+  | 'music'
+  | 'reading'
+  | 'pass'
+  | 'settings'
+  | 'update'
+
+export interface ReadingProgress {
+  percent: number
+  page: number
+  pages: number
+  updated_at: string
+}
+
+export interface RingResult {
+  ok: true
+  queued_at: string
 }
 
 export type PairSessionStatus = 'pending' | 'claimed' | 'expired'
@@ -97,6 +123,8 @@ export interface Book {
   size?: number
   size_bytes?: number
   created_at?: string
+  /** Last position Pocket reported; null until the book is opened on Pocket. */
+  progress?: ReadingProgress | null
 }
 
 export type ConnectorProvider = 'drive' | 'dropbox' | 'onedrive'

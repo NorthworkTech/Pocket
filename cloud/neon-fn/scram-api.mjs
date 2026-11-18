@@ -501,6 +501,59 @@ function serializeBookMeta(row) {
   };
 }
 
+// ---- Reading progress / Find my Pocket / Home screen order ----
+// Mirrors cloud/src/lib/device-features.ts — keep both in step.
+const HOME_KEYS = ["today", "notes", "clock", "weather", "music", "reading", "pass", "settings", "update"];
+const HOME_ORDER_MAX = 16;
+const RING_TTL_MS = 30 * 60 * 1000; // a queued chime is dropped if Pocket doesn't check in by then
+
+function parseReadingProgress(body) {
+  const bad = { ok: false, message: "That reading update couldn't be read." };
+  if (!body || typeof body !== "object" || Array.isArray(body)) return bad;
+  const bookId = typeof body.book_id === "string" ? body.book_id.trim() : "";
+  if (!bookId || bookId.length > 128) return bad;
+  const { page, pages, percent } = body;
+  if (!Number.isInteger(page) || !Number.isInteger(pages) || !Number.isInteger(percent)) return bad;
+  if (page < 0 || pages < 0 || page > 1000000 || pages > 1000000) return bad;
+  if (percent < 0 || percent > 100) return bad;
+  return { ok: true, value: { book_id: bookId, page, pages, percent } };
+}
+
+function parseHomeOrder(raw) {
+  if (!Array.isArray(raw)) return { ok: false, message: "Home screen order must be a list." };
+  if (raw.length > HOME_ORDER_MAX) return { ok: false, message: "Home screen order has too many apps." };
+  const seen = new Set();
+  for (const k of raw) {
+    if (typeof k !== "string" || !HOME_KEYS.includes(k)) {
+      return { ok: false, message: "Home screen order has an app Pocket doesn't know." };
+    }
+    if (seen.has(k)) return { ok: false, message: "Home screen order lists an app twice." };
+    seen.add(k);
+  }
+  return { ok: true, value: raw };
+}
+
+function readHomeOrder(json) {
+  if (typeof json !== "string" || !json) return [];
+  try {
+    const parsed = parseHomeOrder(JSON.parse(json));
+    return parsed.ok ? parsed.value : [];
+  } catch {
+    return [];
+  }
+}
+
+function serializeProgress(p) {
+  if (!p) return null;
+  const t = Date.parse(p.updated_at);
+  return {
+    percent: Number(p.percent || 0),
+    page: Number(p.page || 0),
+    pages: Number(p.pages || 0),
+    updated_at: Number.isFinite(t) ? new Date(t).toISOString() : p.updated_at,
+  };
+}
+
 function serializeMusicMeta(row) {
   return {
     id: row.id,
@@ -639,6 +692,18 @@ async function ensureAdminSchema() {
   await query(`ALTER TABLE device_links ADD COLUMN IF NOT EXISTS lock_message TEXT NOT NULL DEFAULT ''`);
   await query(`ALTER TABLE device_links ADD COLUMN IF NOT EXISTS volume_percent INTEGER NOT NULL DEFAULT 80`);
   await query(`ALTER TABLE device_links ADD COLUMN IF NOT EXISTS brightness_percent INTEGER NOT NULL DEFAULT 50`);
+  await query(`ALTER TABLE device_links ADD COLUMN IF NOT EXISTS ring_requested_at TIMESTAMPTZ`);
+  await query(`ALTER TABLE device_links ADD COLUMN IF NOT EXISTS home_order_json TEXT NOT NULL DEFAULT '[]'`);
+  await query(`CREATE TABLE IF NOT EXISTS reading_progress (
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    book_id TEXT NOT NULL,
+    device_id TEXT NOT NULL DEFAULT '',
+    page INTEGER NOT NULL DEFAULT 0,
+    pages INTEGER NOT NULL DEFAULT 0,
+    percent INTEGER NOT NULL DEFAULT 0,
+    updated_at TIMESTAMPTZ NOT NULL,
+    PRIMARY KEY (user_id, book_id)
+  )`);
   await query(`CREATE TABLE IF NOT EXISTS badges (
     id TEXT PRIMARY KEY,
     key TEXT NOT NULL UNIQUE,
@@ -1235,7 +1300,7 @@ export default {
     // Health does not depend on DB schema readiness so it stays useful for diagnosing DB-layer issues.
     if (path === "/health" || path === "/" || path === "/v1/health") {
       const sha256 = await getSelfSourceSha256();
-      return json(req, { ok: true, build: "scram-api-v17-device-sync", sourceSha256: sha256 });
+      return json(req, { ok: true, build: "scram-api-v18-today", sourceSha256: sha256 });
     }
     try {
       await readySchema();
@@ -1394,7 +1459,8 @@ export default {
       if (req.method === "GET" && path === "/v1/devices") {
         const user = await userFromSession(req);
         if (!user) return json(req, { message: "Sign in to continue." }, 401);
-        const devices = await query(`SELECT id, device_id, device_name, linked_at, last_seen_at FROM device_links WHERE user_id='${esc(user.id)}' ORDER BY linked_at DESC`);
+        const rows = await query(`SELECT id, device_id, device_name, linked_at, last_seen_at, home_order_json FROM device_links WHERE user_id='${esc(user.id)}' ORDER BY linked_at DESC`);
+        const devices = rows.map(({ home_order_json, ...d }) => ({ ...d, home_order: readHomeOrder(home_order_json) }));
         return json(req, { devices });
       }
 
@@ -1404,7 +1470,7 @@ export default {
         if (!user) return json(req, { message: "Sign in to continue." }, 401);
         const id = decodeURIComponent(deviceIdMatch[1]);
         const rows = await query(
-          `SELECT id, device_id, device_name, linked_at, last_seen_at, parental_json, lock_message, volume_percent, brightness_percent FROM device_links WHERE (id='${esc(id)}' OR device_id='${esc(id)}') AND user_id='${esc(user.id)}' LIMIT 1`,
+          `SELECT id, device_id, device_name, linked_at, last_seen_at, parental_json, lock_message, volume_percent, brightness_percent, home_order_json FROM device_links WHERE (id='${esc(id)}' OR device_id='${esc(id)}') AND user_id='${esc(user.id)}' LIMIT 1`,
         );
         const row = rows[0];
         if (!row) return json(req, { message: "That device wasn't found." }, 404);
@@ -1421,6 +1487,7 @@ export default {
             lock_message: row.lock_message || "",
             volume_percent: Number(row.volume_percent ?? 80),
             brightness_percent: Number(row.brightness_percent ?? 50),
+            home_order: readHomeOrder(row.home_order_json),
           });
         }
         const body = await req.json().catch(() => ({}));
@@ -1428,7 +1495,8 @@ export default {
         const hasLockMessage = typeof body.lock_message === "string";
         const hasVolume = Number.isFinite(body.volume_percent);
         const hasBrightness = Number.isFinite(body.brightness_percent);
-        if (!hasName && !hasLockMessage && !hasVolume && !hasBrightness) {
+        const hasHomeOrder = body.home_order !== undefined;
+        if (!hasName && !hasLockMessage && !hasVolume && !hasBrightness && !hasHomeOrder) {
           return json(req, { message: "Nothing to update." }, 400);
         }
         const sets = [];
@@ -1457,6 +1525,13 @@ export default {
           brightnessPercent = Math.max(0, Math.min(100, Math.round(body.brightness_percent)));
           sets.push(`brightness_percent=${brightnessPercent}`);
         }
+        let homeOrder = readHomeOrder(row.home_order_json);
+        if (hasHomeOrder) {
+          const parsed = parseHomeOrder(body.home_order);
+          if (!parsed.ok) return json(req, { message: parsed.message }, 400);
+          homeOrder = parsed.value;
+          sets.push(`home_order_json=${sqlStr(JSON.stringify(homeOrder))}`);
+        }
         if (sets.length) {
           await query(`UPDATE device_links SET ${sets.join(", ")} WHERE id='${esc(row.id)}'`);
         }
@@ -1469,7 +1544,23 @@ export default {
           lock_message: lockMessage,
           volume_percent: volumePercent,
           brightness_percent: brightnessPercent,
+          home_order: homeOrder,
         });
+      }
+
+      // Find my Pocket: queue a chime, delivered once on the device's next attest (30 min TTL).
+      const deviceRingMatch = path.match(/^\/v1\/devices\/([^/]+)\/ring$/);
+      if (req.method === "POST" && deviceRingMatch) {
+        const user = await userFromSession(req);
+        if (!user) return json(req, { message: "Sign in to continue." }, 401);
+        const id = decodeURIComponent(deviceRingMatch[1]);
+        const rows = await query(
+          `SELECT id FROM device_links WHERE (id='${esc(id)}' OR device_id='${esc(id)}') AND user_id='${esc(user.id)}' LIMIT 1`,
+        );
+        if (!rows[0]) return json(req, { message: "That device wasn't found." }, 404);
+        const queuedAt = new Date().toISOString();
+        await query(`UPDATE device_links SET ring_requested_at='${queuedAt}' WHERE id='${esc(rows[0].id)}'`);
+        return json(req, { ok: true, queued_at: queuedAt });
       }
 
       const deviceLinkMatch = path.match(/^\/v1\/devices\/([^/]+)\/link$/);
@@ -1558,7 +1649,7 @@ export default {
         if (!userId) return json(req, { message: "Sign in to continue." }, 401);
         const now = new Date().toISOString();
         const links = await query(
-          `SELECT id, device_id, device_name, pending_wifi_ssid, pending_wifi_password, pending_wifi_at, parental_json, lock_message, volume_percent, brightness_percent, sd_present
+          `SELECT id, device_id, device_name, pending_wifi_ssid, pending_wifi_password, pending_wifi_at, parental_json, lock_message, volume_percent, brightness_percent, sd_present, ring_requested_at, home_order_json
            FROM device_links WHERE device_id='${esc(deviceId)}' ORDER BY linked_at DESC LIMIT 1`,
         );
         const link = links[0];
@@ -1590,6 +1681,16 @@ export default {
             `UPDATE device_links SET pending_wifi_ssid=NULL, pending_wifi_password=NULL, pending_wifi_at=NULL WHERE id='${esc(link.id)}'`,
           );
         }
+        // Find my Pocket: deliver a queued ring once (the conditional clear means only one
+        // concurrent attest wins it); rings older than RING_TTL_MS expire silently.
+        let ring = false;
+        if (link.ring_requested_at) {
+          const cleared = await query(
+            `UPDATE device_links SET ring_requested_at=NULL WHERE id='${esc(link.id)}' AND ring_requested_at IS NOT NULL RETURNING id`,
+          );
+          const queuedMs = Date.parse(link.ring_requested_at);
+          ring = cleared.length > 0 && Number.isFinite(queuedMs) && Date.now() - queuedMs <= RING_TTL_MS;
+        }
         return json(req, {
           entitled,
           status: sub?.status || "free",
@@ -1607,6 +1708,8 @@ export default {
           block_connectors: parental.block_connectors === true,
           pending_wifi,
           sd_present: sdPresent,
+          ring,
+          home_order: readHomeOrder(link.home_order_json),
         });
       }
 
@@ -1756,7 +1859,13 @@ export default {
         const rows = await query(
           `SELECT id, title, author, format, filename, size_bytes, created_at FROM books WHERE user_id='${esc(gate.user.id)}' AND deleted_at IS NULL ORDER BY created_at DESC`,
         );
-        return json(req, { books: rows.map(serializeBookMeta) });
+        const progressRows = await query(
+          `SELECT book_id, page, pages, percent, updated_at FROM reading_progress WHERE user_id='${esc(gate.user.id)}'`,
+        );
+        const progress = new Map(progressRows.map((p) => [p.book_id, p]));
+        return json(req, {
+          books: rows.map((r) => ({ ...serializeBookMeta(r), progress: serializeProgress(progress.get(r.id)) })),
+        });
       }
 
       if (req.method === "POST" && path === "/v1/books") {
@@ -1874,6 +1983,25 @@ export default {
         return json(req, { books: rows.map(serializeBookMeta) });
       }
 
+      // Device reading progress (x-device-key + device_id). One row per user+book; the latest
+      // report wins. Unknown book ids are stored anyway — /v1/books only shows known books.
+      if (req.method === "POST" && path === "/v1/device/reading") {
+        const deviceId = u.searchParams.get("device_id") || req.headers.get("x-device-id") || "";
+        const userId = await userIdForDeviceKey(req, deviceId);
+        if (!userId) return json(req, { message: "Sign in to continue." }, 401);
+        const body = await req.json().catch(() => null);
+        const parsed = parseReadingProgress(body);
+        if (!parsed.ok) return json(req, { message: parsed.message }, 400);
+        const p = parsed.value;
+        const now = new Date().toISOString();
+        await query(
+          `INSERT INTO reading_progress (user_id,book_id,device_id,page,pages,percent,updated_at) VALUES (${sqlStr(userId)},${sqlStr(p.book_id)},${sqlStr(deviceId)},${p.page},${p.pages},${p.percent},'${now}')
+           ON CONFLICT (user_id, book_id) DO UPDATE SET device_id=EXCLUDED.device_id, page=EXCLUDED.page, pages=EXCLUDED.pages, percent=EXCLUDED.percent, updated_at=EXCLUDED.updated_at`,
+        );
+        await query(`UPDATE device_links SET last_seen_at='${now}' WHERE device_id=${sqlStr(deviceId)}`);
+        return json(req, { ok: true });
+      }
+
       // Device ↔ cloud notes/lists sync (x-device-key + device_id). Body carries only records
       // changed on the device since its last good sync (tombstones have deleted_at); the response
       // is the user's full live set plus tombstones from the last 30 days.
@@ -1985,7 +2113,7 @@ export default {
         const secrets = await loadSttSecrets();
         return json(req, {
           ok: true,
-          build: "scram-api-v17-device-sync",
+          build: "scram-api-v18-today",
           providers: {
             openai: Boolean(secrets.openai),
             groq: Boolean(secrets.groq),

@@ -78,6 +78,7 @@ static void drain(InputMapper& mapper, App& app) {
 int main() {
   MemoryConfigStore store;
   store.mut().onboarding_complete = true;
+  store.mut().home_visible &= static_cast<uint16_t>(~(1u << 9));  // classic Home grid (no Today)
   store.mut().pin_length = 4;
   set_pin(store.mut(), "0000");
   store.mut().device_id = "00000000-0000-4000-8000-000000000099";
@@ -136,6 +137,7 @@ int main() {
   {
     MemoryConfigStore store2;
     store2.mut().onboarding_complete = true;
+  store2.mut().home_visible &= static_cast<uint16_t>(~(1u << 9));  // classic Home grid (no Today)
     store2.mut().pin_length = 4;
     set_pin(store2.mut(), "0000");
     store2.mut().device_id = "00000000-0000-4000-8000-000000000098";

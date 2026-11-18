@@ -1304,3 +1304,108 @@ button.cell:disabled {
   height: 1px;
   background: var(--border);
 }
+
+/* ── Device cards: heading, inline notes, Home screen reorder ────────── */
+.card-heading {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.card-heading__title {
+  margin: 0;
+  font-size: var(--text-lg);
+}
+
+.card-note {
+  font-size: var(--text-sm);
+}
+
+.inline-note {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+  padding: 0.75rem 0.875rem;
+  border-radius: var(--radius-md);
+  font-size: var(--text-sm);
+  line-height: 1.45;
+}
+
+.inline-note .icon {
+  flex: none;
+  margin-top: 0.125rem;
+}
+
+.inline-note--accent {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.inline-note--danger {
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+
+.panel .group__list {
+  box-shadow: none;
+  border-radius: var(--radius-md);
+}
+
+.panel .group__list .cell {
+  min-height: 3.25rem;
+  padding: 0.25rem 0.25rem 0.25rem var(--space-3);
+}
+
+.reorder {
+  display: inline-flex;
+  gap: 0.125rem;
+}
+
+.btn.reorder__btn {
+  width: 2.75rem;
+  min-height: 2.75rem;
+  padding: 0;
+  color: var(--ink-2);
+}
+
+.btn.reorder__btn:disabled {
+  opacity: 0.25;
+}
+
+/* ── Reading progress ─────────────────────────────────────────────────── */
+.book-meta,
+.book-progress__label {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.book-progress {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  margin-top: 0.45rem;
+}
+
+.progress {
+  display: block;
+  height: 4px;
+  border-radius: var(--radius-pill);
+  background: var(--surface-2);
+  overflow: hidden;
+}
+
+.progress__fill {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--accent);
+}
+
+.book-progress__label {
+  white-space: normal;
+  font-size: var(--text-xs);
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}

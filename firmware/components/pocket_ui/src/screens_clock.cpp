@@ -187,7 +187,7 @@ void App::maybe_tick_clock_events() {
     }
     if (now_ms_ >= ring_next_beep_ms_) {
       ring_next_beep_ms_ = now_ms_ + kBeepEveryMs;
-      play_sound(SoundId::Attention);
+      play_sound_urgent(SoundId::Attention);  // alarms ring even in quiet hours
     }
     return;
   }

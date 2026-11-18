@@ -8,6 +8,8 @@ import { ErrorState } from '../components/ErrorState'
 import { useDocumentTitle } from '../components/useDocumentTitle'
 import { PageHeader, SkeletonList } from '../components/ui'
 import { PocketMark } from '../components/WordMark'
+import { FindMyPocket } from '../components/FindMyPocket'
+import { HomeOrderEditor } from '../components/HomeOrderEditor'
 
 const PARENTAL_APPS: { id: string; label: string }[] = [
   { id: 'notes', label: 'Notes' },
@@ -229,6 +231,8 @@ export function DeviceDetailPage() {
             </div>
           </div>
 
+          <FindMyPocket deviceId={id} online={online} lastSeen={device.last_seen_at} />
+
           <form className="panel stack" onSubmit={(e) => void onSave(e)}>
             <div className="field">
               <label htmlFor="device_name">Device name</label>
@@ -302,6 +306,11 @@ export function DeviceDetailPage() {
               Save volume &amp; brightness
             </button>
           </div>
+
+          <HomeOrderEditor
+            device={device}
+            onSaved={(d) => setDevice({ ...d, last_seen_at: d.last_seen_at ?? device.last_seen_at ?? null })}
+          />
 
           <form className="panel stack" onSubmit={(e) => void onQueueWifi(e)}>
             <h2 style={{ margin: 0, fontSize: '1.05rem' }}>Add Wi‑Fi in Companion</h2>

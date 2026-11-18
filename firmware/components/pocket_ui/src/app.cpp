@@ -150,8 +150,38 @@ void App::ensure_softap_credentials_shown() {
   }
 }
 
+bool App::quiet_now() const {
+  if (!cfg_.quiet_enabled || !clock_.time_valid()) return false;
+  int h = 0, m = 0, wd = 0, mo = 0, d = 0;
+  clock_.local_hm(h, m, wd, mo, d);
+  const int now = h * 60 + m, a = cfg_.quiet_start_min, b = cfg_.quiet_end_min;
+  if (a == b) return false;
+  return a < b ? (now >= a && now < b) : (now >= a || now < b);  // window may cross midnight
+}
+
 void App::play_sound(SoundId id) {
+  if (quiet_now()) return;
   if (audio_) audio_->play(id);
+}
+
+void App::play_sound_urgent(SoundId id) {
+  if (audio_) audio_->play(id);
+}
+
+void App::ring_find_my_pocket() {
+  // Companion asked "where is it?" — chime loudly a few times and say so if someone looks.
+  if (audio_) audio_->set_volume(100);
+  for (int i = 0; i < 4; ++i) {
+    play_sound_urgent(SoundId::Attention);
+    clock_.sleep_ms(700);
+  }
+  if (audio_) audio_->set_volume(cfg_.volume_percent);
+  if (nav_.current() != ScreenId::Lock && nav_.current() != ScreenId::Pin) {
+    error_msg_ = "Found it \xE2\x80\x94 Pocket Companion asked Pocket to chime.";
+    error_until_ms_ = now_ms_ + 5000;
+    transient_error_armed_ = true;
+    mark_content_dirty();
+  }
 }
 
 void App::mark_content_dirty() {
@@ -762,6 +792,10 @@ void App::launch_home_app(HomeApp launch) {
       notes_tab_ = 0;
       nav_.push(ScreenId::NotesList);
       break;
+    case HomeApp::Today:
+      focus_.index = 0;
+      nav_.push(ScreenId::Today);
+      break;
     case HomeApp::Ledger:
       nav_.push(ScreenId::LedgerComingSoon);
       break;
@@ -895,6 +929,24 @@ void App::maybe_cloud_attest() {
   const std::string dname = json_str(body, "device_name");
   if (!dname.empty() && dname != cfg_.device_name) {
     cfg_.device_name = dname;
+  }
+  if (json_bool(body, "ring") == 1) ring_find_my_pocket();
+  // Home order chosen in Companion (keys → HomeApp indices). Empty array = default order.
+  if (const JsonValue* ho = attest_ok ? deep(attest_root, "home_order") : nullptr; ho && ho->is_array()) {
+    static const struct { const char* key; HomeApp app; } kKeys[] = {
+        {"today", HomeApp::Today},     {"notes", HomeApp::Notes},       {"clock", HomeApp::Clock},
+        {"weather", HomeApp::Weather}, {"music", HomeApp::Music},       {"reading", HomeApp::Reading},
+        {"pass", HomeApp::Pass},       {"settings", HomeApp::Settings}, {"update", HomeApp::Update}};
+    std::vector<uint8_t> order;
+    for (const auto& it : ho->items) {
+      if (it.type != JsonValue::Type::String) continue;
+      for (const auto& k : kKeys)
+        if (it.str == k.key && order.size() < 16) order.push_back(static_cast<uint8_t>(k.app));
+    }
+    if (order != cfg_.home_order) {
+      cfg_.home_order = order;
+      if (nav_.current() == ScreenId::Home) mark_content_dirty();
+    }
   }
   // Optional lock/sleep face message — Companion is the source of truth once linked.
   const size_t lm_key = body.find("\"lock_message\"");
@@ -1033,6 +1085,22 @@ void App::tick(uint32_t now_ms) {
     return;
   }
   maybe_setup_rejoin();
+  // Lock plate: drop an expired capture message; keep the info line current (new day,
+  // alarm changed, fresh forecast) with a small plate-only partial — never the art.
+  if (nav_.current() == ScreenId::Lock && !dirty_ && !display_.busy()) {
+    auto plate_dirty = [&]() {
+      if (cfg_.screensaver == kScreensaverPlain) mark_content_dirty();
+      else mark_region_dirty(0, 680, kCanvasW, kCanvasH - 680);
+    };
+    if (lock_flash_until_ms_ != 0 && now_ms_ >= lock_flash_until_ms_) {
+      lock_flash_until_ms_ = 0;
+      plate_dirty();
+    } else if (cfg_.lock_info && (last_lock_info_ms_ == 0 || now_ms_ - last_lock_info_ms_ >= 60000u)) {
+      last_lock_info_ms_ = now_ms_;
+      if (lock_info_line() != lock_info_shown_) plate_dirty();
+    }
+  }
+  maybe_push_reading_progress(false);
   // SoftAP Wi‑Fi provision: wait for phone to POST credentials
   if (nav_.current() == ScreenId::OnboardingWifiPassword && !wifi_sta_connecting_) {
     if (now_ms - last_wifi_prov_poll_ms_ >= 400) {
@@ -1233,6 +1301,14 @@ void App::handle(InputEvent e) {
     }
     return;
   }
+  if (e == InputEvent::PowerHold) {
+    // Still holding: say what happens if they keep going (clears on release / lock).
+    const ScreenId cur = nav_.current();
+    if (cfg_.onboarding_complete && !wifi_add_flow_active() && cur != ScreenId::Lock && cur != ScreenId::Pin &&
+        cur != ScreenId::ClockRinging && cur != ScreenId::SettingsUpdateProgress)
+      show_status("Keep holding to lock");
+    return;
+  }
   if (e == InputEvent::Power || e == InputEvent::PowerLong) {
     // Setup incomplete: stay on onboarding — do not jump to Lock.
     if (!cfg_.onboarding_complete) return;
@@ -1332,6 +1408,9 @@ void App::handle(InputEvent e) {
     case ScreenId::ReadingBook:
       handle_reading(e);
       break;
+    case ScreenId::Today:
+      handle_today(e);
+      break;
     default:
       handle_settings(e);
       break;
@@ -1393,6 +1472,9 @@ void App::render() {
     case ScreenId::SettingsUpdateAvailable:
       render_update();
       break;
+    case ScreenId::Today:
+      render_today();
+      break;
     case ScreenId::PassList:
     case ScreenId::PassDetail:
       render_pass();
@@ -1448,31 +1530,91 @@ void App::render_lock() {
     draw_pocket_mark(x0 + mark, y + canvas_.text_height(Canvas::TextRole::WordMark) / 2);
     canvas_.draw_text(x0 + mark + 14, y, "Pocket", Canvas::TextRole::WordMark, Gray::G0);
     canvas_.dotted_hline(kCanvasW / 2 - 60, y + 72, 120, Gray::G0, 3);
+    int ly = y + 92;
     if (!cfg_.lock_message.empty()) {
       const int tw = std::min(kContentW, canvas_.text_width(cfg_.lock_message, Canvas::TextRole::Secondary));
-      canvas_.draw_text_fit((kCanvasW - tw) / 2, y + 92, kContentW, cfg_.lock_message,
-                            Canvas::TextRole::Secondary, Gray::G0);
+      canvas_.draw_text_fit((kCanvasW - tw) / 2, ly, kContentW, cfg_.lock_message, Canvas::TextRole::Secondary,
+                            Gray::G0);
+      ly += 34;
+    }
+    std::string extra;
+    if (lock_recording_) extra = "Recording a voice note\xE2\x80\xA6 release to save";
+    else if (now_ms_ < lock_flash_until_ms_) extra = lock_flash_;
+    else if (cfg_.lock_info) extra = lock_info_shown_ = lock_info_line();
+    if (!extra.empty()) {
+      const int tw = std::min(kContentW, canvas_.text_width(extra, Canvas::TextRole::Caption));
+      canvas_.draw_text_fit((kCanvasW - tw) / 2, ly, kContentW, extra, Canvas::TextRole::Caption, Gray::G0);
     }
     return;
   }
 
   draw_lock_motif();
 
-  // Plate: centered wordmark, optional owner message beneath. No art credits.
+  // Plate: centered wordmark, then up to two quiet lines — owner message, and either the
+  // capture status or the at-a-glance info (date · next alarm · weather). No art credits.
   canvas_.fill_rect(0, kArtH, kCanvasW, kCanvasH - kArtH, Gray::G3);
   canvas_.hline(0, kArtH, kCanvasW, Gray::G0);
-  const bool has_msg = !cfg_.lock_message.empty();
+  std::vector<std::pair<std::string, Canvas::TextRole>> lines;
+  if (!cfg_.lock_message.empty()) lines.push_back({cfg_.lock_message, Canvas::TextRole::Secondary});
+  if (lock_recording_) {
+    lines.push_back({"Recording a voice note\xE2\x80\xA6 release to save", Canvas::TextRole::BodyStrong});
+  } else if (now_ms_ < lock_flash_until_ms_ && !lock_flash_.empty()) {
+    lines.push_back({lock_flash_, Canvas::TextRole::BodyStrong});
+  } else if (cfg_.lock_info) {
+    lock_info_shown_ = lock_info_line();
+    if (!lock_info_shown_.empty()) lines.push_back({lock_info_shown_, Canvas::TextRole::Caption});
+  }
   const int wm_h = canvas_.text_height(Canvas::TextRole::WordMark);
-  const int wm_y = kArtH + (has_msg ? 18 : 38);
+  const int wm_y = kArtH + (lines.empty() ? 38 : lines.size() == 1 ? 16 : 6);
   const int wm_w = canvas_.text_width("Pocket", Canvas::TextRole::WordMark);
   const int x0 = (kCanvasW - (wm_w + 38)) / 2;
   draw_pocket_mark(x0 + 26, wm_y + wm_h / 2);
   canvas_.draw_text(x0 + 38, wm_y, "Pocket", Canvas::TextRole::WordMark, Gray::G0);
-  if (has_msg) {
-    const int mw = std::min(kContentW, canvas_.text_width(cfg_.lock_message, Canvas::TextRole::Secondary));
-    canvas_.draw_text_fit((kCanvasW - mw) / 2, wm_y + wm_h + 6, kContentW, cfg_.lock_message,
-                          Canvas::TextRole::Secondary, Gray::G0);
+  int ly = wm_y + wm_h + 4;
+  for (const auto& l : lines) {
+    const int mw = std::min(kContentW, canvas_.text_width(l.first, l.second));
+    canvas_.draw_text_fit((kCanvasW - mw) / 2, ly, kContentW, l.first, l.second, Gray::G0);
+    ly += canvas_.text_height(l.second) + 2;
   }
+}
+
+std::string App::lock_info_line() const {
+  std::string out;
+  if (clock_.time_valid()) {
+    static const char* kDow[] = {"Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"};
+    static const char* kMon[] = {"Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"};
+    int h = 0, m = 0, wd = 0, mo = 0, d = 0;
+    clock_.local_hm(h, m, wd, mo, d);
+    char b[32];
+    std::snprintf(b, sizeof(b), "%s, %s %d", kDow[((wd % 7) + 7) % 7], kMon[((mo % 12) + 12) % 12], d);
+    out = b;
+    // Next enabled alarm (today if still ahead, else the earliest one tomorrow).
+    const int now = h * 60 + m;
+    int best = -1, best_key = 1 << 30;
+    for (const auto& al : data_.alarms) {
+      if (!al.enabled) continue;
+      const int key = al.minutes_of_day > now ? al.minutes_of_day - now : al.minutes_of_day + 1440 - now;
+      if (key < best_key) {
+        best_key = key;
+        best = al.minutes_of_day;
+      }
+    }
+    if (best >= 0) {
+      const int ah = best / 60, am = best % 60;
+      if (cfg_.time_format == 24) std::snprintf(b, sizeof(b), "Alarm %02d:%02d", ah, am);
+      else std::snprintf(b, sizeof(b), "Alarm %d:%02d %s", ah % 12 == 0 ? 12 : ah % 12, am, ah < 12 ? "AM" : "PM");
+      out += std::string(" \xC2\xB7 ") + b;
+    }
+  }
+  // Today's forecast if it is from the last day.
+  const auto& w = data_.weather;
+  if (!w.days.empty() && w.fetched_at > 1000000000LL && clock_.time_valid() &&
+      std::time(nullptr) - static_cast<time_t>(w.fetched_at) < 24 * 3600) {
+    char t[32];
+    std::snprintf(t, sizeof(t), "%d\xC2\xB0 %s", weather_display_temp(w.today_temp), w.today_condition.c_str());
+    out += (out.empty() ? "" : " \xC2\xB7 ") + std::string(t);
+  }
+  return out;
 }
 
 /** Small geometric mark to the left of the "Pocket" wordmark: a folded-corner square,
@@ -1499,6 +1641,34 @@ void App::handle_lock(InputEvent e) {
       show_update_welcome_ = false;
       after_nav(true);  // full refresh into the normal lock face
     }
+    return;
+  }
+  if (e == InputEvent::PttStart && audio_ && !lock_recording_) {
+    lock_recording_ = true;
+    ptt_active_ = true;
+    mic_capturing_ = true;
+    audio_->start_capture();
+    mark_region_dirty(0, 680, kCanvasW, kCanvasH - 680);
+    return;
+  }
+  if (e == InputEvent::PttStop && lock_recording_) {
+    lock_recording_ = false;
+    ptt_active_ = false;
+    mic_capturing_ = false;
+    const MicCaptureResult cap = audio_->stop_capture();
+    if (cap.ok && !cap.pcm.empty() && queue_offline_dictation(cap.pcm, /*open_note=*/false)) {
+      lock_flash_ = wifi_.connected() ? "Voice note saved \xE2\x80\x94 it will appear in Notes"
+                                      : "Voice note saved \xE2\x80\x94 transcribes on Wi-Fi";
+      last_pending_stt_ms_ = 0;  // transcribe soon if online
+      play_sound(SoundId::Success);
+    } else {
+      lock_flash_ = "Didn't catch that \xE2\x80\x94 hold and speak closer";
+      play_sound(SoundId::Attention);
+    }
+    error_msg_.clear();  // the lock face says it; no toast later on another screen
+    error_until_ms_ = 0;
+    lock_flash_until_ms_ = now_ms_ + 5000;
+    mark_region_dirty(0, 680, kCanvasW, kCanvasH - 680);
     return;
   }
   if (e == InputEvent::Select) {

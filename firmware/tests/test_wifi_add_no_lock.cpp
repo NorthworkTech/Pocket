@@ -103,13 +103,10 @@ static void goto_wifi_add_chooser(App& app, TClock& clock, TWifi& wifi, TDisp& d
   app.handle(InputEvent::Select);
   CHECK(app.screen() == ScreenId::SettingsRoot);
 
-  app.handle(InputEvent::Down);  // Wi‑Fi
-  app.handle(InputEvent::Select);
+  app.handle(InputEvent::Select);  // Wi-Fi (first under Connections)
   CHECK(app.screen() == ScreenId::SettingsWifi);
 
-  app.handle(InputEvent::Down);  // Add network…
-  app.handle(InputEvent::Select);
-  clock.t += 60 * 1000;
+  app.handle(InputEvent::Down);  // focus "Add network" (opens phone setup directly)
   while (disp.busy()) {
     disp.advance();
     app.tick(clock.t);

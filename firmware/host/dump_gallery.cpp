@@ -102,8 +102,8 @@ int main(int argc, char** argv) {
       "sd-gate", "home", "notes", "note", "lists", "list", "ledger", "clock", "alarms", "alarm-edit",
       "timers", "timer-run", "pass", "pass-detail", "weather", "weather-city", "music", "now-playing",
       "reading", "book", "settings", "security", "wifi", "display", "sound", "home-apps", "units", "about",
-      "cloud", "update", "update-progress", "update-result", "ringing", "update-available"};
-  const int n_screens = static_cast<int>(ScreenId::SettingsUpdateAvailable) + 1;
+      "cloud", "update", "update-progress", "update-result", "ringing", "update-available", "today", "storage", "advanced"};
+  const int n_screens = static_cast<int>(ScreenId::SettingsAdvanced) + 1;
   FirmwareUpdateInfo upd;
   upd.version_name = "PocketOS 27.1 Beta";
   upd.size_bytes = 1572864;

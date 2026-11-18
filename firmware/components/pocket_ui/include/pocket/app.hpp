@@ -99,6 +99,11 @@ struct PlatformCloud {
   virtual std::string device_attest_json(const std::string& /*device_id*/) { return {}; }
   /** Tell Pocket Cloud whether a microSD is in (raises Companion upload limits). -1 = unknown. */
   virtual void set_sd_present(int /*sd*/) {}
+  /** Report reading progress for Companion ("Walden · 42%"). Fire-and-forget. */
+  virtual bool post_reading_progress(const std::string& /*device_id*/, const std::string& /*book_id*/,
+                                     int /*page*/, int /*pages*/, int /*percent*/) {
+    return false;
+  }
   /** Plain-language reason the last request failed (no internet, server error…). */
   virtual std::string last_error() const { return {}; }
   /** POST /v1/device/sync — push local note/list changes, get the merged set back. */
@@ -420,6 +425,10 @@ class App {
   void host_show_status(std::string_view m) { show_status(m); }
   void host_set_tips_page(int p) { tips_page_ = p; }
   std::string host_weather_label() const { return weather_updated_label(); }
+  std::string host_lock_info() const { return lock_info_line(); }
+  DeviceConfig& mut_config() { return cfg_; }
+  bool host_quiet_now() const { return quiet_now(); }
+  void host_attest() { last_attest_ms_ = 0; maybe_cloud_attest(); }
   bool host_cloud_sync() { return cloud_sync(false); }
   void host_reading_sync() { reading_sync_from_cloud(); }
   void host_reading_load() { reading_load_local(); }
@@ -473,6 +482,27 @@ class App {
   bool cloud_sync(bool show_progress);
   void maybe_cloud_sync();
   bool sd_present() { return storage_ && storage_->present(); }
+  // ---- 2.2 features ----
+  /** Inside configured quiet hours (clicks/chimes muted; alarms still ring). */
+  bool quiet_now() const;
+  /** Sounds that must play even in quiet hours: alarms, timers, Find my Pocket. */
+  void play_sound_urgent(SoundId id);
+  void ring_find_my_pocket();
+  void render_today();
+  void handle_today(InputEvent e);
+  /** Small static line under the lock wordmark: date · next alarm · weather. */
+  std::string lock_info_line() const;
+  uint32_t last_lock_info_ms_ = 0;
+  bool lock_recording_ = false;
+  std::string lock_flash_;
+  uint32_t lock_flash_until_ms_ = 0;
+  std::string lock_info_shown_;
+  /** Reading progress waiting to go to Companion. */
+  bool reading_progress_dirty_ = false;
+  uint32_t last_reading_push_ms_ = 0;
+  void maybe_push_reading_progress(bool force);
+  int wifi_detail_index_ = -1;
+  int settings_root_scroll_ = 0;
   std::string new_local_id(const char* prefix);
   uint32_t last_sync_attempt_ms_ = 0;
   uint32_t last_sync_ok_ms_ = 0;
@@ -566,7 +596,9 @@ class App {
   /** Apply a finished transcript to the current Notes/Lists target (online path). */
   void apply_dictation_transcript(const std::string& t);
   /** Queue mic PCM while offline; honest placeholder until cloud STT runs. */
-  bool queue_offline_dictation(const std::vector<uint8_t>& pcm);
+  /** Save a voice clip for later transcription. `open_note` = false keeps the current screen
+   * (lock-screen capture must never navigate past the PIN). */
+  bool queue_offline_dictation(const std::vector<uint8_t>& pcm, bool open_note = true);
   /** When online: transcribe any pending voice clips and replace placeholders. */
   void flush_pending_dictation();
   bool notes_have_pending_dictation() const;

@@ -98,6 +98,7 @@ int main() {
     CHECK(p.poll() == InputEvent::None);
     p.on_pwr(true, 11000);
     p.tick(11500);
+    CHECK(p.poll() == InputEvent::PowerHold);  // "Keep holding to lock" hint
     CHECK(p.poll() == InputEvent::None);
     p.tick(11750);
     CHECK(p.poll() == InputEvent::PowerLong);

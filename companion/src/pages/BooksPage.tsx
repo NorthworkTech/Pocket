@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { api, isNetworkError } from '../lib/api'
-import type { Book } from '../lib/types'
+import type { Book, ReadingProgress } from '../lib/types'
+import { relativeTime } from '../lib/utils'
 import { ErrorState } from '../components/ErrorState'
 import { useDocumentTitle } from '../components/useDocumentTitle'
 import { Icon } from '../components/Icon'
@@ -27,6 +28,34 @@ async function fileToBase64(file: File): Promise<string> {
 
 function guessFormat(name: string): 'epub' | 'txt' {
   return /\.epub$/i.test(name) ? 'epub' : 'txt'
+}
+
+function progressLabel(p: ReadingProgress): string {
+  const parts = [`${p.percent}%`]
+  if (p.pages > 0) parts.push(`page ${Math.min(Math.max(p.page, 1), p.pages)} of ${p.pages}`)
+  const when = relativeTime(p.updated_at)
+  if (when) parts.push(`read ${when}`)
+  return parts.join(' · ')
+}
+
+/** Thin bar + "42% · page 120 of 286 · read 2h ago" under a book row. */
+function BookProgress({ progress, title }: { progress: ReadingProgress; title: string }) {
+  const pct = Math.max(0, Math.min(100, Math.round(progress.percent)))
+  return (
+    <span className="book-progress">
+      <span
+        className="progress"
+        role="progressbar"
+        aria-label={`${title} reading progress`}
+        aria-valuemin={0}
+        aria-valuemax={100}
+        aria-valuenow={pct}
+      >
+        <span className="progress__fill" style={{ width: `${pct}%` }} />
+      </span>
+      <span className="book-progress__label">{progressLabel(progress)}</span>
+    </span>
+  )
 }
 
 export function BooksPage() {
@@ -148,7 +177,14 @@ export function BooksPage() {
               key={b.id}
               icon="reading"
               title={b.title || b.filename}
-              detail={`${b.author ? `${b.author} · ` : ''}${(b.format || 'txt').toUpperCase()} · ${formatBytes(b.size_bytes || b.size || 0)}`}
+              detail={
+                <>
+                  <span className="book-meta">
+                    {`${b.author ? `${b.author} · ` : ''}${(b.format || 'txt').toUpperCase()} · ${formatBytes(b.size_bytes || b.size || 0)}`}
+                  </span>
+                  {b.progress ? <BookProgress progress={b.progress} title={b.title || b.filename} /> : null}
+                </>
+              }
               value={
                 <button type="button" className="btn btn-ghost btn-sm" onClick={() => void onDelete(b.id, b.title || b.filename)}>
                   Remove

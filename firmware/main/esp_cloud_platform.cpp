@@ -331,6 +331,24 @@ std::string EspCloud::device_sync_json(const std::string& device_id, const std::
   return resp;
 }
 
+bool EspCloud::post_reading_progress(const std::string& device_id, const std::string& book_id, int page, int pages,
+                                     int percent) {
+  if (device_id.empty() || book_id.empty()) return false;
+  const std::string url = std::string(POCKET_CLOUD_BASE) + "/v1/device/reading?device_id=" + device_id;
+  const std::string body = "{\"book_id\":\"" + pocket::json_escape_str(book_id) + "\",\"page\":" +
+                           std::to_string(page) + ",\"pages\":" + std::to_string(pages) +
+                           ",\"percent\":" + std::to_string(percent) + "}";
+  int status = 0;
+  std::string resp;
+  if (!http_request("POST", url, POCKET_DEVICE_API_KEY, body, status, resp, 10000, "application/json",
+                    "x-device-id", device_id.c_str()) ||
+      status != 200) {
+    ESP_LOGW(TAG, "reading progress HTTP %d", status);
+    return false;
+  }
+  return true;
+}
+
 std::vector<uint8_t> EspCloud::book_download(const std::string& device_id, const std::string& book_id) {
   std::vector<uint8_t> out;
   if (device_id.empty() || book_id.empty()) return out;

@@ -401,7 +401,48 @@ void App::reading_open_book(int index) {
   std::fclose(f);
   reading_text_.resize(got);
   normalize_book_text(reading_text_);
-  reading_paginate();
+  // Page breaks are expensive to compute on device for a novel — reuse them when the book
+  // and the page layout haven't changed.
+  const std::string cache_path = b.local_path + ".pages";
+  char key[96];
+  std::snprintf(key, sizeof(key), "PG2 %u %d %d %d\n", static_cast<unsigned>(reading_text_.size()), kContentW,
+                canvas_.text_height(Canvas::TextRole::Reading), kReadBottom - kReadTop);
+  bool cached = false;
+  {
+    std::string blob;
+    if (read_file_recover(cache_path, blob) && blob.rfind(key, 0) == 0) {
+      const size_t hdr = std::strlen(key);
+      const size_t n = (blob.size() - hdr) / 4;
+      std::vector<size_t> pages;
+      pages.reserve(n);
+      size_t prev = 0;
+      bool ok = n > 0;
+      for (size_t i = 0; ok && i < n; ++i) {
+        const unsigned char* p = reinterpret_cast<const unsigned char*>(blob.data() + hdr + i * 4);
+        const size_t off = static_cast<size_t>(p[0]) | (static_cast<size_t>(p[1]) << 8) |
+                           (static_cast<size_t>(p[2]) << 16) | (static_cast<size_t>(p[3]) << 24);
+        if ((i == 0 && off != 0) || (i > 0 && off <= prev) || off >= reading_text_.size() + 1) ok = false;
+        prev = off;
+        pages.push_back(off);
+      }
+      if (ok) {
+        reading_pages_ = std::move(pages);
+        cached = true;
+      }
+    }
+  }
+  if (!cached) {
+    reading_paginate();
+    std::string blob = key;
+    for (size_t off : reading_pages_) {
+      const uint32_t v = static_cast<uint32_t>(off);
+      blob.push_back(static_cast<char>(v & 0xFF));
+      blob.push_back(static_cast<char>((v >> 8) & 0xFF));
+      blob.push_back(static_cast<char>((v >> 16) & 0xFF));
+      blob.push_back(static_cast<char>((v >> 24) & 0xFF));
+    }
+    (void)write_file_atomic(cache_path, blob);
+  }
   reading_page_ = 0;
   // Resume key is the on-device filename: stable whether the library came from local
   // storage (id = filename) or a cloud sync (id = cloud uuid).
@@ -526,10 +567,12 @@ void App::handle_reading(InputEvent e) {
             books_[book_index_].filename.empty() ? books_[book_index_].id : books_[book_index_].filename;
         cfg_.reading_last_page = reading_page_;
         store_.save(cfg_);
+        reading_progress_dirty_ = true;
       }
     };
     if (e == InputEvent::Back) {
       save_progress();
+      maybe_push_reading_progress(true);
       nav_.pop();
       after_nav();
       return;
@@ -585,6 +628,26 @@ void App::handle_reading(InputEvent e) {
       nav_.pop();
       after_nav();
     }
+  }
+}
+
+}  // namespace pocket
+
+namespace pocket {
+
+void App::maybe_push_reading_progress(bool force) {
+  if (!reading_progress_dirty_) return;
+  if (!cfg_.companion_linked || !wifi_.connected() || cfg_.device_id.empty()) return;
+  // While reading, report at most every 2 minutes; closing the book reports right away.
+  if (!force && last_reading_push_ms_ != 0 && now_ms_ - last_reading_push_ms_ < 120000u) return;
+  if (book_index_ < 0 || book_index_ >= static_cast<int>(books_.size()) || reading_pages_.empty()) return;
+  last_reading_push_ms_ = now_ms_;
+  const int pages = static_cast<int>(reading_pages_.size());
+  const int page = std::clamp(reading_page_, 0, pages - 1);
+  const int percent = pages <= 1 ? 100 : (page * 100) / (pages - 1);
+  if (cloud_.post_reading_progress(cfg_.device_id, books_[static_cast<size_t>(book_index_)].id, page + 1, pages,
+                                   percent)) {
+    reading_progress_dirty_ = false;
   }
 }
 

@@ -1,4 +1,4 @@
-import { ApiError, type BackupMeta, type Book, type Connector, type ConnectorProvider, type Device, type MeResponse, type MusicTrack, type Note, type PairClaimResult, type PairSession, type PocketList } from './types'
+import { ApiError, type BackupMeta, type Book, type Connector, type ConnectorProvider, type Device, type HomeAppKey, type MeResponse, type MusicTrack, type Note, type PairClaimResult, type PairSession, type PocketList, type RingResult } from './types'
 
 const BUILD_API_BASE = (import.meta.env.VITE_API_BASE as string | undefined)?.replace(/\/$/, '') || ''
 const PROD_DEFAULT = 'https://br-super-hill-b40yvyrj-api.compute.c-6.us-east-2.aws.neon.tech'
@@ -239,9 +239,19 @@ export const api = {
   },
   updateDevice(
     id: string,
-    payload: { device_name?: string; lock_message?: string; volume_percent?: number; brightness_percent?: number },
+    payload: {
+      device_name?: string
+      lock_message?: string
+      volume_percent?: number
+      brightness_percent?: number
+      home_order?: HomeAppKey[]
+    },
   ) {
     return request<Device>(`/v1/devices/${id}`, { method: 'PATCH', body: payload })
+  },
+  /** Find my Pocket — Pocket chimes on its next check-in (queued up to 30 minutes). */
+  ringDevice(id: string) {
+    return request<RingResult>(`/v1/devices/${encodeURIComponent(id)}/ring`, { method: 'POST' })
   },
   unlinkDevice(id: string) {
     return request<void>(`/v1/devices/${id}/link`, { method: 'DELETE' })

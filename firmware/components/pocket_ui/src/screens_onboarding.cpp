@@ -202,14 +202,15 @@ void App::render_onboarding() {
                                  Gray::G0);
       const char* wait = wifi_sta_connecting_ ? "Connecting to Wi-Fi\xE2\x80\xA6" : "Waiting for your phone\xE2\x80\xA6";
       const bool already_online = wifi_.connected();
-      focus_.count = already_online ? 3 : 2;
+      focus_.count = already_online ? 2 : 1;
       const int n = focus_.count;
       const int top = kBottomCtaY - (n - 1) * kRowPitch;
-      const Row waiting{wait, RowKind::Plain, {}, false, Icon::Phone, true};
+      // Status, not a button: what Pocket is waiting for right now.
+      ui::icon(canvas_, Icon::Phone, kSideMargin + 12, top - 30, 22, Gray::G0);
+      canvas_.draw_text(kSideMargin + 32, top - 44, wait, Canvas::TextRole::BodyStrong, Gray::G0);
       const Row online{"I'm already online", RowKind::Nav, {}, false, Icon::Wifi, true};
       const Row cancel{"Cancel", RowKind::Back};
-      ui::row(canvas_, top, waiting, focus_.index == 0);
-      if (already_online) ui::row(canvas_, top + kRowPitch, online, focus_.index == 1);
+      if (already_online) ui::row(canvas_, top, online, focus_.index == 0);
       ui::row(canvas_, top + (n - 1) * kRowPitch, cancel, focus_.index == n - 1);
       if (now_ms_ < error_until_ms_ && !error_msg_.empty()) ui::toast(canvas_, error_msg_);
       break;
@@ -312,8 +313,8 @@ void App::render_onboarding() {
     }
     case ScreenId::OnboardingMicTest: {
       title("Voice");
-      lead(below_title(ty) - 4, "Hold the side button and say a few words to check the microphone.");
-      const char* head = ptt_active_ ? "Listening\xE2\x80\xA6" : (mic_result_.empty() ? "Hold the side button" : "Mic check");
+      lead(below_title(ty) - 4, "Hold the back button and say a few words to check the microphone.");
+      const char* head = ptt_active_ ? "Listening\xE2\x80\xA6" : (mic_result_.empty() ? "Hold the back button" : "Mic check");
       ui::empty_state(canvas_, Icon::Mic, head, ptt_active_ ? "Release when you're done." : mic_result_, 400);
       focus_.count = 2;
       ui::row(canvas_, kBottomCtaY - kRowPitch, Row{"Try again", RowKind::Plain, {}, false, Icon::Update, true},
@@ -563,7 +564,7 @@ void App::handle_onboarding(InputEvent e) {
 
   if (s == ScreenId::OnboardingWifiPassword) {
     const bool already_online = wifi_.connected();
-    focus_.count = already_online ? 3 : 2;
+    focus_.count = already_online ? 2 : 1;
     if (e == InputEvent::Up) {
       focus_.move(-1);
       mark_content_dirty();
@@ -571,8 +572,8 @@ void App::handle_onboarding(InputEvent e) {
       focus_.move(1);
       mark_content_dirty();
     } else if (e == InputEvent::Select) {
-      const int cancel_i = already_online ? 2 : 1;
-      const int skip_i = already_online ? 1 : -1;
+      const int cancel_i = already_online ? 1 : 0;
+      const int skip_i = already_online ? 0 : -1;
       if (focus_.index == skip_i) {
         play_sound(SoundId::Click);
         wifi_add_session_ = false;

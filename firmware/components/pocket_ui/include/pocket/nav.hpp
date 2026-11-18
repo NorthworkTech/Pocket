@@ -60,6 +60,9 @@ enum class ScreenId : uint16_t {
   ClockRinging,
   /** Software update found: name, size, release notes, Install / Later. */
   SettingsUpdateAvailable,
+  Today,
+  SettingsStorage,
+  SettingsAdvanced,
 };
 
 struct NavStack {

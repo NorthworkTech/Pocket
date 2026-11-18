@@ -60,6 +60,19 @@ CREATE TABLE IF NOT EXISTS device_links (
   sd_present BOOLEAN NOT NULL DEFAULT false
 );
 ALTER TABLE device_links ADD COLUMN IF NOT EXISTS sd_present BOOLEAN NOT NULL DEFAULT false;
+ALTER TABLE device_links ADD COLUMN IF NOT EXISTS ring_requested_at TIMESTAMPTZ;
+ALTER TABLE device_links ADD COLUMN IF NOT EXISTS home_order_json TEXT NOT NULL DEFAULT '[]';
+
+CREATE TABLE IF NOT EXISTS reading_progress (
+  user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  book_id TEXT NOT NULL,
+  device_id TEXT NOT NULL DEFAULT '',
+  page INTEGER NOT NULL DEFAULT 0,
+  pages INTEGER NOT NULL DEFAULT 0,
+  percent INTEGER NOT NULL DEFAULT 0,
+  updated_at TIMESTAMPTZ NOT NULL,
+  PRIMARY KEY (user_id, book_id)
+);
 
 CREATE TABLE IF NOT EXISTS subscription_mirrors (
   user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,

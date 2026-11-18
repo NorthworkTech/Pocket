@@ -57,7 +57,8 @@ void InputMapper::discard_nav_gestures() {
   int k = 0;
   for (int i = 0; i < n; ++i) {
     const InputEvent e = queue_[(q_head_ + i) % kQueue];
-    if (e == InputEvent::Power || e == InputEvent::PowerLong || e == InputEvent::Home || e == InputEvent::Back ||
+    if (e == InputEvent::Power || e == InputEvent::PowerLong || e == InputEvent::PowerHold ||
+        e == InputEvent::Home || e == InputEvent::Back ||
         e == InputEvent::PttStart || e == InputEvent::PttStop) {
       continue;
     }
@@ -153,6 +154,7 @@ void InputMapper::on_pwr(bool pressed, uint32_t now_ms) {
       pwr_down_ = true;
       pwr_down_ms_ = now_ms;
       pwr_long_fired_ = false;
+      pwr_hint_fired_ = false;
       pwr_edge_armed_ = false;
     }
     return;
@@ -184,6 +186,10 @@ void InputMapper::tick(uint32_t now_ms) {
       push(InputEvent::Home);
       fn_long_fired_ = true;
     }
+  }
+  if (pwr_down_ && !pwr_hint_fired_ && !pwr_long_fired_ && now_ms - pwr_down_ms_ >= InputThresholds::kPowerHintMs) {
+    pwr_hint_fired_ = true;
+    push(InputEvent::PowerHold);
   }
   if (pwr_down_ && !pwr_long_fired_ && now_ms - pwr_down_ms_ >= InputThresholds::kPowerLongMs) {
     push(InputEvent::PowerLong);  // fire while held — lock happens without waiting for release

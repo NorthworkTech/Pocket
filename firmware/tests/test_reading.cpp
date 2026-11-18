@@ -70,6 +70,7 @@ int main() {
   MemoryConfigStore store;
   auto& cfg = store.mut();
   cfg.onboarding_complete = true;
+  cfg.home_visible &= static_cast<uint16_t>(~(1u << 9));  // classic Home grid (no Today)
   cfg.device_id = "dev-test";
   cfg.pin_length = 4;
   set_pin(cfg, "0000");

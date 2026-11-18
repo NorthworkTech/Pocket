@@ -11,6 +11,7 @@ import { notesRoutes } from "./routes/notes.js";
 import { listsRoutes } from "./routes/lists.js";
 import { syncRoutes } from "./routes/sync.js";
 import { deviceSyncRoutes } from "./routes/device-sync.js";
+import { bookRoutes, deviceReadingRoutes } from "./routes/reading.js";
 import { backupRoutes } from "./routes/backups.js";
 import { publicShareRoutes } from "./routes/share.js";
 import { connectorRoutes } from "./routes/connectors.js";
@@ -56,6 +57,8 @@ export function createApp() {
   app.route("/v1/entitlement", entitlementRoutes);
   app.route("/v1/device", deviceAttestRoutes);
   app.route("/v1/device", deviceSyncRoutes);
+  app.route("/v1/device", deviceReadingRoutes);
+  app.route("/v1/books", bookRoutes);
   app.route("/v1/billing", billingRoutes);
   app.route("/v1/notes", notesRoutes);
   app.route("/v1/lists", listsRoutes);

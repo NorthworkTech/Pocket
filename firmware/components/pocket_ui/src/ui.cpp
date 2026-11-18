@@ -103,6 +103,20 @@ void draw_icon(const Pen& p, Icon icon) {
       p.line(12, 8, 16, 8);
       p.line(12, 12, 16, 12);
       break;
+    case Icon::Calendar:
+      p.rrect(3.5f, 5, 17, 15.5f, 2.5f);
+      p.line(3.5f, 9.5f, 20.5f, 9.5f);
+      p.line(8, 3, 8, 7);
+      p.line(16, 3, 16, 7);
+      p.disc(8.5f, 14, 1.4f, p.g);
+      p.disc(12, 14, 1.4f, p.g);
+      p.disc(15.5f, 14, 1.4f, p.g);
+      break;
+    case Icon::Battery:
+      p.rrect(2.5f, 7, 17, 10, 2);
+      p.line(21.5f, 10.5f, 21.5f, 13.5f);
+      p.box(5, 9.5f, 9, 5, p.g);
+      break;
     case Icon::Clock:
       p.circle(12, 12, 9.5f);
       p.line(12, 12, 12, 6.5f);

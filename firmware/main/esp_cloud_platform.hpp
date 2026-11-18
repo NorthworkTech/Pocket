@@ -20,6 +20,8 @@ struct EspCloud : pocket::PlatformCloud {
   void set_sd_present(int sd) override { sd_present_ = sd; }
   std::string last_error() const override { return last_error_; }
   std::string device_sync_json(const std::string& device_id, const std::string& body, int* status) override;
+  bool post_reading_progress(const std::string& device_id, const std::string& book_id, int page, int pages,
+                             int percent) override;
 
  private:
   int sd_present_ = -1;

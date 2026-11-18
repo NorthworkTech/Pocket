@@ -320,8 +320,8 @@ void App::apply_dictation_transcript(const std::string& t) {
   }
 }
 
-bool App::queue_offline_dictation(const std::vector<uint8_t>& pcm) {
-  const ScreenId s = nav_.current();
+bool App::queue_offline_dictation(const std::vector<uint8_t>& pcm, bool open_note) {
+  const ScreenId s = open_note ? nav_.current() : ScreenId::Lock;
   if (s == ScreenId::ListsDetail && note_index_ < static_cast<int>(data_.lists.size())) {
     auto& L = data_.lists[note_index_];
     // Online, a new clip re-records a failed one. Offline, every clip is a new item —
@@ -421,8 +421,9 @@ bool App::queue_offline_dictation(const std::vector<uint8_t>& pcm) {
   data_.notes.push_back(n);
   note_index_ = static_cast<int>(data_.notes.size()) - 1;
   save_local_notes();
+  if (!open_note) return true;
   note_page_ = 0;
-    nav_.replace(ScreenId::NotesDetail);
+  nav_.replace(ScreenId::NotesDetail);
   after_nav();
   error_msg_ = "Audio saved — it will transcribe when connected to Wi-Fi.";
   error_until_ms_ = now_ms_ + 3500;
@@ -730,7 +731,7 @@ void App::render_notes() {
     const int n = static_cast<int>(data_.notes.size());
     if (n == 0) {
       ui::empty_state(canvas_, Icon::Notes, "No notes yet",
-                      wifi_.connected() ? "Hold the side button to dictate, or choose New note."
+                      wifi_.connected() ? "Hold the back button to dictate, or choose New note."
                                         : "Works offline. Voice clips become text once you're online.",
                       360);
       focus_.count = 1;
@@ -758,7 +759,7 @@ void App::render_notes() {
       const auto& n = data_.notes[static_cast<size_t>(note_index_)];
       if (n.body.empty()) {
         canvas_.draw_text_wrapped(kSideMargin, kListTop, kContentW, kWrapGap,
-                                  wifi_.connected() ? "Empty note. Hold the side button to dictate."
+                                  wifi_.connected() ? "Empty note. Hold the back button to dictate."
                                                     : "Empty note. Hold to capture a voice clip; text needs Wi-Fi.",
                                   Canvas::TextRole::Secondary, Gray::G0);
       } else {
@@ -843,10 +844,10 @@ void App::render_notes() {
       ui::scrollbar(canvas_, top, kVisible * kRowPitch - 8, start, kVisible, n);
       if (L.items.empty()) {
         canvas_.draw_text_wrapped(kSideMargin, top, kContentW, kWrapGap,
-                                  "Empty list. Hold the side button and say an item.", Canvas::TextRole::Secondary,
+                                  "Empty list. Hold the back button and say an item.", Canvas::TextRole::Secondary,
                                   Gray::G0);
       }
-      ui::button(canvas_, kBottomCtaY, "Hold side button to add",
+      ui::button(canvas_, kBottomCtaY, "Hold back button to add",
                  focus_.index == static_cast<int>(L.items.size()), Icon::Mic, true);
     }
   }
@@ -996,9 +997,9 @@ void App::handle_notes(InputEvent e) {
       mark_content_dirty();
     } else if (e == InputEvent::Select && focus_.index == po) {
       if (!wifi_.connected()) {
-        error_msg_ = "Hold the side button to capture. Text needs Wi-Fi.";
+        error_msg_ = "Hold the back button to capture. Text needs Wi-Fi.";
       } else {
-        error_msg_ = "Hold the side button to dictate.";
+        error_msg_ = "Hold the back button to dictate.";
       }
       error_until_ms_ = now_ms_ + 3000;
       mark_content_dirty();

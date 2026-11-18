@@ -31,14 +31,14 @@ struct DeviceConfig {
   std::string weather_city;
   float weather_lat = 0;
   float weather_lon = 0;
-  uint16_t home_visible = 0x01FF;  // bits 0..8 Notes..Reading; Settings+Update always on
+  uint16_t home_visible = 0x03FF;  // bits 0..9 Notes..Today; Settings+Update always on
   uint16_t idle_lock_s = 60;
   bool show_batt_pct = true;
   bool cloud_entitled = false;
   bool companion_linked = false;
   std::string fw_channel = "stable";
   /** Consumer-facing semver shown in About / Update — never a POCKET-LIVE flash marker. */
-  std::string fw_version = "2.1.6";
+  std::string fw_version = "2.2.0";
   std::string fw_build_id;  // internal OTA id e.g. POCKET-LIVE-v38-… (not shown to users)
   std::string device_id;  // UUID
   std::string device_token;
@@ -68,11 +68,19 @@ struct DeviceConfig {
   /** Lock/sleep screensaver: 0 = rotate through the collection on each lock,
    * 1..kScreensaverCount = always that piece, kScreensaverPlain = wordmark only. */
   uint8_t screensaver = 0;
+  /** v11: lock plate shows date · next alarm · weather (static, no extra refreshes). */
+  bool lock_info = true;
+  /** v11: quiet hours — no clicks/chimes between start and end (alarms still ring). */
+  bool quiet_enabled = false;
+  uint16_t quiet_start_min = 22 * 60;
+  uint16_t quiet_end_min = 7 * 60;
+  /** v11: Home order as HomeApp indices (empty = default). Set from Companion. */
+  std::vector<uint8_t> home_order;
 };
 
 /** Consumer product branding (UI). Flash markers stay in `fw_build_id` only. */
 inline constexpr const char* kProductName = "Pocket Classic";
-inline constexpr const char* kConsumerVersion = "2.1.6";
+inline constexpr const char* kConsumerVersion = "2.2.0";
 /** Body/list placeholder while a voice clip waits for cloud STT (honest offline UX). */
 inline constexpr const char* kVoicePendingText =
     "Saved audio recording \xE2\x80\x94 will transcribe when connected to Wi-Fi";
@@ -98,8 +106,8 @@ enum class HomeApp : uint8_t {
   Update = 7,
   /** Reading — eBooks synced via Companion (v1.2). */
   Reading = 8,
-  /** Reserved Home grid slots 9..15 (empty until assigned). */
-  Slot9 = 9,
+  /** Today — daily briefing (weather, alarms, lists, latest note). */
+  Today = 9,
   Slot10 = 10,
   Slot11 = 11,
   Slot12 = 12,
@@ -111,7 +119,8 @@ enum class HomeApp : uint8_t {
 inline constexpr int kHomeGridSlots = 16;
 
 inline bool home_app_is_real(HomeApp a) {
-  return static_cast<uint8_t>(a) <= static_cast<uint8_t>(HomeApp::Update) || a == HomeApp::Reading;
+  return static_cast<uint8_t>(a) <= static_cast<uint8_t>(HomeApp::Update) || a == HomeApp::Reading ||
+         a == HomeApp::Today;
 }
 
 inline bool home_app_visible(const DeviceConfig& c, HomeApp a) {

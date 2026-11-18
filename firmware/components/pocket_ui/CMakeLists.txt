@@ -19,6 +19,7 @@ idf_component_register(
     "src/screens_sd.cpp"
     "src/screens_update.cpp"
     "src/sync.cpp"
+    "src/screens_today.cpp"
     "src/cloud_client.cpp"
     "src/screensaver.cpp"
     "src/ui.cpp"

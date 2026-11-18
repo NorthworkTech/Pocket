@@ -5,6 +5,7 @@ import { verifyDeviceApiKey } from "../lib/auth.js";
 import { createPairSession, getPairSessionPublic, claimPairSession } from "../lib/pairing.js";
 import { Errors } from "../lib/errors.js";
 import { get, run, all } from "../db/index.js";
+import { parseHomeOrder, readHomeOrder } from "../lib/device-features.js";
 
 export const pairRoutes = new Hono<AppEnv>();
 
@@ -43,52 +44,90 @@ pairRoutes.post("/claim", requireSession, async (c) => {
 
 export const deviceRoutes = new Hono<AppEnv>();
 
+type DeviceRow = {
+  id: string;
+  device_id: string;
+  device_name: string;
+  linked_at: string;
+  last_seen_at: string | null;
+  home_order_json: string;
+};
+
+const DEVICE_COLS = "id, device_id, device_name, linked_at, last_seen_at, home_order_json";
+
+function serializeDevice(d: DeviceRow) {
+  return {
+    id: d.id,
+    device_id: d.device_id,
+    device_name: d.device_name,
+    linked_at: d.linked_at,
+    last_seen_at: d.last_seen_at,
+    home_order: readHomeOrder(d.home_order_json),
+  };
+}
+
+function ownedDevice(id: string, userId: string): DeviceRow {
+  const link = get<DeviceRow>(
+    `SELECT ${DEVICE_COLS} FROM device_links WHERE (id = ? OR device_id = ?) AND user_id = ?`,
+    [id, id, userId],
+  );
+  if (!link) throw Errors.notFound("That device");
+  return link;
+}
+
 deviceRoutes.get("/", requireSession, async (c) => {
   const user = c.get("user")!;
-  const rows = all<{
-    id: string;
-    device_id: string;
-    device_name: string;
-    linked_at: string;
-    last_seen_at: string | null;
-  }>(
-    `SELECT id, device_id, device_name, linked_at, last_seen_at
-     FROM device_links WHERE user_id = ? ORDER BY linked_at DESC`,
+  const rows = all<DeviceRow>(
+    `SELECT ${DEVICE_COLS} FROM device_links WHERE user_id = ? ORDER BY linked_at DESC`,
     [user.id],
   );
-  return c.json({
-    devices: rows.map((d) => ({
-      id: d.id,
-      device_id: d.device_id,
-      device_name: d.device_name,
-      linked_at: d.linked_at,
-      last_seen_at: d.last_seen_at,
-    })),
-  });
+  return c.json({ devices: rows.map(serializeDevice) });
+});
+
+deviceRoutes.get("/:id", requireSession, async (c) => {
+  const user = c.get("user")!;
+  return c.json(serializeDevice(ownedDevice(c.req.param("id") ?? "", user.id)));
 });
 
 deviceRoutes.patch("/:id", requireSession, async (c) => {
   const user = c.get("user")!;
   const id = c.req.param("id") ?? "";
   const body = await c.req.json().catch(() => ({}));
-  let name = typeof body.device_name === "string" ? body.device_name.trim() : "";
-  if (!name) throw Errors.badRequest("Enter a name");
-  if (name.length > 20) throw Errors.badRequest("Name must be 20 characters or fewer.");
-  if (!/^[\p{L}\p{N} \-']+$/u.test(name)) {
-    throw Errors.badRequest("That name uses characters that aren't allowed.");
+  const hasName = typeof body.device_name === "string";
+  const hasHomeOrder = body.home_order !== undefined;
+  if (!hasName && !hasHomeOrder) throw Errors.badRequest("Nothing to update.");
+
+  let name = "";
+  if (hasName) {
+    name = body.device_name.trim();
+    if (!name) throw Errors.badRequest("Enter a name");
+    if (name.length > 20) throw Errors.badRequest("Name must be 20 characters or fewer.");
+    if (!/^[\p{L}\p{N} \-']+$/u.test(name)) {
+      throw Errors.badRequest("That name uses characters that aren't allowed.");
+    }
+  }
+  let homeOrderJson: string | null = null;
+  if (hasHomeOrder) {
+    const parsed = parseHomeOrder(body.home_order);
+    if (!parsed.ok) throw Errors.badRequest(parsed.message);
+    homeOrderJson = JSON.stringify(parsed.value);
   }
 
-  const link = get<{ id: string; user_id: string }>(
-    "SELECT id, user_id FROM device_links WHERE (id = ? OR device_id = ?) AND user_id = ?",
-    [id, id, user.id],
-  );
-  if (!link) throw Errors.notFound("That device");
+  const link = ownedDevice(id, user.id);
+  if (hasName) run("UPDATE device_links SET device_name = ? WHERE id = ?", [name, link.id]);
+  if (homeOrderJson !== null) {
+    run("UPDATE device_links SET home_order_json = ? WHERE id = ?", [homeOrderJson, link.id]);
+  }
+  return c.json(serializeDevice(ownedDevice(link.id, user.id)));
+});
 
-  run("UPDATE device_links SET device_name = ? WHERE id = ?", [name, link.id]);
-  return c.json({
-    id: link.id,
-    device_name: name,
-  });
+/** Find my Pocket: queue a chime, delivered once on the device's next attest. */
+deviceRoutes.post("/:id/ring", requireSession, async (c) => {
+  const user = c.get("user")!;
+  const link = ownedDevice(c.req.param("id") ?? "", user.id);
+  const queuedAt = new Date().toISOString();
+  run("UPDATE device_links SET ring_requested_at = ? WHERE id = ?", [queuedAt, link.id]);
+  return c.json({ ok: true, queued_at: queuedAt });
 });
 
 deviceRoutes.delete("/:id/link", requireSession, async (c) => {
