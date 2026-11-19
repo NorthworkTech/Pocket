@@ -30,7 +30,6 @@ const std::vector<RootEntry>& settings_root_entries() {
       {"Display", nullptr, Icon::Display, ScreenId::SettingsDisplay},
       {"Sound & quiet hours", nullptr, Icon::Sound, ScreenId::SettingsSound},
       {"Home apps", nullptr, Icon::Home, ScreenId::SettingsHomeApps},
-      {"Units", nullptr, Icon::Weather, ScreenId::SettingsUnits},
       {nullptr, "DEVICE", Icon::Home, ScreenId::SettingsRoot},
       {"PIN & security", nullptr, Icon::Lock, ScreenId::SettingsSecurity},
       {"Battery & storage", nullptr, Icon::Battery, ScreenId::SettingsStorage},
@@ -121,8 +120,7 @@ void App::render_settings() {
       if (b >= 0) std::snprintf(batt, sizeof(batt), "%d%%", b);
     }
     const auto& entries = settings_root_entries();
-    const std::string values[] = {wifi_val, cloud_val, "", "", "", cfg_.weather_units ? "\xC2\xB0" "C" : "\xC2\xB0" "F",
-                                  "", batt, kOsVersion, "", ""};
+    const std::string values[] = {wifi_val, cloud_val, "", "", "", "", batt, kOsVersion, "", ""};
     // Lay out sections + rows, then scroll so the focused row stays on screen.
     std::vector<int> ys;
     int y = kListTop, focus_y = kListTop, item = 0;

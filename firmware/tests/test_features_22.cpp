@@ -130,6 +130,7 @@ int main() {
   app.handle(InputEvent::Select);
   CHECK(app.screen() == ScreenId::Today);
   app.redraw(true);
+  app.handle(InputEvent::Down);  // Weather
   app.handle(InputEvent::Down);  // Clock block
   app.handle(InputEvent::Select);
   CHECK(app.screen() == ScreenId::ClockFace);

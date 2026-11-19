@@ -331,6 +331,47 @@ std::string EspCloud::device_sync_json(const std::string& device_id, const std::
   return resp;
 }
 
+std::string EspCloud::calendar_json(const std::string& device_id) {
+  if (device_id.empty()) return {};
+  const std::string url = std::string(POCKET_CLOUD_BASE) + "/v1/device/calendar?device_id=" + device_id;
+  int status = 0;
+  std::string resp;
+  if (!http_request("GET", url, POCKET_DEVICE_API_KEY, {}, status, resp, 15000, "application/json", "x-device-id",
+                    device_id.c_str()) ||
+      status != 200) {
+    ESP_LOGW(TAG, "calendar HTTP %d", status);
+    return {};
+  }
+  return resp;
+}
+
+bool EspCloud::post_backup(const std::string& device_id, const std::string& body) {
+  if (device_id.empty()) return false;
+  const std::string url = std::string(POCKET_CLOUD_BASE) + "/v1/device/backup?device_id=" + device_id;
+  int status = 0;
+  std::string resp;
+  if (!http_request("POST", url, POCKET_DEVICE_API_KEY, body, status, resp, 15000, "application/json", "x-device-id",
+                    device_id.c_str()) ||
+      status != 200) {
+    ESP_LOGW(TAG, "backup HTTP %d", status);
+    return false;
+  }
+  return true;
+}
+
+std::string EspCloud::backup_latest_json(const std::string& device_id) {
+  if (device_id.empty()) return {};
+  const std::string url = std::string(POCKET_CLOUD_BASE) + "/v1/device/backup/latest?device_id=" + device_id;
+  int status = 0;
+  std::string resp;
+  if (!http_request("GET", url, POCKET_DEVICE_API_KEY, {}, status, resp, 15000, "application/json", "x-device-id",
+                    device_id.c_str()) ||
+      status != 200) {
+    return {};  // 404 = no backup yet
+  }
+  return resp;
+}
+
 bool EspCloud::post_reading_progress(const std::string& device_id, const std::string& book_id, int page, int pages,
                                      int percent) {
   if (device_id.empty() || book_id.empty()) return false;

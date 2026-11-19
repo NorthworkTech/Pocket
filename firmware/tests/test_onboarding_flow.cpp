@@ -116,15 +116,11 @@ int main() {
   CHECK(app.screen() == ScreenId::OnboardingWelcome);
   CHECK(app.config().device_name == "Pocket Classic");
 
-  // Welcome → Download companion (required)
-  app.handle(InputEvent::Select);
-  CHECK(app.screen() == ScreenId::OnboardingCompanionDownload);
-
   // Power must not jump to Lock during setup
   app.handle(InputEvent::PowerLong);
-  CHECK(app.screen() == ScreenId::OnboardingCompanionDownload);
+  CHECK(app.screen() == ScreenId::OnboardingWelcome);
 
-  // Continue → SD gate
+  // Welcome → SD gate (no separate "get the app" step: Link's QR opens Companion)
   app.handle(InputEvent::Select);
   CHECK(app.screen() == ScreenId::OnboardingSdCard);
 
@@ -191,8 +187,7 @@ int main() {
     TAudio audio2;
     App app2(store2, clock2, wifi2, cloud2, disp2, &storage2, &audio2);
     app2.boot();
-    app2.handle(InputEvent::Select);  // welcome → download
-    app2.handle(InputEvent::Select);  // download → sd
+    app2.handle(InputEvent::Select);  // welcome → sd
     CHECK(app2.screen() == ScreenId::OnboardingSdCard);
     app2.handle(InputEvent::Select);  // erase
     CHECK(app2.screen() == ScreenId::OnboardingWifiPassword);

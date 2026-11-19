@@ -83,6 +83,13 @@ void App::boot() {
   load_weather_cache();
   music_load_local();
   reading_load_local();
+  calendar_load_cache();
+  if (storage_ && storage_->data_ensure_root()) {
+    std::string st;
+    JsonValue v;
+    if (read_file_recover(storage_->data_root() + "/backup_state.json", st) && json_parse(st, v) && v.is_object())
+      last_backup_unix_ = v.get_int("last");
+  }
   apply_cloud_offline_grace();
   if (!cfg_.onboarding_complete) {
     const ScreenId resume = resume_onboarding_screen();
@@ -794,6 +801,7 @@ void App::launch_home_app(HomeApp launch) {
       break;
     case HomeApp::Today:
       focus_.index = 0;
+      maybe_fetch_calendar(false);  // at most every 15 min; the cached events show offline
       nav_.push(ScreenId::Today);
       break;
     case HomeApp::Ledger:
@@ -870,7 +878,8 @@ void App::maybe_cloud_attest() {
   // ~20s so Companion “Online” / rename stay fresh after reconnect.
   // While locked nobody is looking: check in every 10 min instead of every 20 s
   // (still picks up remote lock / Wi-Fi hand-offs, at a fraction of the radio time).
-  const uint32_t attest_every = nav_.current() == ScreenId::Lock ? 600000u : 20000u;
+  uint32_t attest_every = nav_.current() == ScreenId::Lock ? 600000u : 20000u;
+  if (battery_saver_) attest_every *= 3;  // low battery: check in less often
   // A card inserted/removed is reported right away so Companion's upload limits follow it.
   const int sd_now = sd_present() ? 1 : 0;
   const bool sd_changed = sd_now != last_reported_sd_;
@@ -931,6 +940,7 @@ void App::maybe_cloud_attest() {
     cfg_.device_name = dname;
   }
   if (json_bool(body, "ring") == 1) ring_find_my_pocket();
+  if (json_bool(body, "backup_now") == 1) backup_requested_ = true;  // "Back up now" in Companion
   // Home order chosen in Companion (keys → HomeApp indices). Empty array = default order.
   if (const JsonValue* ho = attest_ok ? deep(attest_root, "home_order") : nullptr; ho && ho->is_array()) {
     static const struct { const char* key; HomeApp app; } kKeys[] = {
@@ -1101,6 +1111,16 @@ void App::tick(uint32_t now_ms) {
     }
   }
   maybe_push_reading_progress(false);
+  maybe_battery_saver();
+  maybe_backup(false);
+  if (nav_.current() == ScreenId::Lock && !dirty_ && !display_.busy() && quiet_now() != lock_night_shown_ &&
+      (last_lock_info_ms_ == now_ms_)) {
+    // Quiet hours just began or ended: switch faces with a deep, clean refresh.
+    want_deep_ = true;
+    redraw(true);
+  }
+  if ((nav_.current() == ScreenId::Home || nav_.current() == ScreenId::Lock) && !dirty_ && !display_.busy())
+    maybe_fetch_calendar(false);
   // SoftAP Wi‑Fi provision: wait for phone to POST credentials
   if (nav_.current() == ScreenId::OnboardingWifiPassword && !wifi_sta_connecting_) {
     if (now_ms - last_wifi_prov_poll_ms_ >= 400) {
@@ -1159,7 +1179,8 @@ void App::tick(uint32_t now_ms) {
         // Companion required: advance as soon as linked (no Skip path).
         if (!cfg_.onboarding_complete) {
           focus_.index = 0;
-          nav_.replace(ScreenId::OnboardingPinLength);
+          // A new Pocket on an account with a backup offers to restore it first.
+          nav_.replace(offer_restore_if_any() ? ScreenId::OnboardingRestore : ScreenId::OnboardingPinLength);
           after_nav();
         } else {
           mark_content_dirty();
@@ -1284,6 +1305,10 @@ void App::draw_status_bar() {
   const bool wifi_ok = wifi_.connected() || wifi_.provisioning();
   draw_status_bar_impl(canvas_, cfg_, h, m, wifi_ok, clock_.battery_percent(), clock_.time_valid(),
                        clock_.time_needs_network_sync());
+  if (battery_saver_) {
+    const int ty = (kStatusBarH - canvas_.text_height(Canvas::TextRole::StatusBar)) / 2;
+    canvas_.draw_text_centered(kCanvasW / 2, ty, "Battery saver", Canvas::TextRole::StatusBar, Gray::G0);
+  }
 }
 
 void App::handle(InputEvent e) {
@@ -1411,6 +1436,9 @@ void App::handle(InputEvent e) {
     case ScreenId::Today:
       handle_today(e);
       break;
+    case ScreenId::OnboardingRestore:
+      handle_restore(e);
+      break;
     default:
       handle_settings(e);
       break;
@@ -1475,6 +1503,9 @@ void App::render() {
     case ScreenId::Today:
       render_today();
       break;
+    case ScreenId::OnboardingRestore:
+      render_restore();
+      break;
     case ScreenId::PassList:
     case ScreenId::PassDetail:
       render_pass();
@@ -1518,6 +1549,12 @@ void App::render_lock() {
                                     Canvas::TextRole::Secondary, Gray::G0) + 10;
     }
     ui::button(canvas_, kBottomCtaY, "Press to continue", true);
+    return;
+  }
+  // Quiet hours: the bedtime face (a capture or its confirmation still shows the normal plate).
+  lock_night_shown_ = quiet_now() && !lock_recording_ && !(now_ms_ < lock_flash_until_ms_);
+  if (lock_night_shown_) {
+    render_night_face();
     return;
   }
   const bool plain = cfg_.screensaver == kScreensaverPlain;

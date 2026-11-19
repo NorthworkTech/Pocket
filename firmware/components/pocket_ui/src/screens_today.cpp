@@ -9,8 +9,8 @@
 namespace pocket {
 
 namespace {
-constexpr int kBlocks = 4;  // Weather, Clock, Lists, Notes
-constexpr int kBlockPitch = kRowPitch + 64;
+constexpr int kBlocks = 5;  // Calendar, Weather, Clock, Lists, Notes
+constexpr int kBlockPitch = kRowPitch + 54;
 
 std::string hm_label(int minutes, int fmt) {
   char b[16];
@@ -101,16 +101,24 @@ void App::render_today() {
     n_meta = latest->pending_pcm.empty() ? std::string("Latest note") : std::string("Voice note \xC2\xB7 waiting for Wi-Fi");
   }
 
-  static const char* kSections[kBlocks] = {"WEATHER", "CLOCK", "LISTS", "NOTES"};
-  static const Icon kIcons[kBlocks] = {Icon::Weather, Icon::Alarm, Icon::Check, Icon::Notes};
-  const std::string* lines[kBlocks] = {&w_line, &c_line, &l_line, &n_line};
-  const std::string* metas[kBlocks] = {&w_meta, &c_meta, &l_meta, &n_meta};
+  // Calendar (ICS feeds linked in Companion).
+  std::string k_line, k_meta;
+  if (!next_calendar_event(&k_line, &k_meta)) {
+    k_line = calendar_.empty() ? "No upcoming events" : "Nothing else coming up";
+    k_meta = cfg_.companion_linked ? "Link a calendar in Pocket Companion" : "Link Pocket to see your calendar";
+    if (!calendar_.empty()) k_meta = "Next 7 days are clear";
+  }
+
+  static const char* kSections[kBlocks] = {"CALENDAR", "WEATHER", "CLOCK", "LISTS", "NOTES"};
+  static const Icon kIcons[kBlocks] = {Icon::Calendar, Icon::Weather, Icon::Alarm, Icon::Check, Icon::Notes};
+  const std::string* lines[kBlocks] = {&k_line, &w_line, &c_line, &l_line, &n_line};
+  const std::string* metas[kBlocks] = {&k_meta, &w_meta, &c_meta, &l_meta, &n_meta};
   focus_.count = kBlocks;
   for (int i = 0; i < kBlocks; ++i) {
     const int y = kListTop + i * kBlockPitch;
     ui::section(canvas_, y, kSections[i]);
-    ui::row(canvas_, y + 30, Row{*lines[i], RowKind::Nav, {}, false, kIcons[i], true}, focus_.index == i);
-    canvas_.draw_text_fit(kSideMargin + 12, y + 30 + kFocusRowH + 2, kContentW - 12, *metas[i],
+    ui::row(canvas_, y + 24, Row{*lines[i], RowKind::Nav, {}, false, kIcons[i], true}, focus_.index == i);
+    canvas_.draw_text_fit(kSideMargin + 12, y + 24 + kFocusRowH + 1, kContentW - 12, *metas[i],
                           Canvas::TextRole::Caption, Gray::G0);
   }
 }
@@ -129,8 +137,15 @@ void App::handle_today(InputEvent e) {
     return;
   }
   if (e != InputEvent::Select) return;
-  static const HomeApp kDest[kBlocks] = {HomeApp::Weather, HomeApp::Clock, HomeApp::Notes, HomeApp::Notes};
-  if (focus_.index == 2) {
+  static const HomeApp kDest[kBlocks] = {HomeApp::Today, HomeApp::Weather, HomeApp::Clock, HomeApp::Notes,
+                                          HomeApp::Notes};
+  if (focus_.index == 0) {  // Calendar: refresh now (events are read-only on Pocket)
+    show_status("Updating your calendar\xE2\x80\xA6");
+    maybe_fetch_calendar(true);
+    mark_content_dirty();
+    return;
+  }
+  if (focus_.index == 3) {
     // Lists live on the Notes app's Lists tab.
     nav_.pop();
     launch_home_app(HomeApp::Notes);

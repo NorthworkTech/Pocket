@@ -102,8 +102,8 @@ int main(int argc, char** argv) {
       "sd-gate", "home", "notes", "note", "lists", "list", "ledger", "clock", "alarms", "alarm-edit",
       "timers", "timer-run", "pass", "pass-detail", "weather", "weather-city", "music", "now-playing",
       "reading", "book", "settings", "security", "wifi", "display", "sound", "home-apps", "units", "about",
-      "cloud", "update", "update-progress", "update-result", "ringing", "update-available", "today", "storage", "advanced"};
-  const int n_screens = static_cast<int>(ScreenId::SettingsAdvanced) + 1;
+      "cloud", "update", "update-progress", "update-result", "ringing", "update-available", "today", "storage", "advanced", "restore"};
+  const int n_screens = static_cast<int>(ScreenId::OnboardingRestore) + 1;
   FirmwareUpdateInfo upd;
   upd.version_name = "PocketOS 27.1 Beta";
   upd.size_bytes = 1572864;
@@ -132,6 +132,17 @@ int main(int argc, char** argv) {
     if (!write_ppm(path, app.canvas())) return 1;
   }
   app.host_set_tips_page(0);
+  {
+    app.mut_config().quiet_enabled = true;
+    app.mut_config().quiet_start_min = 0;
+    app.mut_config().quiet_end_min = 23 * 60 + 59;
+    app.host_goto(ScreenId::Lock);
+    app.redraw(true);
+    char path[512];
+    std::snprintf(path, sizeof(path), "%s/%02d-bedtime.ppm", out.c_str(), i++);
+    if (!write_ppm(path, app.canvas())) return 1;
+    app.mut_config().quiet_enabled = false;
+  }
   {
     std::string body;
     for (int k = 0; k < 5; ++k)

@@ -88,7 +88,7 @@ int main() {
   storage.disp = &disp;
   App app(store, clock, wifi, cloud, disp, &storage);
   app.boot();
-  app.host_goto(ScreenId::OnboardingCompanionDownload);
+  app.host_goto(ScreenId::OnboardingWelcome);
   app.handle(InputEvent::Select);  // → Storage step, card detected
   CHECK(app.screen() == ScreenId::OnboardingSdCard);
   const int before = disp.presents;

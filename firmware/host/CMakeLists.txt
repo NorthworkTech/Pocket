@@ -26,6 +26,9 @@ set(POCKET_UI_SRCS
   ${POCKET_UI}/src/screens_update.cpp
   ${POCKET_UI}/src/sync.cpp
   ${POCKET_UI}/src/screens_today.cpp
+  ${POCKET_UI}/src/voice_commands.cpp
+  ${POCKET_UI}/src/reading_stats.cpp
+  ${POCKET_UI}/src/features_23.cpp
   ${POCKET_UI}/src/cloud_client.cpp
   ${POCKET_UI}/src/screensaver.cpp
   ${POCKET_UI}/src/ui.cpp
@@ -208,3 +211,8 @@ add_executable(test_features_22 ../tests/test_features_22.cpp ${POCKET_UI_SRCS})
 target_include_directories(test_features_22 PRIVATE ${POCKET_UI}/include ${POCKET_UI}/vendor/qrcodegen)
 target_compile_definitions(test_features_22 PRIVATE POCKET_HOST=1)
 add_test(NAME test_features_22 COMMAND test_features_22)
+
+add_executable(test_features_23 ../tests/test_features_23.cpp ${POCKET_UI_SRCS})
+target_include_directories(test_features_23 PRIVATE ${POCKET_UI}/include ${POCKET_UI}/vendor/qrcodegen)
+target_compile_definitions(test_features_23 PRIVATE POCKET_HOST=1)
+add_test(NAME test_features_23 COMMAND test_features_23)

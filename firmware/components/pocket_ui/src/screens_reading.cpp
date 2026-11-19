@@ -452,6 +452,7 @@ void App::reading_open_book(int index) {
     reading_page_ = cfg_.reading_last_page;
   }
   book_index_ = index;
+  reading_page_shown_ms_ = now_ms_;
   play_sound(SoundId::Click);
   nav_.push(ScreenId::ReadingBook);
   after_nav();
@@ -485,8 +486,10 @@ void App::render_reading() {
                               reading_text_.substr(start, stop - start), Canvas::TextRole::Reading, Gray::G0);
     // Page indicator + progress hairline.
     const int total = static_cast<int>(reading_pages_.size());
-    char pg[32];
-    std::snprintf(pg, sizeof(pg), "%d of %d", reading_page_ + 1, total);
+    char pg[96];
+    const std::string left = reading_time_left_label();
+    std::snprintf(pg, sizeof(pg), "%d of %d%s%s", reading_page_ + 1, total, left.empty() ? "" : " \xC2\xB7 ",
+                  left.c_str());
     const int py = kBottomCtaY - 40;
     const int pw = canvas_.text_width(pg, Canvas::TextRole::Caption);
     canvas_.draw_text(kCanvasW - kSideMargin - pw, py, pg, Canvas::TextRole::Caption, Gray::G0);
@@ -522,8 +525,9 @@ void App::render_reading() {
 
   ui::header(canvas_, "Reading", true);
   if (!reading_status_.empty()) {
-    canvas_.draw_text_fit(kSideMargin, below_title(kContentTop) - 12, kContentW, reading_status_,
-                          Canvas::TextRole::Caption, Gray::G0);
+    const std::string stats = reading_summary_line();
+    canvas_.draw_text_fit(kSideMargin, below_title(kContentTop) - 12, kContentW,
+                          stats.empty() ? reading_status_ : stats, Canvas::TextRole::Caption, Gray::G0);
   }
   const int list_top = kListTopWithMeta;
   const int n = static_cast<int>(books_.size());
@@ -571,6 +575,8 @@ void App::handle_reading(InputEvent e) {
       }
     };
     if (e == InputEvent::Back) {
+      reading_note_page_left(false);
+      reading_stats_save();
       save_progress();
       maybe_push_reading_progress(true);
       nav_.pop();
@@ -586,18 +592,23 @@ void App::handle_reading(InputEvent e) {
     } else if (e == InputEvent::Select) {
       if (focus_.index == 0) {
         if (reading_page_ > 0) {
+          reading_note_page_left(false);
           --reading_page_;
           save_progress();
           mark_content_dirty();
         }
       } else if (focus_.index == 1) {
         if (reading_page_ + 1 < static_cast<int>(reading_pages_.size())) {
+          reading_note_page_left(true);
           ++reading_page_;
           save_progress();
           mark_content_dirty();
         }
       } else {
+        reading_note_page_left(false);
+        reading_stats_save();
         save_progress();
+        maybe_push_reading_progress(true);
         nav_.pop();
         after_nav();
       }

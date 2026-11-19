@@ -63,6 +63,7 @@ enum class ScreenId : uint16_t {
   Today,
   SettingsStorage,
   SettingsAdvanced,
+  OnboardingRestore,
 };
 
 struct NavStack {
@@ -144,30 +145,29 @@ inline bool screen_requires_full_enter(ScreenId s) {
 }
 
 inline int onboarding_step_of(ScreenId s) {
-  // welcome=1 … done=9 (SD gate after companion download, before Link)
+  // welcome=1 … done=8 (the old "get the app" step is gone: Link's QR opens Companion)
   switch (s) {
     case ScreenId::OnboardingWelcome:
       return 1;
-    case ScreenId::OnboardingCompanionDownload:
-      return 2;
+    case ScreenId::OnboardingCompanionDownload:  // legacy; not reached any more
     case ScreenId::OnboardingSdCard:
-      return 3;
+      return 2;
     case ScreenId::OnboardingWifiList:
     case ScreenId::OnboardingWifiPassword:
     case ScreenId::OnboardingWifiConnecting:
-      return 4;
+      return 3;
     case ScreenId::OnboardingCompanionQr:
-      return 5;
+      return 4;
     case ScreenId::OnboardingPinLength:
     case ScreenId::OnboardingPinSet:
     case ScreenId::OnboardingPinConfirm:
-      return 6;
+      return 5;
     case ScreenId::OnboardingTimezone:
-      return 7;
+      return 6;
     case ScreenId::OnboardingMicTest:
-      return 8;
+      return 7;
     case ScreenId::OnboardingDone:
-      return 9;
+      return 8;
     default:
       return 0;
   }

@@ -276,6 +276,8 @@ bool App::cloud_sync(bool show_progress) {
     TodoList L;
     L.id = id;
     L.title = o.get_string("title");
+    L.shared = o.get_bool("shared");
+    L.owner = o.get_string("owner");
     if (const JsonValue* items = o.get("items"); items && items->is_array()) {
       for (const auto& io : items->items) {
         if (!io.is_object()) continue;
@@ -290,11 +292,18 @@ bool App::cloud_sync(bool show_progress) {
       L.updated_at = now_ms_;
       data_.lists.push_back(L);
       lists_dirty = true;
-    } else if (list_hash(*local) != list_hash(L)) {
-      local->title = L.title;
-      local->items = L.items;
-      local->updated_at = now_ms_;
-      lists_dirty = true;
+    } else {
+      if (local->shared != L.shared || local->owner != L.owner) {
+        local->shared = L.shared;
+        local->owner = L.owner;
+        lists_dirty = true;
+      }
+      if (list_hash(*local) != list_hash(L)) {
+        local->title = L.title;
+        local->items = L.items;
+        local->updated_at = now_ms_;
+        lists_dirty = true;
+      }
     }
     n_lists[id] = list_hash(L);
   }
@@ -331,7 +340,8 @@ void App::maybe_cloud_sync() {
   // Quiet background sync only where nobody is mid-edit and nothing visibly jumps.
   const bool quiet = s == ScreenId::Lock || s == ScreenId::Home;
   if (!quiet) return;
-  const uint32_t every = s == ScreenId::Lock ? 15u * 60u * 1000u : 5u * 60u * 1000u;
+  uint32_t every = s == ScreenId::Lock ? 15u * 60u * 1000u : 5u * 60u * 1000u;
+  if (battery_saver_) every *= 4;  // low battery: background sync rarely; opening Notes still syncs
   if (last_sync_attempt_ms_ != 0 && now_ms_ - last_sync_attempt_ms_ < every) return;
   if (dirty_ || display_.busy()) return;
   (void)cloud_sync(false);

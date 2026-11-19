@@ -1,6 +1,7 @@
 #include "pocket/app.hpp"
 #include "pocket/ui.hpp"
 #include "pocket/json_lite.hpp"
+#include "pocket/voice_commands.hpp"
 #include <algorithm>
 #include <cmath>
 #include <cstdlib>
@@ -88,6 +89,8 @@ void App::load_local_lists() {
     L.id = o.get_string("id");
     L.title = o.get_string("title");
     L.updated_at = o.get_int("updated_at");
+    L.shared = o.get_bool("shared");
+    L.owner = o.get_string("owner");
     if (const JsonValue* items = o.get("items"); items && items->is_array()) {
       for (const auto& io : items->items) {
         if (!io.is_object()) continue;
@@ -116,7 +119,8 @@ bool App::save_local_lists() {
     const auto& L = data_.lists[i];
     if (i) out += ",";
     out += "{\"id\":\"" + json_escape_str(L.id) + "\",\"title\":\"" + json_escape_str(L.title) +
-           "\",\"updated_at\":" + std::to_string(L.updated_at) + ",\"items\":[";
+           "\",\"updated_at\":" + std::to_string(L.updated_at) + ",\"shared\":" + (L.shared ? "true" : "false") +
+           ",\"owner\":\"" + json_escape_str(L.owner) + "\",\"items\":[";
     for (size_t j = 0; j < L.items.size(); ++j) {
       const auto& it = L.items[j];
       if (j) out += ",";
@@ -289,8 +293,45 @@ bool App::notes_have_pending_dictation() const {
   return false;
 }
 
+bool App::apply_list_command(const std::string& t) {
+  ListCommand cmd;
+  if (!parse_list_command(t, cmd)) return false;
+  TodoList* target = nullptr;
+  for (auto& L : data_.lists)
+    if (list_name_matches(L.title, cmd.list)) {
+      target = &L;
+      break;
+    }
+  if (!target) {  // "add milk to groceries" with no Groceries list yet → make it
+    TodoList L;
+    L.id = new_local_id("L");
+    L.title = cmd.list;
+    L.title[0] = static_cast<char>(std::toupper(static_cast<unsigned char>(L.title[0])));
+    data_.lists.push_back(L);
+    target = &data_.lists.back();
+  }
+  for (const auto& item : cmd.items) {
+    ListItem it;
+    it.id = new_local_id("i");
+    it.text = item;
+    target->items.push_back(it);
+  }
+  target->updated_at = now_ms_;
+  save_local_lists();
+  std::string what = cmd.items.size() == 1 ? cmd.items[0] : std::to_string(cmd.items.size()) + " items";
+  error_msg_ = "Added " + what + " to " + target->title;
+  error_until_ms_ = now_ms_ + 3500;
+  transient_error_armed_ = true;
+  play_sound(SoundId::Success);
+  mark_content_dirty();
+  return true;
+}
+
 void App::apply_dictation_transcript(const std::string& t) {
   const ScreenId s = nav_.current();
+  // "Add milk to groceries" works from anywhere you dictate except inside a list (there,
+  // whatever you say simply becomes an item).
+  if (s != ScreenId::ListsDetail && apply_list_command(t)) return;
   if (s == ScreenId::ListsDetail && note_index_ < static_cast<int>(data_.lists.size())) {
     ListItem it;
     it.id = new_local_id("i");
@@ -489,6 +530,16 @@ void App::flush_pending_dictation() {
       continue;
     }
     const std::string done = n.pending_pcm;
+    // A voice-only note that turns out to be "add … to …" goes to the list instead.
+    const bool voice_only = n.body == kVoicePendingText || n.body == kVoicePendingTextLegacy;
+    if (voice_only && apply_list_command(t)) {
+      delete_pending_pcm(done);
+      n.pending_pcm.clear();
+      n.body.clear();
+      n.title = "\x01remove";  // swept below
+      notes_changed = true;
+      continue;
+    }
     replace_pending_text(n.body, t);
     if (n.title == "Voice note" || n.title.empty() || n.title == "Note") n.title = t.substr(0, 40);
     n.pending_pcm.clear();
@@ -497,6 +548,13 @@ void App::flush_pending_dictation() {
     notes_changed = true;
   }
 
+  data_.notes.erase(std::remove_if(data_.notes.begin(), data_.notes.end(),
+                                   [](const Note& n) { return n.title == "\x01remove"; }),
+                    data_.notes.end());
+  if (nav_.current() == ScreenId::NotesDetail && note_index_ >= static_cast<int>(data_.notes.size())) {
+    if (!nav_.pop()) nav_.reset(ScreenId::Home);
+    after_nav();
+  }
   for (auto& L : data_.lists) {
     for (auto& it : L.items) {
       if (it.pending_pcm.empty()) continue;
@@ -821,8 +879,13 @@ void App::render_notes() {
         const auto& L = data_.lists[static_cast<size_t>(i)];
         int done = 0;
         for (const auto& it : L.items) done += it.checked ? 1 : 0;
-        char cnt[24];
-        std::snprintf(cnt, sizeof(cnt), "%d/%d", done, static_cast<int>(L.items.size()));
+        char cnt[64];
+        // Pocket Family lists say who shared them: "Shared · Anna · 2/5".
+        if (L.shared)
+          std::snprintf(cnt, sizeof(cnt), "Shared%s%s \xC2\xB7 %d/%d", L.owner.empty() ? "" : " \xC2\xB7 ",
+                        L.owner.c_str(), done, static_cast<int>(L.items.size()));
+        else
+          std::snprintf(cnt, sizeof(cnt), "%d/%d", done, static_cast<int>(L.items.size()));
         ui::row(canvas_, row_y(list_top, k), Row{L.title, RowKind::Nav, cnt}, i == focus_.index);
       }
     }
@@ -1253,11 +1316,15 @@ void App::render_weather() {
   std::string upd = weather_updated_label();
   if (!wifi_.connected() && !data_.weather.days.empty()) upd = "Offline \xC2\xB7 " + upd;
   if (!upd.empty())
-    canvas_.draw_text_fit(kSideMargin, kBottomCtaY - kRowPitch - 34, kContentW, upd, Canvas::TextRole::Caption,
+    canvas_.draw_text_fit(kSideMargin, kBottomCtaY - 2 * kRowPitch - 34, kContentW, upd, Canvas::TextRole::Caption,
                           Gray::G0);
-  ui::row(canvas_, kBottomCtaY - kRowPitch, Row{"Refresh", RowKind::Plain, {}, false, Icon::Update, true},
+  ui::row(canvas_, kBottomCtaY - 2 * kRowPitch, Row{"Refresh", RowKind::Plain, {}, false, Icon::Update, true},
           focus_.index == 0);
-  ui::row(canvas_, kBottomCtaY, Row{"Change city", RowKind::Nav, {}, false, Icon::Weather, true}, focus_.index == 1);
+  ui::row(canvas_, kBottomCtaY - kRowPitch, Row{"Change city", RowKind::Nav, {}, false, Icon::Weather, true},
+          focus_.index == 1);
+  ui::row(canvas_, kBottomCtaY,
+          Row{"Units", RowKind::Value, cfg_.weather_units ? "\xC2\xB0" "C" : "\xC2\xB0" "F", false, Icon::Weather, true},
+          focus_.index == 2);
   if (now_ms_ < error_until_ms_ && !error_msg_.empty()) ui::toast(canvas_, error_msg_);
 }
 
@@ -1335,15 +1402,21 @@ void App::handle_weather(InputEvent e) {
     }
     return;
   }
-  focus_.count = 2;
+  focus_.count = 3;
   if (rot) {
     const int prev = focus_.index;
     focus_.move(e == InputEvent::Down ? 1 : -1);
-    if (focus_.index != prev) mark_region_dirty(0, kBottomCtaY - kRowPitch - 4, kCanvasW, kRowPitch + kFocusRowH + 8);
+    if (focus_.index != prev)
+      mark_region_dirty(0, kBottomCtaY - 2 * kRowPitch - 4, kCanvasW, 2 * kRowPitch + kFocusRowH + 8);
     return;
   }
   if (e == InputEvent::Select) {
-    if (focus_.index == 1) {
+    if (focus_.index == 2) {
+      // Units live with Weather (the only thing that uses them).
+      cfg_.weather_units = cfg_.weather_units ? 0 : 1;
+      store_.save(cfg_);
+      mark_content_dirty();
+    } else if (focus_.index == 1) {
       // Open the picker at the current city.
       focus_.index = 0;
       for (int i = 0; i < kCityCount; ++i)

@@ -86,7 +86,7 @@ void App::render_onboarding() {
   const ScreenId s = nav_.current();
   const int step = onboarding_step_of(s);
   if (step > 0 && !cfg_.onboarding_complete && !(s == ScreenId::OnboardingDone && tips_page_ > 0))
-    ui::steps(canvas_, step, 9);
+    ui::steps(canvas_, step, 8);
   const int ty = title_y(step);
   constexpr int kWrapW = kContentW;
   constexpr int kLineGap = kWrapGap;
@@ -408,7 +408,7 @@ void App::handle_onboarding(InputEvent e) {
         break;
       case ScreenId::OnboardingSdCard:
         sd_waiting_eject_ = false;
-        nav_.replace(ScreenId::OnboardingCompanionDownload);
+        nav_.replace(ScreenId::OnboardingWelcome);
         after_nav();
         break;
       case ScreenId::OnboardingCompanionDownload:
@@ -451,8 +451,17 @@ void App::handle_onboarding(InputEvent e) {
     if (cfg_.device_name.empty()) cfg_.device_name = "Pocket";
     store_.save(cfg_);
     play_sound(SoundId::Click);
+    // Straight on to Storage: the Link step's QR opens Pocket Companion in the browser, so a
+    // separate "get the app" step only slowed setup down.
+    sd_waiting_eject_ = false;
+    if (storage_) {
+      storage_->probe();
+      sd_kind_ = storage_->classify();
+    } else {
+      sd_kind_ = SdContentKind::Absent;
+    }
     focus_.index = 0;
-    nav_.replace(ScreenId::OnboardingCompanionDownload);
+    nav_.replace(ScreenId::OnboardingSdCard);
     after_nav();
     return;
   }

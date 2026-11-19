@@ -99,6 +99,12 @@ struct PlatformCloud {
   virtual std::string device_attest_json(const std::string& /*device_id*/) { return {}; }
   /** Tell Pocket Cloud whether a microSD is in (raises Companion upload limits). -1 = unknown. */
   virtual void set_sd_present(int /*sd*/) {}
+  /** Upcoming calendar events (ICS feeds linked in Companion): {"events":[…]}. Empty on failure. */
+  virtual std::string calendar_json(const std::string& /*device_id*/) { return {}; }
+  /** Save a settings/alarms/reading backup to Pocket Cloud. */
+  virtual bool post_backup(const std::string& /*device_id*/, const std::string& /*body*/) { return false; }
+  /** Latest backup from any of this account's Pockets: {"backup":{…}}. Empty if none/failure. */
+  virtual std::string backup_latest_json(const std::string& /*device_id*/) { return {}; }
   /** Report reading progress for Companion ("Walden · 42%"). Fire-and-forget. */
   virtual bool post_reading_progress(const std::string& /*device_id*/, const std::string& /*book_id*/,
                                      int /*page*/, int /*pages*/, int /*percent*/) {
@@ -275,6 +281,9 @@ struct TodoList {
   std::string title;
   std::vector<ListItem> items;
   int64_t updated_at = 0;
+  /** Pocket Family: shared into the family (owner = who shared it). From sync. */
+  bool shared = false;
+  std::string owner;
 };
 
 struct Alarm {
@@ -427,6 +436,16 @@ class App {
   std::string host_weather_label() const { return weather_updated_label(); }
   std::string host_lock_info() const { return lock_info_line(); }
   DeviceConfig& mut_config() { return cfg_; }
+  bool host_list_command(const std::string& t) { return apply_list_command(t); }
+  void host_page_left(bool fwd) { reading_note_page_left(fwd); }
+  int host_minutes_left() const { return reading_minutes_left(); }
+  float host_wpm() const { return reading_wpm_; }
+  void host_fetch_calendar() { maybe_fetch_calendar(true); }
+  bool host_next_event(std::string* l, std::string* m) const { return next_calendar_event(l, m); }
+  bool host_saver() const { return battery_saver_; }
+  void host_backup() { maybe_backup(true); }
+  bool host_apply_backup(const std::string& j) { return apply_backup(j); }
+  std::string host_backup_payload() const { return backup_payload(); }
   bool host_quiet_now() const { return quiet_now(); }
   void host_attest() { last_attest_ms_ = 0; maybe_cloud_attest(); }
   bool host_cloud_sync() { return cloud_sync(false); }
@@ -488,6 +507,52 @@ class App {
   /** Sounds that must play even in quiet hours: alarms, timers, Find my Pocket. */
   void play_sound_urgent(SoundId id);
   void ring_find_my_pocket();
+  /** "add milk to groceries" → item on that list (list created if needed). True if handled. */
+  bool apply_list_command(const std::string& transcript);
+  // ---- 2.3 (features_23.cpp) ----
+  struct CalEvent {
+    std::string title, location;
+    int64_t start = 0, end = 0;  // unix seconds
+    bool all_day = false;
+  };
+  std::vector<CalEvent> calendar_;
+  uint32_t calendar_fetch_ms_ = 0;
+  void calendar_load_cache();
+  void maybe_fetch_calendar(bool force);
+  /** "10:30 AM · Dentist" + "Tomorrow · Main St" for the next event, or empty. */
+  bool next_calendar_event(std::string* line, std::string* meta) const;
+  bool battery_saver_ = false;
+  void maybe_battery_saver();
+  bool lock_night_shown_ = false;
+  void render_night_face();
+  void maybe_backup(bool force);
+  bool backup_requested_ = false;
+  int64_t last_backup_unix_ = 0;
+  std::string backup_payload() const;
+  bool apply_backup(const std::string& backup_json);
+  std::string restore_offer_json_;
+  uint32_t last_saver_check_ms_ = 0;
+  uint32_t last_backup_attempt_ms_ = 0;
+  void render_restore();
+  void handle_restore(InputEvent e);
+  /** After linking during setup: fetch the newest backup; true if one is on offer. */
+  bool offer_restore_if_any();
+  std::string restore_offer_label_;
+  // ---- Reading stats (reading_stats.cpp) ----
+  std::string reading_day_key(int days_ago) const;
+  void reading_stats_load();
+  void reading_stats_save();
+  /** Call when leaving the current page (`forward` = a Next turn). */
+  void reading_note_page_left(bool forward);
+  int reading_minutes_left() const;
+  std::string reading_time_left_label() const;
+  std::string reading_summary_line();
+  bool reading_stats_loaded_ = false;
+  float reading_wpm_ = 0;
+  int reading_wpm_samples_ = 0;
+  int reading_turns_since_save_ = 0;
+  uint32_t reading_page_shown_ms_ = 0;
+  std::map<std::string, int> reading_day_seconds_;
   void render_today();
   void handle_today(InputEvent e);
   /** Small static line under the lock wordmark: date · next alarm · weather. */
