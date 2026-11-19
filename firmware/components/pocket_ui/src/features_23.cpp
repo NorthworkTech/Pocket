@@ -90,9 +90,24 @@ void App::maybe_fetch_calendar(bool force) {
 bool App::next_calendar_event(std::string* line, std::string* meta) const {
   if (!clock_.time_valid()) return false;
   const int64_t now = static_cast<int64_t>(std::time(nullptr));
+  // Local calendar date today, for all-day events (sent as UTC dates by the server).
+  struct tm today {};
+  {
+    const time_t nt = static_cast<time_t>(now);
+    localtime_r(&nt, &today);
+  }
+  const int64_t today_key = (today.tm_year + 1900) * 10000 + (today.tm_mon + 1) * 100 + today.tm_mday;
   for (const auto& e : calendar_) {
-    const int64_t end = e.end > e.start ? e.end : e.start + (e.all_day ? 86400 : 3600);
-    if (end <= now) continue;
+    if (e.all_day) {
+      const time_t st = static_cast<time_t>(e.start);
+      struct tm d {};
+      gmtime_r(&st, &d);
+      const int64_t key = (d.tm_year + 1900) * 10000 + (d.tm_mon + 1) * 100 + d.tm_mday;
+      if (key < today_key) continue;  // an all-day event lasts the whole local day
+    } else {
+      const int64_t end = e.end > e.start ? e.end : e.start + 3600;
+      if (end <= now) continue;
+    }
     const time_t st = static_cast<time_t>(e.start), nt = static_cast<time_t>(now);
     struct tm s {}, n {};
     if (e.all_day) gmtime_r(&st, &s);  // all-day dates are calendar dates, not instants
@@ -198,8 +213,10 @@ std::string App::backup_payload() const {
     out += std::string(i ? "," : "") + "{\"id\":\"" + esc(a.id) + "\",\"minutes\":" + std::to_string(a.minutes_of_day) +
            ",\"enabled\":" + (a.enabled ? "true" : "false") + ",\"label\":\"" + esc(a.label) + "\"}";
   }
-  out += "],\"reading\":{\"book\":\"" + esc(c.reading_last_book_id) + "\",\"page\":" +
-         std::to_string(c.reading_last_page) + "}}";
+  out += "],\"reading\":{\"positions\":[";
+  if (!c.reading_last_book_id.empty())
+    out += "{\"book\":\"" + esc(c.reading_last_book_id) + "\",\"page\":" + std::to_string(c.reading_last_page) + "}";
+  out += "]}}";
   return out;
 }
 
@@ -277,8 +294,14 @@ bool App::apply_backup(const std::string& backup_json) {
     save_alarms();
   }
   if (const JsonValue* r = b->get("reading"); r && r->is_object()) {
-    cfg_.reading_last_book_id = r->get_string("book");
-    cfg_.reading_last_page = static_cast<int>(r->get_int("page"));
+    const JsonValue* pos = r->get("positions");
+    const JsonValue* p0 = (pos && pos->is_array() && !pos->items.empty() && pos->items[0].is_object())
+                              ? &pos->items[0]
+                              : r;  // pre-2.3 shape {book,page}
+    if (!p0->get_string("book").empty()) {
+      cfg_.reading_last_book_id = p0->get_string("book");
+      cfg_.reading_last_page = static_cast<int>(p0->get_int("page"));
+    }
   }
   if (audio_) audio_->set_volume(cfg_.volume_percent);
   display_.set_brightness(cfg_.brightness_percent);

@@ -209,6 +209,18 @@ bool App::cloud_sync(bool show_progress) {
     return false;
   }
 
+  // Lists we pushed but can no longer reach (left the family / list unshared) leave Pocket.
+  if (const JsonValue* sk = root.get("skipped"); sk && sk->is_object()) {
+    if (const JsonValue* sl = sk->get("lists"); sl && sl->is_array()) {
+      for (const auto& o : sl->items) {
+        if (!o.is_object() || o.get_string("reason") != "unavailable") continue;
+        const std::string gone = o.get_string("id");
+        data_.lists.erase(std::remove_if(data_.lists.begin(), data_.lists.end(),
+                                         [&](const TodoList& L) { return L.id == gone && L.shared; }),
+                          data_.lists.end());
+      }
+    }
+  }
   // ---- 2. Adopt the server's set -----------------------------------------------------
   HashMap n_notes, n_lists;
   bool notes_dirty = false, lists_dirty = false;

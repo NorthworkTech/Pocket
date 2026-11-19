@@ -44,6 +44,7 @@ export type IconName =
   | 'clock'
   | 'sun'
   | 'calendar'
+  | 'family'
 
 const paths: Record<IconName, ReactElement> = {
   home: <path d="M3.5 11.5 12 4l8.5 7.5M6 9.5V20h12V9.5" />,
@@ -125,6 +126,13 @@ const paths: Record<IconName, ReactElement> = {
     <>
       <path d="M20 12a8 8 0 0 1-14.3 4.9M4 12a8 8 0 0 1 14.3-4.9" />
       <path d="M18.5 3v4.5H14M5.5 21v-4.5H10" />
+    </>
+  ),
+  family: (
+    <>
+      <circle cx="8.5" cy="8" r="3.2" />
+      <circle cx="16.5" cy="9.5" r="2.4" />
+      <path d="M2.5 19.5a6 6 0 0 1 12 0M14.5 15.2a4.6 4.6 0 0 1 7 4.3" />
     </>
   ),
   user: (

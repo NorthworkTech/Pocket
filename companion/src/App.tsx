@@ -6,7 +6,9 @@ import { AccountPage } from './pages/AccountPage'
 import { AuthCallbackPage } from './pages/AuthCallbackPage'
 import { BackupPage } from './pages/BackupPage'
 import { BillingCancelPage, BillingPage, BillingSuccessPage } from './pages/BillingPage'
+import { CalendarPage } from './pages/CalendarPage'
 import { ConnectorsPage } from './pages/ConnectorsPage'
+import { FamilyPage } from './pages/FamilyPage'
 import { DeviceDetailPage } from './pages/DeviceDetailPage'
 import { DeviceSetupPage } from './pages/DeviceSetupPage'
 import { DevicesPage } from './pages/DevicesPage'
@@ -88,6 +90,8 @@ export default function App() {
                 <Route path="/billing/cancel" element={<BillingCancelPage />} />
                 <Route path="/upgrade" element={<UpgradePage />} />
                 <Route path="/account" element={<AccountPage />} />
+                <Route path="/family" element={<FamilyPage />} />
+                <Route path="/calendar" element={<CalendarPage />} />
 
                 <Route element={<RequireEntitlement />}>
                   <Route path="/notes" element={<NotesListPage />} />

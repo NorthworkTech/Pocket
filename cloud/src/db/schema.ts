@@ -61,7 +61,8 @@ CREATE TABLE IF NOT EXISTS device_links (
   device_token_hash TEXT NOT NULL,
   sd_present INTEGER NOT NULL DEFAULT 0,
   ring_requested_at TEXT,
-  home_order_json TEXT NOT NULL DEFAULT '[]'
+  home_order_json TEXT NOT NULL DEFAULT '[]',
+  backup_requested_at TEXT
 );
 
 CREATE TABLE IF NOT EXISTS subscription_mirrors (
@@ -97,7 +98,8 @@ CREATE TABLE IF NOT EXISTS cloud_lists (
   updated_at TEXT NOT NULL,
   updated_by_device_id TEXT NOT NULL,
   deleted_at TEXT,
-  version INTEGER NOT NULL DEFAULT 1
+  version INTEGER NOT NULL DEFAULT 1,
+  family_id TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_lists_user_updated ON cloud_lists(user_id, updated_at);
@@ -167,6 +169,46 @@ CREATE TABLE IF NOT EXISTS reading_progress (
   updated_at TEXT NOT NULL,
   PRIMARY KEY (user_id, book_id)
 );
+
+CREATE TABLE IF NOT EXISTS families (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  owner_user_id TEXT NOT NULL UNIQUE REFERENCES users(id) ON DELETE CASCADE,
+  join_code TEXT,
+  join_code_expires_at TEXT,
+  created_at TEXT NOT NULL
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_families_join_code ON families(join_code);
+
+CREATE TABLE IF NOT EXISTS family_members (
+  user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+  family_id TEXT NOT NULL REFERENCES families(id) ON DELETE CASCADE,
+  role TEXT NOT NULL DEFAULT 'member',
+  joined_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_family_members_family ON family_members(family_id);
+
+CREATE TABLE IF NOT EXISTS calendar_feeds (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  label TEXT NOT NULL,
+  url TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS device_backups (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  device_id TEXT NOT NULL,
+  device_name TEXT NOT NULL DEFAULT 'Pocket',
+  created_at TEXT NOT NULL,
+  payload_json TEXT NOT NULL,
+  size_bytes INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_device_backups_user_created ON device_backups(user_id, created_at DESC);
 
 CREATE TABLE IF NOT EXISTS stripe_events (
   id TEXT PRIMARY KEY,

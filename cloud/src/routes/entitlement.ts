@@ -4,6 +4,7 @@ import { requireSession, requireDeviceToken } from "../middleware/auth.js";
 import { getEntitlementForUser } from "../lib/auth.js";
 import { get, run } from "../db/index.js";
 import { readHomeOrder, ringIsFresh } from "../lib/device-features.js";
+import { backupRequestIsFresh } from "../lib/device-backup.js";
 
 export const entitlementRoutes = new Hono<AppEnv>();
 
@@ -41,14 +42,22 @@ deviceAttestRoutes.get("/attest", requireDeviceToken, async (c) => {
     sd_present: number;
     ring_requested_at: string | null;
     home_order_json: string;
-  }>("SELECT sd_present, ring_requested_at, home_order_json FROM device_links WHERE id = ?", [
-    link.id,
-  ]);
+    backup_requested_at: string | null;
+  }>(
+    "SELECT sd_present, ring_requested_at, home_order_json, backup_requested_at FROM device_links WHERE id = ?",
+    [link.id],
+  );
   // Find my Pocket: deliver a queued ring once; rings older than 30 minutes expire silently.
   let ring = false;
   if (sd?.ring_requested_at) {
     ring = ringIsFresh(sd.ring_requested_at, new Date());
     run("UPDATE device_links SET ring_requested_at = NULL WHERE id = ?", [link.id]);
+  }
+  // "Back up now" from Companion: delivered once; requests older than 24 h expire silently.
+  let backupNow = false;
+  if (sd?.backup_requested_at) {
+    backupNow = backupRequestIsFresh(sd.backup_requested_at, new Date());
+    run("UPDATE device_links SET backup_requested_at = NULL WHERE id = ?", [link.id]);
   }
   return c.json({
     entitled: snapshot.entitled,
@@ -61,6 +70,7 @@ deviceAttestRoutes.get("/attest", requireDeviceToken, async (c) => {
     device_name: link.device_name,
     sd_present: Boolean(sd?.sd_present),
     ring,
+    backup_now: backupNow,
     home_order: readHomeOrder(sd?.home_order_json),
   });
 });

@@ -61,6 +61,15 @@ function migrateSchema(database: Db): void {
   if (!linkCols.has("home_order_json")) {
     database.run("ALTER TABLE device_links ADD COLUMN home_order_json TEXT NOT NULL DEFAULT '[]'");
   }
+  if (!linkCols.has("backup_requested_at")) {
+    database.run("ALTER TABLE device_links ADD COLUMN backup_requested_at TEXT");
+  }
+  const listCols = new Set(
+    allFrom(database, "PRAGMA table_info(cloud_lists)").map((r) => String(r.name)),
+  );
+  if (!listCols.has("family_id")) {
+    database.run("ALTER TABLE cloud_lists ADD COLUMN family_id TEXT");
+  }
 }
 
 function allFrom(database: Db, sql: string): Record<string, unknown>[] {

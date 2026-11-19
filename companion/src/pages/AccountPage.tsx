@@ -36,6 +36,8 @@ export function AccountPage() {
 
       <Group title="Pocket">
         <Row icon="device" to="/devices" title="Devices" />
+        <Row icon="family" to="/family" title="Pocket Family" detail="Share lists with the people you live with" />
+        <Row icon="calendar" to="/calendar" title="Calendar" detail="Your events on Pocket's Today" />
         <Row icon="link" to="/link" title="Link a Pocket" />
       </Group>
 

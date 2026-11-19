@@ -9,6 +9,11 @@ import { useDocumentTitle } from '../components/useDocumentTitle'
 import { Icon } from '../components/Icon'
 import { EmptyState, PageHeader, Row, SkeletonList } from '../components/ui'
 
+function sharedChip(l: PocketList) {
+  if (!l.shared) return null
+  return <span className="chip chip-accent chip--sm">Shared · {l.is_owner === false ? l.owner_name || 'Family' : 'You'}</span>
+}
+
 export function ListsListPage() {
   useDocumentTitle('Lists')
   const navigate = useNavigate()
@@ -97,7 +102,12 @@ export function ListsListPage() {
                 icon="lists"
                 to={`/lists/${l.id}`}
                 title={l.title || 'Untitled'}
-                detail={l.items.length ? `${done} of ${l.items.length} done` : 'Empty'}
+                detail={
+                  <>
+                    {l.items.length ? `${done} of ${l.items.length} done` : 'Empty'}
+                    {sharedChip(l)}
+                  </>
+                }
                 value={relativeTime(l.updated_at)}
               />
             )

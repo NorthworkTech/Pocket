@@ -449,7 +449,7 @@ async function applySyncRecords(table, recs, userId, skipped) {
   if (!recs.length) return;
   const ids = [...new Set(recs.map((r) => r.id))];
   const rows = await query(
-    `SELECT id, user_id, updated_at, deleted_at, updated_by_device_id FROM ${table} WHERE id IN (${ids.map(sqlStr).join(",")})`,
+    `SELECT id, user_id, updated_at, deleted_at, updated_by_device_id${table === "cloud_lists" ? ", family_id" : ""} FROM ${table} WHERE id IN (${ids.map(sqlStr).join(",")})`,
   );
   const existing = new Map(rows.map((r) => [r.id, r]));
   for (const r of recs) {
@@ -463,12 +463,21 @@ async function applySyncRecords(table, recs, userId, skipped) {
       continue;
     }
     if (ex.user_id !== userId) {
-      skipped.push({ id: r.id, reason: "unavailable" });
-      continue;
+      // Someone else's record: only a list shared into this user's Pocket Family is writable,
+      // and only its owner may delete it.
+      const familyEdit = table === "cloud_lists" && (await canAccessList(ex, userId));
+      if (!familyEdit) {
+        skipped.push({ id: r.id, reason: "unavailable" });
+        continue;
+      }
+      if (r.deleted_at) {
+        skipped.push({ id: r.id, reason: "not_owner" });
+        continue;
+      }
     }
     if (!incomingWinsLww(r, ex)) continue; // cloud copy is newer; it comes back in the response
     await query(
-      `UPDATE ${table} SET ${cols.map((c) => `${c}=${sqlStr(r.fields[c])}`).join(", ")}, updated_at=${sqlStr(r.updated_at)}, deleted_at=${sqlNullable(r.deleted_at)}, updated_by_device_id=${sqlStr(r.updated_by_device_id)}, version=version+1 WHERE id=${sqlStr(r.id)} AND user_id=${sqlStr(userId)}`,
+      `UPDATE ${table} SET ${cols.map((c) => `${c}=${sqlStr(r.fields[c])}`).join(", ")}, updated_at=${sqlStr(r.updated_at)}, deleted_at=${sqlNullable(r.deleted_at)}, updated_by_device_id=${sqlStr(r.updated_by_device_id)}, version=version+1 WHERE id=${sqlStr(r.id)} AND user_id=${sqlStr(ex.user_id)}`,
     );
     existing.set(r.id, { ...ex, updated_at: r.updated_at, deleted_at: r.deleted_at, updated_by_device_id: r.updated_by_device_id });
   }
@@ -553,6 +562,593 @@ function serializeProgress(p) {
     updated_at: Number.isFinite(t) ? new Date(t).toISOString() : p.updated_at,
   };
 }
+
+/** Postgres text timestamp → ISO-8601 (null stays null). */
+function isoTs(v) {
+  if (v == null || v === "") return null;
+  const t = Date.parse(v);
+  return Number.isFinite(t) ? new Date(t).toISOString() : v;
+}
+
+// ---- Pocket Family (shared lists) ----
+// Mirrors cloud/src/lib/family.ts + cloud/src/routes/family.ts — keep both in step.
+const FAMILY_MAX_MEMBERS = 6;
+const FAMILY_CODE_TTL_MS = 7 * 86400000;
+const FAMILY_NAME_MAX = 40;
+
+/** Friendly name shown to other family members: the email's local part. */
+function displayName(email) {
+  const e = String(email || "");
+  const at = e.indexOf("@");
+  return (at > 0 ? e.slice(0, at) : e) || "Someone";
+}
+
+function parseFamilyName(raw) {
+  const name = typeof raw === "string" ? raw.replace(/\s+/g, " ").trim() : "";
+  if (!name) return { ok: false, message: "Give your family a name." };
+  if (Array.from(name).length > FAMILY_NAME_MAX) {
+    return { ok: false, message: `Family name must be ${FAMILY_NAME_MAX} characters or fewer.` };
+  }
+  return { ok: true, value: name };
+}
+
+function generateFamilyCode() {
+  const bytes = randomBytes(8);
+  let out = "";
+  for (let i = 0; i < 8; i++) out += PAIR_ALPHABET[bytes[i] % PAIR_ALPHABET.length];
+  return out;
+}
+
+/**
+ * SQL predicate (alias `l` = cloud_lists) for lists `userId` may read/edit: their own, or lists
+ * shared into the family they belong to whose owner is still a member of that family.
+ */
+function listAccessSql(userId) {
+  const u = sqlStr(userId);
+  return `(l.user_id=${u} OR (l.family_id IS NOT NULL AND l.family_id=(SELECT fm.family_id FROM family_members fm WHERE fm.user_id=${u}) AND EXISTS (SELECT 1 FROM family_members fo WHERE fo.user_id=l.user_id AND fo.family_id=l.family_id)))`;
+}
+
+async function familyIdForUser(userId) {
+  const rows = await query(`SELECT family_id FROM family_members WHERE user_id=${sqlStr(userId)}`);
+  return rows[0]?.family_id || null;
+}
+
+async function canAccessList(row, userId) {
+  if (row.user_id === userId) return true;
+  if (!row.family_id) return false;
+  const mine = await familyIdForUser(userId);
+  if (!mine || mine !== row.family_id) return false;
+  return (await familyIdForUser(row.user_id)) === row.family_id;
+}
+
+async function myFamily(userId) {
+  const rows = await query(
+    `SELECT f.* FROM families f JOIN family_members m ON m.family_id=f.id WHERE m.user_id=${sqlStr(userId)}`,
+  );
+  return rows[0] || null;
+}
+
+async function serializeFamily(fam, viewerId) {
+  const members = await query(
+    `SELECT m.user_id, m.role, m.joined_at, u.email FROM family_members m JOIN users u ON u.id=m.user_id WHERE m.family_id=${sqlStr(fam.id)} ORDER BY m.joined_at ASC`,
+  );
+  const isOwner = fam.owner_user_id === viewerId;
+  const expMs = fam.join_code_expires_at ? Date.parse(fam.join_code_expires_at) : NaN;
+  const codeLive = !!fam.join_code && Number.isFinite(expMs) && expMs > Date.now();
+  return {
+    id: fam.id,
+    name: fam.name,
+    role: isOwner ? "owner" : "member",
+    created_at: isoTs(fam.created_at),
+    max_members: FAMILY_MAX_MEMBERS,
+    // Only the owner invites, so only the owner sees the code.
+    join_code: isOwner && codeLive ? fam.join_code : null,
+    join_code_expires_at: isOwner && codeLive ? isoTs(fam.join_code_expires_at) : null,
+    members: members.map((m) => ({
+      user_id: m.user_id,
+      name: displayName(m.email),
+      role: m.role === "owner" ? "owner" : "member",
+      joined_at: isoTs(m.joined_at),
+      is_me: m.user_id === viewerId,
+    })),
+  };
+}
+
+async function freshFamilyCode() {
+  for (let i = 0; i < 5; i++) {
+    const code = generateFamilyCode();
+    const clash = await query(`SELECT id FROM families WHERE join_code=${sqlStr(code)}`);
+    if (!clash.length) return { code, expires_at: new Date(Date.now() + FAMILY_CODE_TTL_MS).toISOString() };
+  }
+  return null;
+}
+
+/** Companion list shape: sync fields + who owns it + whether it's shared with the family. */
+function serializeListFor(row, viewerId) {
+  return {
+    ...serializeList(row),
+    shared: !!row.family_id,
+    is_owner: row.user_id === viewerId,
+    owner_name: displayName(row.owner_email),
+  };
+}
+
+async function accessibleList(id, userId) {
+  const rows = await query(
+    `SELECT l.*, u.email AS owner_email FROM cloud_lists l JOIN users u ON u.id=l.user_id WHERE l.id=${sqlStr(id)} AND ${listAccessSql(userId)}`,
+  );
+  return rows[0] || null;
+}
+
+// ---- Calendar on Today (ICS feeds) ----
+// Mirrors cloud/src/lib/calendar.ts + cloud/src/routes/calendar.ts — keep both in step.
+const CALENDAR_MAX_FEEDS = 5;
+const CALENDAR_LABEL_MAX = 40;
+const CALENDAR_URL_MAX = 2048;
+const CALENDAR_WINDOW_DAYS = 7;
+const CALENDAR_MAX_EVENTS = 30;
+const CALENDAR_CACHE_MS = 10 * 60 * 1000;
+const CALENDAR_FETCH_TIMEOUT_MS = 8000;
+const CALENDAR_MAX_BYTES = 5 * 1024 * 1024;
+
+/** webcal:// → https://; only public https URLs are accepted. */
+function normalizeFeedUrl(raw) {
+  const bad = { ok: false, message: "Paste the calendar's iCal link (it starts with https:// or webcal://)." };
+  let s = typeof raw === "string" ? raw.trim() : "";
+  if (!s || s.length > CALENDAR_URL_MAX) return bad;
+  if (/^webcals?:\/\//i.test(s)) s = s.replace(/^webcals?:\/\//i, "https://");
+  let url;
+  try {
+    url = new URL(s);
+  } catch {
+    return bad;
+  }
+  if (url.protocol !== "https:" || url.username || url.password) return bad;
+  const host = url.hostname.toLowerCase().replace(/^\[|\]$/g, "");
+  if (
+    host === "localhost" || host.endsWith(".localhost") || host.endsWith(".local") || host.endsWith(".internal") ||
+    /^\d+\.\d+\.\d+\.\d+$/.test(host) || host.includes(":")
+  ) {
+    return { ok: false, message: "That calendar link isn't a public web address." };
+  }
+  return { ok: true, value: url.toString() };
+}
+
+function normalizeFeedLabel(raw) {
+  const s = typeof raw === "string" ? raw.replace(/\s+/g, " ").trim() : "";
+  return Array.from(s || "Calendar").slice(0, CALENDAR_LABEL_MAX).join("");
+}
+
+function feedHost(url) {
+  try {
+    return new URL(url).hostname;
+  } catch {
+    return "";
+  }
+}
+
+function serializeFeed(f) {
+  return { id: f.id, label: f.label, host: feedHost(f.url), created_at: isoTs(f.created_at) };
+}
+
+const calendarCache = new Map(); // url → { at, events } (parsed VEVENTs, expanded per request)
+
+async function loadCalendarFeed(url, now) {
+  const hit = calendarCache.get(url);
+  if (hit && now - hit.at < CALENDAR_CACHE_MS) return hit.events;
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), CALENDAR_FETCH_TIMEOUT_MS);
+  try {
+    const res = await globalThis.fetch(url, {
+      signal: ctrl.signal,
+      redirect: "follow",
+      headers: { accept: "text/calendar, */*;q=0.5", "user-agent": "PocketCloud-Calendar/1.0" },
+    });
+    if (!res.ok) throw new Error(`calendar HTTP ${res.status}`);
+    const text = await res.text();
+    if (text.length > CALENDAR_MAX_BYTES) throw new Error("calendar too large");
+    if (!/BEGIN:VCALENDAR/i.test(text)) throw new Error("not an iCalendar feed");
+    const events = ICS.parseIcs(text);
+    calendarCache.set(url, { at: now, events });
+    if (calendarCache.size > 500) calendarCache.delete(calendarCache.keys().next().value);
+    return events;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/** Events across a user's feeds overlapping [now, now+7d]. A failing feed is skipped. */
+async function upcomingCalendarEvents(feeds, now) {
+  const to = new Date(now.getTime() + CALENDAR_WINDOW_DAYS * 86400000);
+  const perFeed = await Promise.all(
+    feeds.map(async (f) => {
+      try {
+        return ICS.expandEvents(await loadCalendarFeed(f.url, now.getTime()), now, to, f.label);
+      } catch {
+        return [];
+      }
+    }),
+  );
+  return ICS.mergeCalendarEvents(perFeed, CALENDAR_MAX_EVENTS);
+}
+
+// ---- Pocket device backup (settings, alarms, reading places) ----
+// Mirrors cloud/src/lib/device-backup.ts + cloud/src/routes/device-backup.ts — keep both in step.
+const DEVICE_BACKUP_MAX_BYTES = 64 * 1024;
+const DEVICE_BACKUP_KEEP = 5;
+const BACKUP_REQUEST_TTL_MS = 24 * 3600 * 1000; // "Back up now" waits this long for a check-in
+
+const isPlainObj = (v) => !!v && typeof v === "object" && !Array.isArray(v);
+
+function parseDeviceBackup(body) {
+  const bad = { ok: false, message: "That backup couldn't be read." };
+  if (!isPlainObj(body)) return bad;
+  const { settings = {}, alarms = [], reading = {} } = body;
+  if (!isPlainObj(settings) || !Array.isArray(alarms) || !isPlainObj(reading)) return bad;
+  if (body.settings === undefined && body.alarms === undefined && body.reading === undefined) return bad;
+  return { ok: true, value: { settings, alarms, reading } };
+}
+
+function backupReadingCount(reading) {
+  if (Array.isArray(reading.positions)) return reading.positions.length;
+  if (Array.isArray(reading.books)) return reading.books.length;
+  return Object.keys(reading).length;
+}
+
+function readBackupPayload(json) {
+  try {
+    const parsed = parseDeviceBackup(JSON.parse(json));
+    if (parsed.ok) return parsed.value;
+  } catch {
+    // fall through
+  }
+  return { settings: {}, alarms: [], reading: {} };
+}
+
+// ---- Calendar on Today: iCalendar reader ----
+// Generated from cloud/src/lib/ics.ts (esbuild, types stripped) — keep both in step; the TS file
+// has the commentary and the unit tests (cloud/tests/ics.test.ts).
+const ICS = (() => {
+  const DAY_MS = 864e5;
+  const WEEKDAYS = ["SU", "MO", "TU", "WE", "TH", "FR", "SA"];
+  const MAX_ITERATIONS = 2e4;
+  const zoneFormatters = new Map();
+  function zoneFormatter(tz) {
+    if (zoneFormatters.has(tz)) return zoneFormatters.get(tz);
+    let f = null;
+    try {
+      f = new Intl.DateTimeFormat("en-US", {
+        timeZone: tz,
+        hourCycle: "h23",
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit"
+      });
+    } catch {
+      f = null;
+    }
+    zoneFormatters.set(tz, f);
+    return f;
+  }
+  function resolveZone(tzid, fallback = "UTC") {
+    const raw = String(tzid || "").replace(/^"|"$/g, "").trim();
+    if (!raw) return fallback;
+    if (zoneFormatter(raw)) return raw;
+    const m = raw.match(/([A-Za-z_]+\/[A-Za-z_+-]+(?:\/[A-Za-z_+-]+)?)$/);
+    if (m && zoneFormatter(m[1])) return m[1];
+    return fallback;
+  }
+  function zoneOffset(utcMs, tz) {
+    if (tz === "UTC") return 0;
+    const f = zoneFormatter(tz);
+    if (!f) return 0;
+    const p = {};
+    for (const part of f.formatToParts(new Date(utcMs))) {
+      if (part.type !== "literal") p[part.type] = Number(part.value);
+    }
+    const asUtc = Date.UTC(p.year, p.month - 1, p.day, p.hour % 24, p.minute, p.second);
+    return asUtc - Math.floor(utcMs / 1e3) * 1e3;
+  }
+  function wallToUtc(wall, tz) {
+    if (tz === "UTC") return wall;
+    const o1 = zoneOffset(wall - 0, tz);
+    let t = wall - o1;
+    const o2 = zoneOffset(t, tz);
+    if (o2 !== o1) t = wall - o2;
+    return t;
+  }
+  function toUtc(t) {
+    return t.allDay ? t.wall : wallToUtc(t.wall, t.tz);
+  }
+  function unfoldLines(text) {
+    return text.replace(/\r\n/g, "\n").replace(/\r/g, "\n").replace(/\n[ \t]/g, "").split("\n").filter((l) => l.length > 0);
+  }
+  function parseLine(line) {
+    let i = 0;
+    let inQuote = false;
+    let colon = -1;
+    for (; i < line.length; i++) {
+      const ch = line[i];
+      if (ch === '"') inQuote = !inQuote;
+      else if (ch === ":" && !inQuote) {
+        colon = i;
+        break;
+      }
+    }
+    if (colon < 0) return null;
+    const head = line.slice(0, colon);
+    const value = line.slice(colon + 1);
+    const parts = head.match(/(?:[^;"]|"[^"]*")+/g) || [];
+    const name = (parts[0] || "").toUpperCase();
+    const params = {};
+    for (const p of parts.slice(1)) {
+      const eq = p.indexOf("=");
+      if (eq > 0) params[p.slice(0, eq).toUpperCase()] = p.slice(eq + 1).replace(/^"|"$/g, "");
+    }
+    return { name, params, value };
+  }
+  function unescapeText(v) {
+    return v.replace(/\\([\\;,nN])/g, (_, c) => c === "n" || c === "N" ? "\n" : c);
+  }
+  function parseIcsTime(value, params, defaultTz = "UTC") {
+    const v = value.trim();
+    const d = v.match(/^(\d{4})(\d{2})(\d{2})$/);
+    if (d || params.VALUE === "DATE") {
+      if (!d) return null;
+      return { wall: Date.UTC(+d[1], +d[2] - 1, +d[3]), tz: "UTC", allDay: true };
+    }
+    const m = v.match(/^(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})?(Z)?$/);
+    if (!m) return null;
+    const wall = Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +(m[6] || 0));
+    if (m[7]) return { wall, tz: "UTC", allDay: false };
+    return { wall, tz: resolveZone(params.TZID, defaultTz), allDay: false };
+  }
+  function parseDuration(v) {
+    const m = v.trim().match(/^([+-])?P(?:(\d+)W)?(?:(\d+)D)?(?:T(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?)?$/);
+    if (!m) return null;
+    const ms = (+(m[2] || 0) * 7 + +(m[3] || 0)) * DAY_MS + +(m[4] || 0) * 36e5 + +(m[5] || 0) * 6e4 + +(m[6] || 0) * 1e3;
+    return m[1] === "-" ? -ms : ms;
+  }
+  function parseRule(v, start, defaultTz) {
+    const kv = {};
+    for (const part of v.split(";")) {
+      const eq = part.indexOf("=");
+      if (eq > 0) kv[part.slice(0, eq).toUpperCase()] = part.slice(eq + 1);
+    }
+    const freq = kv.FREQ?.toUpperCase();
+    if (freq !== "DAILY" && freq !== "WEEKLY" && freq !== "MONTHLY" && freq !== "YEARLY") return null;
+    const interval = Math.max(1, Number.parseInt(kv.INTERVAL || "1", 10) || 1);
+    const count = kv.COUNT ? Math.max(0, Number.parseInt(kv.COUNT, 10) || 0) : null;
+    let until = null;
+    if (kv.UNTIL) {
+      const t = parseIcsTime(kv.UNTIL, {}, defaultTz);
+      if (t) {
+        until = t.allDay ? start.allDay ? t.wall : wallToUtc(t.wall + DAY_MS - 1, start.tz) : toUtc(t);
+      }
+    }
+    const byday = [];
+    for (const tok of (kv.BYDAY || "").split(",")) {
+      const m = tok.trim().toUpperCase().match(/^([+-]?\d{1,2})?(SU|MO|TU|WE|TH|FR|SA)$/);
+      if (m) byday.push({ ord: m[1] ? Number.parseInt(m[1], 10) : 0, day: WEEKDAYS.indexOf(m[2]) });
+    }
+    return { freq, interval, count, until, byday };
+  }
+  function parseIcs(text) {
+    const lines = unfoldLines(text);
+    let defaultTz = "UTC";
+    for (const l of lines) {
+      if (/^X-WR-TIMEZONE[:;]/i.test(l)) {
+        const p = parseLine(l);
+        if (p) defaultTz = resolveZone(p.value, "UTC");
+        break;
+      }
+    }
+    const out = [];
+    let props = null;
+    let depth = 0;
+    for (const line of lines) {
+      const p = parseLine(line);
+      if (!p) continue;
+      if (p.name === "BEGIN") {
+        if (p.value.trim().toUpperCase() === "VEVENT" && !props) {
+          props = [];
+          depth = 0;
+        } else if (props) depth++;
+        continue;
+      }
+      if (p.name === "END") {
+        if (!props) continue;
+        if (depth > 0) {
+          depth--;
+          continue;
+        }
+        if (p.value.trim().toUpperCase() === "VEVENT") {
+          const ev = buildEvent(props, defaultTz);
+          if (ev) out.push(ev);
+          props = null;
+        }
+        continue;
+      }
+      if (props && depth === 0) props.push(p);
+    }
+    return out;
+  }
+  function buildEvent(props, defaultTz) {
+    const first = (n) => props.find((p) => p.name === n);
+    const dtstart = first("DTSTART");
+    if (!dtstart) return null;
+    const start = parseIcsTime(dtstart.value, dtstart.params, defaultTz);
+    if (!start) return null;
+    let durationMs = null;
+    const dtend = first("DTEND");
+    const dur = first("DURATION");
+    if (dtend) {
+      const end = parseIcsTime(dtend.value, dtend.params, defaultTz);
+      if (end) durationMs = start.allDay ? end.wall - start.wall : toUtc(end) - toUtc(start);
+    } else if (dur) {
+      durationMs = parseDuration(dur.value);
+    }
+    if (durationMs == null && start.allDay) durationMs = DAY_MS;
+    if (durationMs != null && durationMs < 0) durationMs = 0;
+    const rr = first("RRULE");
+    const exdates = [];
+    for (const p of props.filter((x) => x.name === "EXDATE")) {
+      for (const v of p.value.split(",")) {
+        const t = parseIcsTime(v, p.params, defaultTz);
+        if (t) exdates.push(t.allDay && !start.allDay ? wallToUtc(t.wall + start.wall % DAY_MS, start.tz) : toUtc(t));
+      }
+    }
+    const rid = first("RECURRENCE-ID");
+    const ridTime = rid ? parseIcsTime(rid.value, rid.params, defaultTz) : null;
+    return {
+      uid: first("UID")?.value.trim() || "",
+      summary: unescapeText(first("SUMMARY")?.value || "").trim(),
+      location: unescapeText(first("LOCATION")?.value || "").trim(),
+      start,
+      durationMs,
+      rrule: rr ? parseRule(rr.value, start, defaultTz) : null,
+      exdates,
+      recurrenceId: ridTime ? toUtc(ridTime) : null,
+      cancelled: (first("STATUS")?.value || "").trim().toUpperCase() === "CANCELLED"
+    };
+  }
+  function daysInMonth(y, m0) {
+    return new Date(Date.UTC(y, m0 + 1, 0)).getUTCDate();
+  }
+  function nthWeekday(y, m0, weekday, ord) {
+    const dim = daysInMonth(y, m0);
+    if (ord > 0) {
+      const firstDow = new Date(Date.UTC(y, m0, 1)).getUTCDay();
+      const day2 = 1 + (weekday - firstDow + 7) % 7 + (ord - 1) * 7;
+      return day2 <= dim ? day2 : null;
+    }
+    const lastDow = new Date(Date.UTC(y, m0, dim)).getUTCDay();
+    const day = dim - (lastDow - weekday + 7) % 7 + (ord + 1) * 7;
+    return day >= 1 ? day : null;
+  }
+  function* occurrences(ev, stopWall) {
+    const rule = ev.rrule;
+    const start = ev.start.wall;
+    const tod = (start % DAY_MS + DAY_MS) % DAY_MS;
+    const s = new Date(start);
+    const sy = s.getUTCFullYear();
+    const sm = s.getUTCMonth();
+    const sd = s.getUTCDate();
+    let emitted = 0;
+    let iterations = 0;
+    const done = (wall) => {
+      if (rule.count != null && emitted >= rule.count) return true;
+      if (wall > stopWall) return true;
+      if (rule.until != null) {
+        const utc = ev.start.allDay ? wall : wallToUtc(wall, ev.start.tz);
+        if (utc > rule.until) return true;
+      }
+      return false;
+    };
+    let skipPeriods = 0;
+    const periodMs = (rule.freq === "DAILY" ? 1 : 7) * DAY_MS * rule.interval;
+    if (rule.count == null && (rule.freq === "DAILY" || rule.freq === "WEEKLY")) {
+      const lag = stopWall - 40 * DAY_MS - start;
+      if (lag > 0) skipPeriods = Math.floor(lag / periodMs);
+    }
+    for (let k = 0; ; k++) {
+      if (++iterations > MAX_ITERATIONS) return;
+      const step = k + skipPeriods;
+      let candidates = [];
+      if (rule.freq === "DAILY") {
+        candidates = [start + step * periodMs];
+      } else if (rule.freq === "WEEKLY") {
+        const days = rule.byday.length ? rule.byday.map((b) => b.day) : [s.getUTCDay()];
+        const startDow = (s.getUTCDay() + 6) % 7;
+        const weekStart = start - tod - startDow * DAY_MS + step * periodMs;
+        candidates = [...new Set(days)].map((d) => weekStart + (d + 6) % 7 * DAY_MS + tod).sort((a, b) => a - b);
+      } else if (rule.freq === "MONTHLY") {
+        const mi = sm + step * rule.interval;
+        const y = sy + Math.floor(mi / 12);
+        const m0 = (mi % 12 + 12) % 12;
+        if (rule.byday.length) {
+          const days = [];
+          for (const b of rule.byday) {
+            if (b.ord) {
+              const d = nthWeekday(y, m0, b.day, b.ord);
+              if (d) days.push(d);
+            } else {
+              for (let d = 1; d <= daysInMonth(y, m0); d++) {
+                if (new Date(Date.UTC(y, m0, d)).getUTCDay() === b.day) days.push(d);
+              }
+            }
+          }
+          candidates = [...new Set(days)].sort((a, b) => a - b).map((d) => Date.UTC(y, m0, d) + tod);
+        } else if (sd <= daysInMonth(y, m0)) {
+          candidates = [Date.UTC(y, m0, sd) + tod];
+        }
+      } else {
+        const y = sy + step * rule.interval;
+        if (sd <= daysInMonth(y, sm)) candidates = [Date.UTC(y, sm, sd) + tod];
+      }
+      if (!candidates.length) {
+        if (rule.freq === "MONTHLY" || rule.freq === "YEARLY") {
+          const probe = rule.freq === "YEARLY" ? Date.UTC(sy + step * rule.interval, 0, 1) : Date.UTC(sy, sm + step * rule.interval, 1);
+          if (probe > stopWall) return;
+        }
+        continue;
+      }
+      for (const c of candidates) {
+        if (c < start) continue;
+        if (done(c)) return;
+        emitted++;
+        yield c;
+      }
+    }
+  }
+  function expandEvents(events, from, to, calendar) {
+    const fromMs = from.getTime();
+    const toMs = to.getTime();
+    const SLACK = 14 * 36e5;
+    const overrides = new Set();
+    for (const ev of events) if (ev.recurrenceId != null) overrides.add(`${ev.uid}|${ev.recurrenceId}`);
+    const out = [];
+    const emit = (ev, startUtc) => {
+      const dur = ev.durationMs;
+      const endUtc = dur == null ? null : startUtc + dur;
+      const lo = ev.start.allDay ? fromMs - SLACK : fromMs;
+      const hi = ev.start.allDay ? toMs + SLACK : toMs;
+      const overlaps = endUtc == null || endUtc === startUtc ? startUtc >= lo && startUtc < hi : startUtc < hi && endUtc > lo;
+      if (!overlaps) return;
+      out.push({
+        title: ev.summary || "Busy",
+        start: new Date(startUtc).toISOString(),
+        end: endUtc == null ? null : new Date(endUtc).toISOString(),
+        all_day: ev.start.allDay,
+        location: ev.location,
+        calendar
+      });
+    };
+    for (const ev of events) {
+      if (ev.cancelled) continue;
+      if (ev.recurrenceId != null || !ev.rrule) {
+        emit(ev, toUtc(ev.start));
+        continue;
+      }
+      const ex = new Set(ev.exdates);
+      const stopWall = toMs + 2 * DAY_MS;
+      for (const wall of occurrences(ev, stopWall)) {
+        const utc = ev.start.allDay ? wall : wallToUtc(wall, ev.start.tz);
+        if (ex.has(utc)) continue;
+        if (overrides.has(`${ev.uid}|${utc}`)) continue;
+        emit(ev, utc);
+      }
+    }
+    return out;
+  }
+  function mergeCalendarEvents(lists, max = 30) {
+    return lists.flat().sort((a, b) => a.start.localeCompare(b.start) || a.title.localeCompare(b.title)).slice(0, max);
+  }
+  return { parseIcs, expandEvents, mergeCalendarEvents };
+})();
 
 function serializeMusicMeta(row) {
   return {
@@ -799,6 +1395,42 @@ async function ensureAdminSchema() {
     created_at TIMESTAMPTZ NOT NULL,
     deleted_at TIMESTAMPTZ
   )`);
+  // Pocket Family, Calendar on Today, device backups (scram-api-v19-family).
+  await query(`ALTER TABLE device_links ADD COLUMN IF NOT EXISTS backup_requested_at TIMESTAMPTZ`);
+  await query(`ALTER TABLE cloud_lists ADD COLUMN IF NOT EXISTS family_id TEXT`);
+  await query(`CREATE TABLE IF NOT EXISTS families (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    owner_user_id TEXT NOT NULL UNIQUE REFERENCES users(id) ON DELETE CASCADE,
+    join_code TEXT,
+    join_code_expires_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ NOT NULL
+  )`);
+  await query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_families_join_code ON families(join_code)`);
+  await query(`CREATE TABLE IF NOT EXISTS family_members (
+    user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+    family_id TEXT NOT NULL REFERENCES families(id) ON DELETE CASCADE,
+    role TEXT NOT NULL DEFAULT 'member',
+    joined_at TIMESTAMPTZ NOT NULL
+  )`);
+  await query(`CREATE INDEX IF NOT EXISTS idx_family_members_family ON family_members(family_id)`);
+  await query(`CREATE TABLE IF NOT EXISTS calendar_feeds (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    label TEXT NOT NULL,
+    url TEXT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL
+  )`);
+  await query(`CREATE TABLE IF NOT EXISTS device_backups (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    device_id TEXT NOT NULL,
+    device_name TEXT NOT NULL DEFAULT 'Pocket',
+    created_at TIMESTAMPTZ NOT NULL,
+    payload_json TEXT NOT NULL,
+    size_bytes INTEGER NOT NULL
+  )`);
+  await query(`CREATE INDEX IF NOT EXISTS idx_device_backups_user_created ON device_backups(user_id, created_at DESC)`);
   // Reading library (`books`) and device_links.volume_percent/brightness_percent were applied
   // directly against the database once (not re-run here — see cloud/neon-fn/README.md) rather
   // than added as ALTER/CREATE statements in this function.
@@ -1300,7 +1932,7 @@ export default {
     // Health does not depend on DB schema readiness so it stays useful for diagnosing DB-layer issues.
     if (path === "/health" || path === "/" || path === "/v1/health") {
       const sha256 = await getSelfSourceSha256();
-      return json(req, { ok: true, build: "scram-api-v18-today", sourceSha256: sha256 });
+      return json(req, { ok: true, build: "scram-api-v19-family", sourceSha256: sha256 });
     }
     try {
       await readySchema();
@@ -1563,6 +2195,21 @@ export default {
         return json(req, { ok: true, queued_at: queuedAt });
       }
 
+      // "Back up now": Pocket backs up on its next check-in (attest → backup_now, 24 h TTL).
+      const deviceBackupReqMatch = path.match(/^\/v1\/devices\/([^/]+)\/backup-request$/);
+      if (req.method === "POST" && deviceBackupReqMatch) {
+        const user = await userFromSession(req);
+        if (!user) return json(req, { message: "Sign in to continue." }, 401);
+        const id = decodeURIComponent(deviceBackupReqMatch[1]);
+        const rows = await query(
+          `SELECT id FROM device_links WHERE (id=${sqlStr(id)} OR device_id=${sqlStr(id)}) AND user_id=${sqlStr(user.id)} LIMIT 1`,
+        );
+        if (!rows[0]) return json(req, { message: "That device wasn't found." }, 404);
+        const queuedAt = new Date().toISOString();
+        await query(`UPDATE device_links SET backup_requested_at=${sqlStr(queuedAt)} WHERE id=${sqlStr(rows[0].id)}`);
+        return json(req, { ok: true, queued_at: queuedAt });
+      }
+
       const deviceLinkMatch = path.match(/^\/v1\/devices\/([^/]+)\/link$/);
       if (req.method === "DELETE" && deviceLinkMatch) {
         const user = await userFromSession(req);
@@ -1649,7 +2296,7 @@ export default {
         if (!userId) return json(req, { message: "Sign in to continue." }, 401);
         const now = new Date().toISOString();
         const links = await query(
-          `SELECT id, device_id, device_name, pending_wifi_ssid, pending_wifi_password, pending_wifi_at, parental_json, lock_message, volume_percent, brightness_percent, sd_present, ring_requested_at, home_order_json
+          `SELECT id, device_id, device_name, pending_wifi_ssid, pending_wifi_password, pending_wifi_at, parental_json, lock_message, volume_percent, brightness_percent, sd_present, ring_requested_at, home_order_json, backup_requested_at
            FROM device_links WHERE device_id='${esc(deviceId)}' ORDER BY linked_at DESC LIMIT 1`,
         );
         const link = links[0];
@@ -1691,6 +2338,15 @@ export default {
           const queuedMs = Date.parse(link.ring_requested_at);
           ring = cleared.length > 0 && Number.isFinite(queuedMs) && Date.now() - queuedMs <= RING_TTL_MS;
         }
+        // "Back up now" from Companion: delivered once (conditional clear), expires after 24 h.
+        let backupNow = false;
+        if (link.backup_requested_at) {
+          const cleared = await query(
+            `UPDATE device_links SET backup_requested_at=NULL WHERE id='${esc(link.id)}' AND backup_requested_at IS NOT NULL RETURNING id`,
+          );
+          const queuedMs = Date.parse(link.backup_requested_at);
+          backupNow = cleared.length > 0 && Number.isFinite(queuedMs) && Date.now() - queuedMs <= BACKUP_REQUEST_TTL_MS;
+        }
         return json(req, {
           entitled,
           status: sub?.status || "free",
@@ -1709,6 +2365,7 @@ export default {
           pending_wifi,
           sd_present: sdPresent,
           ring,
+          backup_now: backupNow,
           home_order: readHomeOrder(link.home_order_json),
         });
       }
@@ -2002,6 +2659,71 @@ export default {
         return json(req, { ok: true });
       }
 
+      // Device backup (x-device-key + device_id): settings, alarms and reading places, ≤ 64 KB.
+      // Keeps the last 5 per user; "latest" spans every Pocket on the account (new-Pocket restore).
+      if (req.method === "POST" && path === "/v1/device/backup") {
+        const deviceId = u.searchParams.get("device_id") || req.headers.get("x-device-id") || "";
+        const userId = await userIdForDeviceKey(req, deviceId);
+        if (!userId) return json(req, { message: "Sign in to continue." }, 401);
+        const raw = await req.text().catch(() => "");
+        if (Buffer.byteLength(raw, "utf8") > DEVICE_BACKUP_MAX_BYTES) {
+          return json(req, { message: "That backup is too large.", code: "backup_too_large" }, 413);
+        }
+        let body = null;
+        try { body = JSON.parse(raw); } catch { body = null; }
+        const parsed = parseDeviceBackup(body);
+        if (!parsed.ok) return json(req, { message: parsed.message }, 400);
+        const payload = JSON.stringify(parsed.value);
+        const links = await query(
+          `SELECT device_name FROM device_links WHERE device_id=${sqlStr(deviceId)} ORDER BY linked_at DESC LIMIT 1`,
+        );
+        const id = newId();
+        const createdAt = new Date().toISOString();
+        await query(
+          `INSERT INTO device_backups (id,user_id,device_id,device_name,created_at,payload_json,size_bytes) VALUES (${sqlStr(id)},${sqlStr(userId)},${sqlStr(deviceId)},${sqlStr(links[0]?.device_name || "Pocket")},${sqlStr(createdAt)},${sqlStr(payload)},${Buffer.byteLength(payload, "utf8")})`,
+        );
+        await query(
+          `DELETE FROM device_backups WHERE user_id=${sqlStr(userId)} AND id NOT IN (SELECT id FROM device_backups WHERE user_id=${sqlStr(userId)} ORDER BY created_at DESC, id DESC LIMIT ${DEVICE_BACKUP_KEEP})`,
+        );
+        await query(`UPDATE device_links SET last_seen_at=${sqlStr(createdAt)} WHERE device_id=${sqlStr(deviceId)}`);
+        return json(req, { ok: true, backup_id: id, created_at: createdAt });
+      }
+
+      if (req.method === "GET" && path === "/v1/device/backup/latest") {
+        const deviceId = u.searchParams.get("device_id") || req.headers.get("x-device-id") || "";
+        const userId = await userIdForDeviceKey(req, deviceId);
+        if (!userId) return json(req, { message: "Sign in to continue." }, 401);
+        const rows = await query(
+          `SELECT id, created_at, device_id, device_name, payload_json FROM device_backups WHERE user_id=${sqlStr(userId)} ORDER BY created_at DESC, id DESC LIMIT 1`,
+        );
+        if (!rows[0]) return json(req, { message: "There's no backup yet." }, 404);
+        const p = readBackupPayload(rows[0].payload_json);
+        return json(req, {
+          backup: {
+            id: rows[0].id,
+            created_at: isoTs(rows[0].created_at),
+            device_id: rows[0].device_id,
+            device_name: rows[0].device_name,
+            settings: p.settings,
+            alarms: p.alarms,
+            reading: p.reading,
+          },
+        });
+      }
+
+      // Calendar on Today (x-device-key + device_id): the user's ICS feeds, next 7 days, ≤ 30 events.
+      if (req.method === "GET" && path === "/v1/device/calendar") {
+        const deviceId = u.searchParams.get("device_id") || req.headers.get("x-device-id") || "";
+        const userId = await userIdForDeviceKey(req, deviceId);
+        if (!userId) return json(req, { message: "Sign in to continue." }, 401);
+        const feeds = await query(
+          `SELECT label, url FROM calendar_feeds WHERE user_id=${sqlStr(userId)} ORDER BY created_at ASC`,
+        );
+        const now = new Date();
+        const events = await upcomingCalendarEvents(feeds, now);
+        return json(req, { events, fetched_at: now.toISOString() });
+      }
+
       // Device ↔ cloud notes/lists sync (x-device-key + device_id). Body carries only records
       // changed on the device since its last good sync (tombstones have deleted_at); the response
       // is the user's full live set plus tombstones from the last 30 days.
@@ -2056,8 +2778,9 @@ export default {
         const notes = await query(
           `SELECT * FROM cloud_notes WHERE user_id=${sqlStr(userId)} AND (deleted_at IS NULL OR deleted_at > ${cutoff}) ORDER BY updated_at DESC`,
         );
+        // Own lists plus lists shared into the user's Pocket Family (those carry the owner's name).
         const lists = await query(
-          `SELECT * FROM cloud_lists WHERE user_id=${sqlStr(userId)} AND (deleted_at IS NULL OR deleted_at > ${cutoff}) ORDER BY updated_at DESC`,
+          `SELECT l.*, u.email AS owner_email FROM cloud_lists l JOIN users u ON u.id=l.user_id WHERE ${listAccessSql(userId)} AND (l.deleted_at IS NULL OR l.deleted_at > ${cutoff}) ORDER BY l.updated_at DESC`,
         );
         const links = await query(
           `SELECT sd_present FROM device_links WHERE device_id=${sqlStr(deviceId)} ORDER BY linked_at DESC LIMIT 1`,
@@ -2066,7 +2789,11 @@ export default {
           server_time: nowIso,
           sd_present: pgBool(links[0]?.sd_present),
           notes: notes.map((row) => syncIsoTimestamps(serializeNote(row))),
-          lists: lists.map((row) => syncIsoTimestamps(serializeList(row))),
+          lists: lists.map((row) =>
+            row.family_id
+              ? { ...syncIsoTimestamps(serializeList(row)), shared: true, owner: displayName(row.owner_email) }
+              : { ...syncIsoTimestamps(serializeList(row)), shared: false },
+          ),
           skipped,
         });
       }
@@ -2113,7 +2840,7 @@ export default {
         const secrets = await loadSttSecrets();
         return json(req, {
           ok: true,
-          build: "scram-api-v18-today",
+          build: "scram-api-v19-family",
           providers: {
             openai: Boolean(secrets.openai),
             groq: Boolean(secrets.groq),
@@ -2147,6 +2874,157 @@ export default {
         } catch (e) {
           return json(req, { message: "Couldn't reach speech service.", detail: String(e && e.message || e) }, 502);
         }
+      }
+
+      // ---- Pocket Family (session) ----
+      // GET/POST/PATCH/DELETE /v1/family, POST /v1/family/code|join|leave, DELETE /v1/family/members/:id
+      if (path === "/v1/family" || path.startsWith("/v1/family/")) {
+        const gate = await requireSessionUser(req);
+        if (gate.error) return gate.error;
+        const me = gate.user.id;
+        const notOwner = () => json(req, { message: "Only the family's owner can do that.", code: "not_family_owner" }, 403);
+        const noFamily = () => json(req, { message: "You're not in a Pocket Family.", code: "not_found" }, 404);
+        const unshareListsOf = (userId, familyId) =>
+          query(`UPDATE cloud_lists SET family_id=NULL WHERE user_id=${sqlStr(userId)} AND family_id=${sqlStr(familyId)}`);
+
+        if (path === "/v1/family" && req.method === "GET") {
+          const fam = await myFamily(me);
+          return json(req, { family: fam ? await serializeFamily(fam, me) : null });
+        }
+        if (path === "/v1/family" && req.method === "POST") {
+          const body = await req.json().catch(() => ({}));
+          const parsed = parseFamilyName(body?.name);
+          if (!parsed.ok) return json(req, { message: parsed.message }, 400);
+          if (await myFamily(me)) {
+            return json(req, { message: "You're already in a Pocket Family.", code: "family_exists" }, 409);
+          }
+          const code = await freshFamilyCode();
+          if (!code) return json(req, { message: "Couldn't make a code. Try again." }, 409);
+          const id = newId();
+          const now = new Date().toISOString();
+          await query(
+            `INSERT INTO families (id,name,owner_user_id,join_code,join_code_expires_at,created_at) VALUES (${sqlStr(id)},${sqlStr(parsed.value)},${sqlStr(me)},${sqlStr(code.code)},${sqlStr(code.expires_at)},${sqlStr(now)})`,
+          );
+          await query(
+            `INSERT INTO family_members (user_id,family_id,role,joined_at) VALUES (${sqlStr(me)},${sqlStr(id)},'owner',${sqlStr(now)})`,
+          );
+          return json(req, { family: await serializeFamily(await myFamily(me), me) }, 201);
+        }
+        if (path === "/v1/family" && (req.method === "PATCH" || req.method === "DELETE")) {
+          const fam = await myFamily(me);
+          if (!fam) return noFamily();
+          if (fam.owner_user_id !== me) return notOwner();
+          if (req.method === "DELETE") {
+            await query(`UPDATE cloud_lists SET family_id=NULL WHERE family_id=${sqlStr(fam.id)}`);
+            await query(`DELETE FROM family_members WHERE family_id=${sqlStr(fam.id)}`);
+            await query(`DELETE FROM families WHERE id=${sqlStr(fam.id)}`);
+            return json(req, { ok: true });
+          }
+          const body = await req.json().catch(() => ({}));
+          const parsed = parseFamilyName(body?.name);
+          if (!parsed.ok) return json(req, { message: parsed.message }, 400);
+          await query(`UPDATE families SET name=${sqlStr(parsed.value)} WHERE id=${sqlStr(fam.id)}`);
+          return json(req, { family: await serializeFamily(await myFamily(me), me) });
+        }
+        if (path === "/v1/family/code" && req.method === "POST") {
+          const fam = await myFamily(me);
+          if (!fam) return noFamily();
+          if (fam.owner_user_id !== me) return notOwner();
+          const code = await freshFamilyCode();
+          if (!code) return json(req, { message: "Couldn't make a code. Try again." }, 409);
+          await query(
+            `UPDATE families SET join_code=${sqlStr(code.code)}, join_code_expires_at=${sqlStr(code.expires_at)} WHERE id=${sqlStr(fam.id)}`,
+          );
+          return json(req, { family: await serializeFamily(await myFamily(me), me) });
+        }
+        if (path === "/v1/family/join" && req.method === "POST") {
+          const body = await req.json().catch(() => ({}));
+          const raw = typeof body?.code === "string" ? body.code : "";
+          const invalid = () => json(req, { message: "We couldn't find that code.", code: "family_code_invalid" }, 404);
+          if (!isValidPairCode(raw)) return invalid();
+          const fams = await query(`SELECT * FROM families WHERE join_code=${sqlStr(normalizePairCode(raw))}`);
+          const fam = fams[0];
+          if (!fam) return invalid();
+          const expMs = fam.join_code_expires_at ? Date.parse(fam.join_code_expires_at) : NaN;
+          if (!Number.isFinite(expMs) || expMs <= Date.now()) {
+            return json(req, { message: "This code has expired. Ask for a new one.", code: "family_code_expired" }, 410);
+          }
+          const current = await myFamily(me);
+          if (current) {
+            if (current.id === fam.id) return json(req, { family: await serializeFamily(current, me) });
+            return json(req, { message: "You're already in a Pocket Family. Leave it first.", code: "family_exists" }, 409);
+          }
+          const count = await query(`SELECT COUNT(*) AS n FROM family_members WHERE family_id=${sqlStr(fam.id)}`);
+          if (Number(count[0]?.n || 0) >= FAMILY_MAX_MEMBERS) {
+            return json(req, { message: `A Pocket Family can have up to ${FAMILY_MAX_MEMBERS} people.`, code: "family_full" }, 409);
+          }
+          await query(
+            `INSERT INTO family_members (user_id,family_id,role,joined_at) VALUES (${sqlStr(me)},${sqlStr(fam.id)},'member',${sqlStr(new Date().toISOString())}) ON CONFLICT (user_id) DO NOTHING`,
+          );
+          return json(req, { family: await serializeFamily(fam, me) });
+        }
+        if (path === "/v1/family/leave" && req.method === "POST") {
+          const fam = await myFamily(me);
+          if (!fam) return noFamily();
+          if (fam.owner_user_id === me) {
+            return json(req, { message: "You own this family. Delete it instead, or remove people first." }, 400);
+          }
+          await unshareListsOf(me, fam.id);
+          await query(`DELETE FROM family_members WHERE user_id=${sqlStr(me)}`);
+          return json(req, { ok: true });
+        }
+        const memberMatch = path.match(/^\/v1\/family\/members\/([^/]+)$/);
+        if (memberMatch && req.method === "DELETE") {
+          const fam = await myFamily(me);
+          if (!fam) return noFamily();
+          if (fam.owner_user_id !== me) return notOwner();
+          const target = decodeURIComponent(memberMatch[1]);
+          if (target === me) return json(req, { message: "You own this family. Delete it instead." }, 400);
+          const member = await query(
+            `SELECT user_id FROM family_members WHERE user_id=${sqlStr(target)} AND family_id=${sqlStr(fam.id)}`,
+          );
+          if (!member[0]) return json(req, { message: "That person isn't in your family." }, 404);
+          await unshareListsOf(target, fam.id);
+          await query(`DELETE FROM family_members WHERE user_id=${sqlStr(target)}`);
+          return json(req, { family: await serializeFamily(fam, me) });
+        }
+        return json(req, { message: "Not found." }, 404);
+      }
+
+      // ---- Calendar feeds for Today (session) ----
+      if (path === "/v1/calendar/feeds" && (req.method === "GET" || req.method === "POST")) {
+        const gate = await requireSessionUser(req);
+        if (gate.error) return gate.error;
+        const me = gate.user.id;
+        if (req.method === "GET") {
+          const rows = await query(`SELECT * FROM calendar_feeds WHERE user_id=${sqlStr(me)} ORDER BY created_at ASC`);
+          return json(req, { feeds: rows.map(serializeFeed), max_feeds: CALENDAR_MAX_FEEDS });
+        }
+        const body = await req.json().catch(() => ({}));
+        const url = normalizeFeedUrl(body?.url);
+        if (!url.ok) return json(req, { message: url.message }, 400);
+        const count = await query(`SELECT COUNT(*) AS n FROM calendar_feeds WHERE user_id=${sqlStr(me)}`);
+        if (Number(count[0]?.n || 0) >= CALENDAR_MAX_FEEDS) {
+          return json(req, { message: `You can add up to ${CALENDAR_MAX_FEEDS} calendars.`, code: "calendar_limit" }, 409);
+        }
+        const dup = await query(`SELECT id FROM calendar_feeds WHERE user_id=${sqlStr(me)} AND url=${sqlStr(url.value)}`);
+        if (dup[0]) return json(req, { message: "That calendar is already added.", code: "conflict" }, 409);
+        const feed = { id: newId(), label: normalizeFeedLabel(body?.label), url: url.value, created_at: new Date().toISOString() };
+        await query(
+          `INSERT INTO calendar_feeds (id,user_id,label,url,created_at) VALUES (${sqlStr(feed.id)},${sqlStr(me)},${sqlStr(feed.label)},${sqlStr(feed.url)},${sqlStr(feed.created_at)})`,
+        );
+        return json(req, { feed: serializeFeed(feed) }, 201);
+      }
+      const calFeedMatch = path.match(/^\/v1\/calendar\/feeds\/([^/]+)$/);
+      if (calFeedMatch && req.method === "DELETE") {
+        const gate = await requireSessionUser(req);
+        if (gate.error) return gate.error;
+        const id = decodeURIComponent(calFeedMatch[1]);
+        const rows = await query(
+          `DELETE FROM calendar_feeds WHERE id=${sqlStr(id)} AND user_id=${sqlStr(gate.user.id)} RETURNING id`,
+        );
+        if (!rows[0]) return json(req, { message: "That calendar wasn't found." }, 404);
+        return json(req, { ok: true });
       }
 
       // ---- Notes ----
@@ -2251,12 +3129,11 @@ export default {
         const gate = await requireEntitledUser(req);
         if (gate.error) return gate.error;
         const includeDeleted = u.searchParams.get("include_deleted") === "1";
+        // Own lists plus lists shared into the user's Pocket Family.
         const rows = await query(
-          includeDeleted
-            ? `SELECT * FROM cloud_lists WHERE user_id='${esc(gate.user.id)}' ORDER BY updated_at DESC`
-            : `SELECT * FROM cloud_lists WHERE user_id='${esc(gate.user.id)}' AND deleted_at IS NULL ORDER BY updated_at DESC`,
+          `SELECT l.*, u.email AS owner_email FROM cloud_lists l JOIN users u ON u.id=l.user_id WHERE ${listAccessSql(gate.user.id)}${includeDeleted ? "" : " AND l.deleted_at IS NULL"} ORDER BY l.updated_at DESC`,
         );
-        return json(req, { lists: rows.map(serializeList) });
+        return json(req, { lists: rows.map((r) => serializeListFor(r, gate.user.id)) });
       }
 
       if (req.method === "POST" && path === "/v1/lists") {
@@ -2288,23 +3165,43 @@ export default {
         return json(req, { list: serializeList(rows[0]) }, existing[0] ? 200 : 201);
       }
 
+      // Share a list with (or take it back from) the owner's Pocket Family. Owner only.
+      const listShareMatch = path.match(/^\/v1\/lists\/([^/]+)\/share$/);
+      if (req.method === "POST" && listShareMatch) {
+        const gate = await requireEntitledUser(req);
+        if (gate.error) return gate.error;
+        const id = decodeURIComponent(listShareMatch[1]);
+        const row = await accessibleList(id, gate.user.id);
+        if (!row || row.deleted_at) return json(req, { message: "List not found." }, 404);
+        if (row.user_id !== gate.user.id) {
+          return json(req, { message: "Only the person who made this list can change sharing.", code: "not_list_owner" }, 403);
+        }
+        const body = await req.json().catch(() => ({}));
+        if (typeof body?.shared !== "boolean") return json(req, { message: "Say whether to share the list." }, 400);
+        let familyId = null;
+        if (body.shared) {
+          familyId = await familyIdForUser(gate.user.id);
+          if (!familyId) return json(req, { message: "Start or join a Pocket Family first." }, 400);
+        }
+        await query(`UPDATE cloud_lists SET family_id=${sqlNullable(familyId)} WHERE id=${sqlStr(id)}`);
+        return json(req, { list: serializeListFor(await accessibleList(id, gate.user.id), gate.user.id) });
+      }
+
       const listMatch = path.match(/^\/v1\/lists\/([^/]+)$/);
       if (listMatch) {
         const gate = await requireEntitledUser(req);
         if (gate.error) return gate.error;
         const id = decodeURIComponent(listMatch[1]);
         if (req.method === "GET") {
-          const rows = await query(
-            `SELECT * FROM cloud_lists WHERE id='${esc(id)}' AND user_id='${esc(gate.user.id)}'`,
-          );
-          if (!rows[0]) return json(req, { message: "List not found." }, 404);
-          return json(req, serializeList(rows[0]));
+          // Owner, or a member of the Pocket Family the list is shared with.
+          const row = await accessibleList(id, gate.user.id);
+          if (!row) return json(req, { message: "List not found." }, 404);
+          return json(req, serializeListFor(row, gate.user.id));
         }
         if (req.method === "PATCH") {
           const body = await req.json().catch(() => ({}));
-          const existing = await query(
-            `SELECT * FROM cloud_lists WHERE id='${esc(id)}' AND user_id='${esc(gate.user.id)}'`,
-          );
+          const row = await accessibleList(id, gate.user.id);
+          const existing = row ? [row] : [];
           if (!existing[0]) return json(req, { message: "List not found." }, 404);
           const title = typeof body.title === "string" ? body.title : existing[0].title;
           const itemsJson = Array.isArray(body.items)
@@ -2318,15 +3215,15 @@ export default {
           await query(
             `UPDATE cloud_lists SET title=${sqlStr(title)}, items_json=${sqlStr(itemsJson)}, updated_at=${sqlStr(updated_at)}, updated_by_device_id=${sqlStr(updated_by)}, version=version+1 WHERE id='${esc(id)}'`,
           );
-          const rows = await query(`SELECT * FROM cloud_lists WHERE id='${esc(id)}'`);
-          return json(req, serializeList(rows[0]));
+          return json(req, serializeListFor(await accessibleList(id, gate.user.id), gate.user.id));
         }
         if (req.method === "DELETE") {
           const body = await req.json().catch(() => ({}));
-          const existing = await query(
-            `SELECT * FROM cloud_lists WHERE id='${esc(id)}' AND user_id='${esc(gate.user.id)}'`,
-          );
-          if (!existing[0]) return json(req, { message: "List not found." }, 404);
+          const row = await accessibleList(id, gate.user.id);
+          if (!row) return json(req, { message: "List not found." }, 404);
+          if (row.user_id !== gate.user.id) {
+            return json(req, { message: "Only the person who made this list can delete it.", code: "not_list_owner" }, 403);
+          }
           const updated_at = typeof body.updated_at === "string" ? body.updated_at : new Date().toISOString();
           const updated_by =
             typeof body.updated_by_device_id === "string" && body.updated_by_device_id
@@ -2362,6 +3259,40 @@ export default {
           `SELECT id, created_at, note_count, list_count, size_bytes FROM backups WHERE user_id='${esc(gate.user.id)}' ORDER BY created_at DESC`,
         );
         return json(req, { backups: rows });
+      }
+
+      // Pocket device backups for Companion (newest first, up to 5 kept) + pending "Back up now"s.
+      if (req.method === "GET" && path === "/v1/backups/devices") {
+        const gate = await requireEntitledUser(req);
+        if (gate.error) return gate.error;
+        const me = sqlStr(gate.user.id);
+        const rows = await query(
+          `SELECT id, created_at, device_id, device_name, payload_json, size_bytes FROM device_backups WHERE user_id=${me} ORDER BY created_at DESC, id DESC`,
+        );
+        const pending = await query(
+          `SELECT device_id, backup_requested_at FROM device_links WHERE user_id=${me} AND backup_requested_at IS NOT NULL`,
+        );
+        return json(req, {
+          backups: rows.map((r) => {
+            const p = readBackupPayload(r.payload_json);
+            return {
+              id: r.id,
+              created_at: isoTs(r.created_at),
+              device_id: r.device_id,
+              device_name: r.device_name,
+              size_bytes: Number(r.size_bytes || 0),
+              settings_count: Object.keys(p.settings).length,
+              alarm_count: p.alarms.length,
+              reading_count: backupReadingCount(p.reading),
+            };
+          }),
+          pending_requests: pending
+            .filter((d) => {
+              const t = Date.parse(d.backup_requested_at);
+              return Number.isFinite(t) && Date.now() - t <= BACKUP_REQUEST_TTL_MS;
+            })
+            .map((d) => ({ device_id: d.device_id, requested_at: isoTs(d.backup_requested_at) })),
+        });
       }
 
       // ---- Billing (Stripe via Admin-configured keys or env) ----

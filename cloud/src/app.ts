@@ -15,6 +15,9 @@ import { bookRoutes, deviceReadingRoutes } from "./routes/reading.js";
 import { backupRoutes } from "./routes/backups.js";
 import { publicShareRoutes } from "./routes/share.js";
 import { connectorRoutes } from "./routes/connectors.js";
+import { familyRoutes } from "./routes/family.js";
+import { calendarRoutes, deviceCalendarRoutes } from "./routes/calendar.js";
+import { deviceBackupRoutes } from "./routes/device-backup.js";
 import { PRODUCT_NAME, isMockBilling } from "./stripe/billing.js";
 
 export function createApp() {
@@ -58,6 +61,10 @@ export function createApp() {
   app.route("/v1/device", deviceAttestRoutes);
   app.route("/v1/device", deviceSyncRoutes);
   app.route("/v1/device", deviceReadingRoutes);
+  app.route("/v1/device", deviceCalendarRoutes);
+  app.route("/v1/device", deviceBackupRoutes);
+  app.route("/v1/family", familyRoutes);
+  app.route("/v1/calendar", calendarRoutes);
   app.route("/v1/books", bookRoutes);
   app.route("/v1/billing", billingRoutes);
   app.route("/v1/notes", notesRoutes);

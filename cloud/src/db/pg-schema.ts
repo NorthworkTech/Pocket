@@ -62,6 +62,7 @@ CREATE TABLE IF NOT EXISTS device_links (
 ALTER TABLE device_links ADD COLUMN IF NOT EXISTS sd_present BOOLEAN NOT NULL DEFAULT false;
 ALTER TABLE device_links ADD COLUMN IF NOT EXISTS ring_requested_at TIMESTAMPTZ;
 ALTER TABLE device_links ADD COLUMN IF NOT EXISTS home_order_json TEXT NOT NULL DEFAULT '[]';
+ALTER TABLE device_links ADD COLUMN IF NOT EXISTS backup_requested_at TIMESTAMPTZ;
 
 CREATE TABLE IF NOT EXISTS reading_progress (
   user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -111,6 +112,7 @@ CREATE TABLE IF NOT EXISTS cloud_lists (
 );
 
 CREATE INDEX IF NOT EXISTS idx_lists_user_updated ON cloud_lists(user_id, updated_at);
+ALTER TABLE cloud_lists ADD COLUMN IF NOT EXISTS family_id TEXT;
 
 CREATE TABLE IF NOT EXISTS backups (
   id TEXT PRIMARY KEY,
@@ -165,5 +167,41 @@ CREATE TABLE IF NOT EXISTS mock_checkouts (
   with_trial INTEGER NOT NULL,
   created_at TIMESTAMPTZ NOT NULL,
   completed_at TIMESTAMPTZ
+);
+
+CREATE TABLE IF NOT EXISTS families (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  owner_user_id TEXT NOT NULL UNIQUE REFERENCES users(id) ON DELETE CASCADE,
+  join_code TEXT,
+  join_code_expires_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ NOT NULL
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_families_join_code ON families(join_code);
+
+CREATE TABLE IF NOT EXISTS family_members (
+  user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+  family_id TEXT NOT NULL REFERENCES families(id) ON DELETE CASCADE,
+  role TEXT NOT NULL DEFAULT 'member',
+  joined_at TIMESTAMPTZ NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS calendar_feeds (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  label TEXT NOT NULL,
+  url TEXT NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS device_backups (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  device_id TEXT NOT NULL,
+  device_name TEXT NOT NULL DEFAULT 'Pocket',
+  created_at TIMESTAMPTZ NOT NULL,
+  payload_json TEXT NOT NULL,
+  size_bytes INTEGER NOT NULL
 );
 `;

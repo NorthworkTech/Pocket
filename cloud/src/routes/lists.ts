@@ -3,7 +3,8 @@ import type { AppEnv } from "../middleware/auth.js";
 import { requireSession, requireEntitled } from "../middleware/auth.js";
 import { get, run, all } from "../db/index.js";
 import { newId } from "../lib/crypto.js";
-import { Errors } from "../lib/errors.js";
+import { AppError, Errors } from "../lib/errors.js";
+import { LIST_ACCESS_SQL, displayName, familyIdForUser } from "../lib/family.js";
 import {
   incomingWinsLww,
   normalizeUpdatedAt,
@@ -21,7 +22,11 @@ export type ListRow = {
   updated_by_device_id: string;
   deleted_at: string | null;
   version: number;
+  family_id?: string | null;
 };
+
+/** A list row joined with its owner's email (for family-shared lists). */
+type ListRowWithOwner = ListRow & { owner_email?: string | null };
 
 function parseItems(json: string): ListItem[] {
   try {
@@ -45,6 +50,25 @@ export function serializeList(row: ListRow) {
   };
 }
 
+/** Companion shape: the sync fields plus who owns it and whether it's shared with the family. */
+export function serializeListFor(row: ListRowWithOwner, viewerId: string) {
+  const isOwner = row.user_id === viewerId;
+  return {
+    ...serializeList(row),
+    shared: !!row.family_id,
+    is_owner: isOwner,
+    owner_name: displayName(row.owner_email),
+  };
+}
+
+function accessibleList(id: string, userId: string): ListRowWithOwner | undefined {
+  return get<ListRowWithOwner>(
+    `SELECT l.*, u.email AS owner_email FROM cloud_lists l JOIN users u ON u.id = l.user_id
+     WHERE l.id = ? AND ${LIST_ACCESS_SQL}`,
+    [id, userId, userId],
+  );
+}
+
 export const listsRoutes = new Hono<AppEnv>();
 
 listsRoutes.use("*", requireSession, requireEntitled);
@@ -52,13 +76,14 @@ listsRoutes.use("*", requireSession, requireEntitled);
 listsRoutes.get("/", (c) => {
   const user = c.get("user")!;
   const includeDeleted = c.req.query("include_deleted") === "1";
-  const rows = all<ListRow>(
-    includeDeleted
-      ? `SELECT * FROM cloud_lists WHERE user_id = ? ORDER BY updated_at DESC`
-      : `SELECT * FROM cloud_lists WHERE user_id = ? AND deleted_at IS NULL ORDER BY updated_at DESC`,
-    [user.id],
+  // Own lists plus lists shared into the user's Pocket Family.
+  const rows = all<ListRowWithOwner>(
+    `SELECT l.*, u.email AS owner_email FROM cloud_lists l JOIN users u ON u.id = l.user_id
+     WHERE ${LIST_ACCESS_SQL}${includeDeleted ? "" : " AND l.deleted_at IS NULL"}
+     ORDER BY l.updated_at DESC`,
+    [user.id, user.id],
   );
-  return c.json({ lists: rows.map(serializeList) });
+  return c.json({ lists: rows.map((r) => serializeListFor(r, user.id)) });
 });
 
 listsRoutes.post("/", async (c) => {
@@ -129,21 +154,36 @@ listsRoutes.post("/", async (c) => {
 
 listsRoutes.get("/:id", (c) => {
   const user = c.get("user")!;
-  const row = get<ListRow>("SELECT * FROM cloud_lists WHERE id = ? AND user_id = ?", [
-    c.req.param("id"),
-    user.id,
-  ]);
+  const row = accessibleList(c.req.param("id"), user.id);
   if (!row || row.deleted_at) throw Errors.notFound("That list");
-  return c.json({ list: serializeList(row) });
+  return c.json({ list: serializeListFor(row, user.id) });
+});
+
+/** Share a list with (or take it back from) the owner's Pocket Family. Owner only. */
+listsRoutes.post("/:id/share", async (c) => {
+  const user = c.get("user")!;
+  const id = c.req.param("id");
+  const row = accessibleList(id, user.id);
+  if (!row || row.deleted_at) throw Errors.notFound("That list");
+  if (row.user_id !== user.id) {
+    throw new AppError(403, "not_list_owner", "Only the person who made this list can change sharing.");
+  }
+  const body = await c.req.json().catch(() => ({}));
+  if (typeof body?.shared !== "boolean") throw Errors.badRequest("Say whether to share the list.");
+  let familyId: string | null = null;
+  if (body.shared) {
+    familyId = familyIdForUser(user.id);
+    if (!familyId) throw Errors.badRequest("Start or join a Pocket Family first.");
+  }
+  run("UPDATE cloud_lists SET family_id = ? WHERE id = ?", [familyId, id]);
+  return c.json({ list: serializeListFor(accessibleList(id, user.id)!, user.id) });
 });
 
 listsRoutes.patch("/:id", async (c) => {
   const user = c.get("user")!;
   const id = c.req.param("id");
-  const existing = get<ListRow>("SELECT * FROM cloud_lists WHERE id = ? AND user_id = ?", [
-    id,
-    user.id,
-  ]);
+  // Owner or a member of the family the list is shared with.
+  const existing = accessibleList(id, user.id);
   if (!existing || existing.deleted_at) throw Errors.notFound("That list");
 
   const body = await c.req.json().catch(() => ({}));
@@ -171,7 +211,7 @@ listsRoutes.patch("/:id", async (c) => {
       },
     )
   ) {
-    return c.json({ list: serializeList(existing), conflict: "kept_existing" });
+    return c.json({ list: serializeListFor(existing, user.id), conflict: "kept_existing" });
   }
 
   const merged = mergeListItems(parseItems(existing.items_json), incomingItems);
@@ -179,18 +219,17 @@ listsRoutes.patch("/:id", async (c) => {
     `UPDATE cloud_lists SET title = ?, items_json = ?, updated_at = ?, updated_by_device_id = ?, version = version + 1 WHERE id = ?`,
     [title, JSON.stringify(merged), updated_at, updated_by, id],
   );
-  const row = get<ListRow>("SELECT * FROM cloud_lists WHERE id = ?", [id])!;
-  return c.json({ list: serializeList(row) });
+  return c.json({ list: serializeListFor(accessibleList(id, user.id)!, user.id) });
 });
 
 listsRoutes.delete("/:id", async (c) => {
   const user = c.get("user")!;
   const id = c.req.param("id");
-  const existing = get<ListRow>("SELECT * FROM cloud_lists WHERE id = ? AND user_id = ?", [
-    id,
-    user.id,
-  ]);
+  const existing = accessibleList(id, user.id);
   if (!existing) throw Errors.notFound("That list");
+  if (existing.user_id !== user.id) {
+    throw new AppError(403, "not_list_owner", "Only the person who made this list can delete it.");
+  }
   const now = new Date().toISOString();
   const body = await c.req.json().catch(() => ({}));
   const updated_by =

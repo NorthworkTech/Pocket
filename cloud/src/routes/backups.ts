@@ -5,6 +5,7 @@ import { all, get, run } from "../db/index.js";
 import { newId } from "../lib/crypto.js";
 import { Errors } from "../lib/errors.js";
 import { config } from "../config.js";
+import { backupRequestIsFresh, backupSummary, readBackupPayload } from "../lib/device-backup.js";
 
 export const backupRoutes = new Hono<AppEnv>();
 
@@ -24,6 +25,42 @@ backupRoutes.get("/", (c) => {
     [user.id],
   );
   return c.json({ backups: rows });
+});
+
+/**
+ * Pocket device backups for Companion: newest first (up to 5 kept), with what's inside, plus
+ * which Pockets have a "Back up now" waiting for their next check-in.
+ */
+backupRoutes.get("/devices", (c) => {
+  const user = c.get("user")!;
+  const rows = all<{
+    id: string;
+    created_at: string;
+    device_id: string;
+    device_name: string;
+    payload_json: string;
+    size_bytes: number;
+  }>(
+    `SELECT id, created_at, device_id, device_name, payload_json, size_bytes FROM device_backups
+     WHERE user_id = ? ORDER BY created_at DESC, id DESC`,
+    [user.id],
+  );
+  const now = new Date();
+  const pending = all<{ device_id: string; backup_requested_at: string | null }>(
+    "SELECT device_id, backup_requested_at FROM device_links WHERE user_id = ? AND backup_requested_at IS NOT NULL",
+    [user.id],
+  ).filter((d) => backupRequestIsFresh(d.backup_requested_at, now));
+  return c.json({
+    backups: rows.map((r) => ({
+      id: r.id,
+      created_at: r.created_at,
+      device_id: r.device_id,
+      device_name: r.device_name,
+      size_bytes: Number(r.size_bytes),
+      ...backupSummary(readBackupPayload(r.payload_json)),
+    })),
+    pending_requests: pending.map((d) => ({ device_id: d.device_id, requested_at: d.backup_requested_at })),
+  });
 });
 
 backupRoutes.post("/", (c) => {

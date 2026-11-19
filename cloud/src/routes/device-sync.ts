@@ -16,6 +16,7 @@ import {
 } from "../lib/device-sync.js";
 import { serializeNote, type NoteRow } from "./notes.js";
 import { serializeList, type ListRow } from "./lists.js";
+import { LIST_ACCESS_SQL, canAccessList, displayName } from "../lib/family.js";
 
 type ExistingRow = {
   id: string;
@@ -23,6 +24,7 @@ type ExistingRow = {
   updated_at: string;
   deleted_at: string | null;
   updated_by_device_id: string;
+  family_id?: string | null;
 };
 
 /**
@@ -43,7 +45,9 @@ function applyRecords<T extends SyncEnvelope>(
   for (const r of recs) {
     if (existing.has(r.id)) continue;
     const row = get<ExistingRow>(
-      `SELECT id, user_id, updated_at, deleted_at, updated_by_device_id FROM ${table} WHERE id = ?`,
+      table === "cloud_lists"
+        ? `SELECT id, user_id, updated_at, deleted_at, updated_by_device_id, family_id FROM cloud_lists WHERE id = ?`
+        : `SELECT id, user_id, updated_at, deleted_at, updated_by_device_id FROM cloud_notes WHERE id = ?`,
       [r.id],
     );
     if (row) existing.set(r.id, row);
@@ -77,8 +81,18 @@ function applyRecords<T extends SyncEnvelope>(
       existing.set(r.id, next);
       continue;
     }
-    if (ex.user_id !== userId) {
+    // Someone else's record: only a list shared into this user's Pocket Family is writable, and
+    // only its owner may delete it.
+    const familyEdit =
+      ex.user_id !== userId &&
+      table === "cloud_lists" &&
+      canAccessList({ user_id: ex.user_id, family_id: ex.family_id ?? null }, userId);
+    if (ex.user_id !== userId && !familyEdit) {
       skipped.push({ id: r.id, reason: "unavailable" });
+      continue;
+    }
+    if (familyEdit && r.deleted_at) {
+      skipped.push({ id: r.id, reason: "not_owner" });
       continue;
     }
     if (!incomingWinsLww(r, ex)) continue; // cloud copy is newer; it comes back in the response
@@ -92,10 +106,10 @@ function applyRecords<T extends SyncEnvelope>(
         r.deleted_at,
         r.updated_by_device_id,
         r.id,
-        userId,
+        ex.user_id,
       ],
     );
-    existing.set(r.id, next);
+    existing.set(r.id, { ...ex, ...next, user_id: ex.user_id });
   }
 }
 
@@ -160,10 +174,12 @@ deviceSyncRoutes.post("/sync", requireDeviceToken, async (c) => {
      ORDER BY updated_at DESC`,
     [user.id, cutoff],
   );
-  const listRows = all<ListRow>(
-    `SELECT * FROM cloud_lists WHERE user_id = ? AND (deleted_at IS NULL OR deleted_at > ?)
-     ORDER BY updated_at DESC`,
-    [user.id, cutoff],
+  // Own lists plus lists shared into the user's Pocket Family (shared ones carry the owner's name).
+  const listRows = all<ListRow & { owner_email: string }>(
+    `SELECT l.*, u.email AS owner_email FROM cloud_lists l JOIN users u ON u.id = l.user_id
+     WHERE ${LIST_ACCESS_SQL} AND (l.deleted_at IS NULL OR l.deleted_at > ?)
+     ORDER BY l.updated_at DESC`,
+    [user.id, user.id, cutoff],
   );
   const sd = get<{ sd_present: number }>("SELECT sd_present FROM device_links WHERE id = ?", [
     link.id,
@@ -172,7 +188,11 @@ deviceSyncRoutes.post("/sync", requireDeviceToken, async (c) => {
     server_time: serverNow.toISOString(),
     sd_present: Boolean(sd?.sd_present),
     notes: noteRows.map(serializeNote),
-    lists: listRows.map(serializeList),
+    lists: listRows.map((row) =>
+      row.family_id
+        ? { ...serializeList(row), shared: true, owner: displayName(row.owner_email) }
+        : { ...serializeList(row), shared: false },
+    ),
     skipped,
   });
 });

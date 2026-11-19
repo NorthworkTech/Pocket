@@ -1,4 +1,4 @@
-import { ApiError, type BackupMeta, type Book, type Connector, type ConnectorProvider, type Device, type HomeAppKey, type MeResponse, type MusicTrack, type Note, type PairClaimResult, type PairSession, type PocketList, type RingResult } from './types'
+import { ApiError, type BackupMeta, type Book, type CalendarFeed, type DeviceBackup, type Family, type Connector, type ConnectorProvider, type Device, type HomeAppKey, type MeResponse, type MusicTrack, type Note, type PairClaimResult, type PairSession, type PocketList, type RingResult } from './types'
 
 const BUILD_API_BASE = (import.meta.env.VITE_API_BASE as string | undefined)?.replace(/\/$/, '') || ''
 const PROD_DEFAULT = 'https://br-super-hill-b40yvyrj-api.compute.c-6.us-east-2.aws.neon.tech'
@@ -229,6 +229,48 @@ export const api = {
   deleteList(id: string, payload: { updated_at: string; updated_by_device_id: string }) {
     return request<void>(`/v1/lists/${id}`, { method: 'DELETE', body: payload })
   },
+  /** Share a list with your Pocket Family (or stop sharing). Owner only. */
+  async shareList(id: string, shared: boolean) {
+    const r = await request<{ list: PocketList }>(`/v1/lists/${encodeURIComponent(id)}/share`, {
+      method: 'POST',
+      body: { shared },
+    })
+    return r.list
+  },
+
+  // Pocket Family
+  getFamily() {
+    return request<{ family: Family | null }>('/v1/family')
+  },
+  createFamily(name: string) {
+    return request<{ family: Family }>('/v1/family', { method: 'POST', body: { name } })
+  },
+  joinFamily(code: string) {
+    return request<{ family: Family }>('/v1/family/join', { method: 'POST', body: { code } })
+  },
+  newFamilyCode() {
+    return request<{ family: Family }>('/v1/family/code', { method: 'POST' })
+  },
+  leaveFamily() {
+    return request<{ ok: true }>('/v1/family/leave', { method: 'POST' })
+  },
+  deleteFamily() {
+    return request<{ ok: true }>('/v1/family', { method: 'DELETE' })
+  },
+  removeFamilyMember(userId: string) {
+    return request<{ family: Family }>(`/v1/family/members/${encodeURIComponent(userId)}`, { method: 'DELETE' })
+  },
+
+  // Calendar on Today
+  listCalendarFeeds() {
+    return request<{ feeds: CalendarFeed[]; max_feeds: number }>('/v1/calendar/feeds')
+  },
+  addCalendarFeed(label: string, url: string) {
+    return request<{ feed: CalendarFeed }>('/v1/calendar/feeds', { method: 'POST', body: { label, url } })
+  },
+  removeCalendarFeed(id: string) {
+    return request<{ ok: true }>(`/v1/calendar/feeds/${encodeURIComponent(id)}`, { method: 'DELETE' })
+  },
 
   // Devices / pairing
   listDevices() {
@@ -325,6 +367,18 @@ export const api = {
   },
   restoreBackup(id: string) {
     return request<{ ok: true }>(`/v1/backups/${id}/restore`, { method: 'POST' })
+  },
+  /** Pocket backups (settings, alarms, reading places), newest first, plus pending requests. */
+  listDeviceBackups() {
+    return request<{ backups: DeviceBackup[]; pending_requests: { device_id: string; requested_at: string }[] }>(
+      '/v1/backups/devices',
+    )
+  },
+  /** "Back up now" — Pocket backs up at its next check-in. */
+  requestDeviceBackup(id: string) {
+    return request<{ ok: true; queued_at: string }>(`/v1/devices/${encodeURIComponent(id)}/backup-request`, {
+      method: 'POST',
+    })
   },
 
   // Music

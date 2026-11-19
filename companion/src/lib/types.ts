@@ -49,6 +49,51 @@ export interface PocketList {
   updated_at: string
   updated_by_device_id: string
   deleted_at?: string | null
+  /** Shared with the owner's Pocket Family (everyone in it can read and tick it off). */
+  shared?: boolean
+  /** False when someone else in your family made this list. */
+  is_owner?: boolean
+  /** Display name of the person who made the list. */
+  owner_name?: string
+}
+
+export interface FamilyMember {
+  user_id: string
+  name: string
+  role: 'owner' | 'member'
+  joined_at: string
+  is_me: boolean
+}
+
+export interface Family {
+  id: string
+  name: string
+  role: 'owner' | 'member'
+  created_at: string
+  max_members: number
+  /** Invite code (owner only; null for members or once it expires). */
+  join_code: string | null
+  join_code_expires_at: string | null
+  members: FamilyMember[]
+}
+
+export interface CalendarFeed {
+  id: string
+  label: string
+  /** Where the feed lives (the secret path isn't sent back). */
+  host: string
+  created_at: string
+}
+
+export interface DeviceBackup {
+  id: string
+  created_at: string
+  device_id: string
+  device_name: string
+  size_bytes: number
+  settings_count: number
+  alarm_count: number
+  reading_count: number
 }
 
 export interface Device {

@@ -130,6 +130,15 @@ deviceRoutes.post("/:id/ring", requireSession, async (c) => {
   return c.json({ ok: true, queued_at: queuedAt });
 });
 
+/** "Back up now": Pocket backs up when it next checks in (attest → backup_now, 24 h TTL). */
+deviceRoutes.post("/:id/backup-request", requireSession, async (c) => {
+  const user = c.get("user")!;
+  const link = ownedDevice(c.req.param("id") ?? "", user.id);
+  const queuedAt = new Date().toISOString();
+  run("UPDATE device_links SET backup_requested_at = ? WHERE id = ?", [queuedAt, link.id]);
+  return c.json({ ok: true, queued_at: queuedAt });
+});
+
 deviceRoutes.delete("/:id/link", requireSession, async (c) => {
   const user = c.get("user")!;
   const id = c.req.param("id") ?? "";

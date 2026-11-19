@@ -12,7 +12,10 @@ export const SYNC_MAX_NOTE_BODY_BYTES = 200 * 1024;
 export const SYNC_MAX_ID_CHARS = 200;
 export const SYNC_TOMBSTONE_DAYS = 30;
 
-export type SyncSkip = { id: string | null; reason: "invalid" | "too_large" | "unavailable" };
+export type SyncSkip = {
+  id: string | null;
+  reason: "invalid" | "too_large" | "unavailable" | "not_owner";
+};
 
 export type SyncEnvelope = {
   id: string;

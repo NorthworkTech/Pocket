@@ -2,11 +2,11 @@ import { type FormEvent, useEffect, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { api, isNetworkError, nowIso } from '../lib/api'
 import { enqueueMutation } from '../lib/queue'
-import type { ListItem } from '../lib/types'
+import type { Family, ListItem, PocketList } from '../lib/types'
 import { ErrorState } from '../components/ErrorState'
 import { useDocumentTitle } from '../components/useDocumentTitle'
 import { Icon } from '../components/Icon'
-import { Group, Row } from '../components/ui'
+import { Badge, Group, Row } from '../components/ui'
 
 export function ListDetailPage() {
   const { id = '' } = useParams()
@@ -16,6 +16,9 @@ export function ListDetailPage() {
   const [newItem, setNewItem] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [confirmDelete, setConfirmDelete] = useState(false)
+  const [meta, setMeta] = useState<Pick<PocketList, 'shared' | 'is_owner' | 'owner_name'>>({})
+  const [family, setFamily] = useState<Family | null>(null)
+  const [sharing, setSharing] = useState(false)
 
   useDocumentTitle(title || 'List')
 
@@ -25,6 +28,13 @@ export function ListDetailPage() {
       const list = await api.getList(id)
       setTitle(list.title)
       setItems(list.items)
+      setMeta({ shared: list.shared, is_owner: list.is_owner, owner_name: list.owner_name })
+      if (list.is_owner !== false) {
+        api
+          .getFamily()
+          .then((r) => setFamily(r.family))
+          .catch(() => setFamily(null))
+      }
     } catch (err) {
       if (isNetworkError(err)) setError("You're offline or the server is unreachable.")
       else setError('Something went wrong.')
@@ -110,7 +120,22 @@ export function ListDetailPage() {
     }
   }
 
+  async function onToggleShare(next: boolean) {
+    setSharing(true)
+    setError(null)
+    try {
+      const list = await api.shareList(id, next)
+      setMeta({ shared: list.shared, is_owner: list.is_owner, owner_name: list.owner_name })
+    } catch (err) {
+      if (isNetworkError(err)) setError("You're offline or the server is unreachable.")
+      else setError(err instanceof Error && err.message ? err.message : 'Something went wrong.')
+    } finally {
+      setSharing(false)
+    }
+  }
+
   const done = items.filter((i) => i.checked).length
+  const isOwner = meta.is_owner !== false
 
   return (
     <div className="page stack">
@@ -127,6 +152,12 @@ export function ListDetailPage() {
         </label>
         <input id="list-title" value={title} onChange={(e) => setTitle(e.target.value)} placeholder="List name" />
       </form>
+
+      {!isOwner ? (
+        <div style={{ padding: '0 1rem' }}>
+          <Badge tone="accent">Shared by {meta.owner_name || 'family'}</Badge>
+        </div>
+      ) : null}
 
       {items.length ? (
         <p className="eyebrow" style={{ padding: '0 1rem' }}>
@@ -159,9 +190,50 @@ export function ListDetailPage() {
         </form>
       </div>
 
-      <Group>
-        <Row icon="trash" tone="danger" title="Delete list" onClick={() => setConfirmDelete(true)} />
-      </Group>
+      {isOwner ? (
+        family ? (
+          <section className="group">
+            <ul className="group__list">
+              <li>
+                <label className="cell switch-row">
+                  <span className="cell__icon cell__icon--accent">
+                    <Icon name="family" size={18} stroke={2} />
+                  </span>
+                  <span className="cell__text">
+                    <span className="cell__title">Share with family</span>
+                    <span className="cell__detail">
+                      {meta.shared ? `Shared with ${family.name}` : 'Let your family see and edit it'}
+                    </span>
+                  </span>
+                  <input
+                    type="checkbox"
+                    role="switch"
+                    className="switch"
+                    checked={!!meta.shared}
+                    disabled={sharing}
+                    onChange={(e) => void onToggleShare(e.target.checked)}
+                    aria-label="Share with family"
+                  />
+                </label>
+              </li>
+            </ul>
+          </section>
+        ) : (
+          <Group>
+            <Row icon="family" to="/family" title="Share with family" detail="Set up Pocket Family to share this list." />
+          </Group>
+        )
+      ) : (
+        <p className="muted" style={{ padding: '0 1rem', margin: 0, fontSize: '0.875rem' }}>
+          {meta.owner_name || 'Someone'} shared this list with your family. Changes show up for everyone.
+        </p>
+      )}
+
+      {isOwner ? (
+        <Group>
+          <Row icon="trash" tone="danger" title="Delete list" onClick={() => setConfirmDelete(true)} />
+        </Group>
+      ) : null}
 
       {confirmDelete ? (
         <div className="panel stack" role="alertdialog" aria-label="Delete list">
