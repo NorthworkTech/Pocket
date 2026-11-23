@@ -23,3 +23,7 @@ dist-ssr
 *.sln
 *.sw?
 .northwork-worker/
+
+# northwork.app build output (companion/northwork/deploy.sh)
+.northwork/
+.northwork-worker/
