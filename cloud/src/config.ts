@@ -20,7 +20,6 @@ function envInt(name: string, fallback: number): number {
 const defaultCors = [
   "http://localhost:5173",
   "https://app.getpocket.device",
-  "https://bighappysmiley.github.io",
   "https://northwork.app",
 ];
 

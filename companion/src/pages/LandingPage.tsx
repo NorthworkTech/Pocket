@@ -6,8 +6,8 @@ import { useDocumentTitle } from '../components/useDocumentTitle'
 import './landing.css'
 
 const FIRMWARE_RELEASE =
-  'https://github.com/bighappysmiley/Pocket/releases/tag/firmware-latest'
-const REPO_URL = 'https://github.com/bighappysmiley/Pocket'
+  'https://github.com/NorthworkTech/Pocket/releases/tag/firmware-latest'
+const REPO_URL = 'https://github.com/NorthworkTech/Pocket'
 const DOCS_URL = `${REPO_URL}#readme`
 
 const FEATURES = [

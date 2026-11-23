@@ -23,7 +23,7 @@ const pool = new pg.Pool({
 const SESSION_COOKIE = process.env.SESSION_COOKIE_NAME || "pocket_session";
 const SESSION_SECRET = process.env.SESSION_SECRET || "dev-change-me";
 const DEVICE_API_KEY = process.env.DEVICE_API_KEY || "dev-device-api-key";
-const PWA_ORIGIN = (process.env.PWA_ORIGIN || "https://bighappysmiley.github.io/Pocket").replace(
+const PWA_ORIGIN = (process.env.PWA_ORIGIN || "https://northwork.app/pocket/app/").replace(
   /\/$/,
   "",
 );
@@ -32,7 +32,7 @@ const CORS_ORIGINS = new Set(
   [
     "http://localhost:5173",
     "https://app.getpocket.device",
-    "https://bighappysmiley.github.io",
+    "https://northwork.app",
     ...(process.env.CORS_ORIGINS || "").split(",").map((s) => s.trim()).filter(Boolean),
   ].filter(Boolean),
 );

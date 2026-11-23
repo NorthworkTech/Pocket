@@ -76,60 +76,6 @@ jobs:
           echo "cloud_built=true" >> "$GITHUB_OUTPUT"
 
   # ---------------------------------------------------------------------------
-  # Companion → GitHub Pages (uses GITHUB_TOKEN; enable Pages once in Settings)
-  # URL: https://bighappysmiley.github.io/Pocket/
-  # ---------------------------------------------------------------------------
-  deploy-companion-pages:
-    name: Companion → GitHub Pages
-    # Wait for firmware-esp32 so firmware-manifest.json matches the just-published release.
-    needs: [build, firmware-esp32]
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      pages: write
-      id-token: write
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "20"
-          cache: npm
-          cache-dependency-path: companion/package-lock.json
-      - name: Build with Pages base path
-        working-directory: companion
-        env:
-          VITE_API_BASE: ${{ vars.VITE_API_BASE }}
-          VITE_BASE: /Pocket/
-        run: |
-          export VITE_API_BASE="${VITE_API_BASE:-${{ secrets.VITE_API_BASE }}}"
-          echo "VITE_BASE=$VITE_BASE VITE_API_BASE=${VITE_API_BASE:-<empty>}"
-          npm ci
-          npm run build
-          # spa-pages-fallback.mjs (via npm run build) writes 404.html + admin/index.html etc.
-          # Device OTA discovery mirror (no Neon). Prefer fresh release asset; keep public/ seed.
-          if curl -fsSL -L \
-              "https://github.com/bighappysmiley/Pocket/releases/download/firmware-latest/firmware-manifest.json" \
-              -o dist/firmware-manifest.json; then
-            echo "Synced firmware-manifest.json from firmware-latest release"
-          elif [ -f public/firmware-manifest.json ]; then
-            cp -f public/firmware-manifest.json dist/firmware-manifest.json
-            echo "Used companion/public/firmware-manifest.json seed"
-          else
-            echo "::warning::No firmware-manifest.json for Pages OTA mirror"
-          fi
-          ls -la dist/firmware-manifest.json || true
-      - name: Upload Pages artifact
-        uses: actions/upload-pages-artifact@v3
-        with:
-          path: companion/dist
-      - id: deployment
-        name: Deploy to GitHub Pages
-        uses: actions/deploy-pages@v4
-
-  # ---------------------------------------------------------------------------
   # Companion → Vercel (optional; production)
   # Secrets: VERCEL_TOKEN, VERCEL_ORG_ID, VERCEL_PROJECT_ID_COMPANION
   # ---------------------------------------------------------------------------
@@ -355,7 +301,7 @@ jobs:
           data = {
             "build_id": os.environ["BUILD_ID"],
             "version": os.environ["BUILD_ID"],
-            "url": "https://github.com/bighappysmiley/Pocket/releases/download/firmware-latest/pocket.bin",
+            "url": "https://github.com/NorthworkTech/Pocket/releases/download/firmware-latest/pocket.bin",
             "size": int(os.environ["SIZE"]),
             "sha256": os.environ["SHA"],
             "channel": "stable",

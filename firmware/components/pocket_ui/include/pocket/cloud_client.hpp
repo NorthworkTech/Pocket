@@ -23,7 +23,7 @@ namespace pocket {
 #endif
 #ifndef POCKET_FW_MANIFEST_RELEASE
 #define POCKET_FW_MANIFEST_RELEASE \
-  "https://github.com/bighappysmiley/Pocket/releases/download/firmware-latest/firmware-manifest.json"
+  "https://github.com/NorthworkTech/Pocket/releases/download/firmware-latest/firmware-manifest.json"
 #endif
 
 #ifndef POCKET_DEVICE_API_KEY

@@ -3,7 +3,7 @@
  * Downloads a prebuilt wasm vendor+model tarball (fits Neon /tmp 256MB).
  * Marker: pocket-whisper-runtime-v2
  *
- * Vendor release: github.com/bighappysmiley/Pocket/releases/tag/whisper-vendor-v2
+ * Vendor release: github.com/NorthworkTech/Pocket/releases/tag/whisper-vendor-v2
  */
 import { mkdirSync, writeFileSync, existsSync, rmSync, createWriteStream } from "fs";
 import { execSync } from "child_process";
@@ -16,7 +16,7 @@ import { Readable } from "stream";
 const VENDOR = join(tmpdir(), "pocket-whisper-vendor-v2");
 const MARKER = join(VENDOR, ".ready");
 const VENDOR_URL =
-  "https://github.com/bighappysmiley/Pocket/releases/download/whisper-vendor-v2/pocket-whisper-vendor-v2.tgz";
+  "https://github.com/NorthworkTech/Pocket/releases/download/whisper-vendor-v2/pocket-whisper-vendor-v2.tgz";
 let pipelinePromise = null;
 
 const PATH_ENV = ["/usr/local/bin", "/usr/bin", process.env.PATH || ""].filter(Boolean).join(":");

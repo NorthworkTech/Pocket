@@ -4,7 +4,7 @@ import { inflateRawSync } from "zlib";
 
 const DEVICE_API_KEY = (process.env.DEVICE_API_KEY || "dev-device-api-key").trim();
 const SESSION_COOKIE = process.env.SESSION_COOKIE_NAME || "pocket_session";
-const PWA_ORIGIN = (process.env.PWA_ORIGIN || "https://bighappysmiley.github.io/Pocket").replace(/\/$/, "");
+const PWA_ORIGIN = (process.env.PWA_ORIGIN || "https://northwork.app/pocket/app").replace(/\/$/, "");
 const PUBLIC_BASE_URL = (process.env.PUBLIC_BASE_URL || "").replace(/\/$/, "");
 const sha256Hex = (i) => createHash("sha256").update(i, "utf8").digest("hex");
 const randomToken = (b = 32) => randomBytes(b).toString("base64url");
@@ -1438,7 +1438,7 @@ async function ensureAdminSchema() {
     created_at TIMESTAMPTZ NOT NULL,
     deleted_at TIMESTAMPTZ
   )`);
-  // Pocket Family, Calendar on Today, device backups (scram-api-v20-northwork).
+  // Pocket Family, Calendar on Today, device backups (scram-api-v21-northworktech).
   await query(`ALTER TABLE device_links ADD COLUMN IF NOT EXISTS backup_requested_at TIMESTAMPTZ`);
   await query(`ALTER TABLE cloud_lists ADD COLUMN IF NOT EXISTS family_id TEXT`);
   await query(`CREATE TABLE IF NOT EXISTS families (
@@ -1975,7 +1975,7 @@ export default {
     // Health does not depend on DB schema readiness so it stays useful for diagnosing DB-layer issues.
     if (path === "/health" || path === "/" || path === "/v1/health") {
       const sha256 = await getSelfSourceSha256();
-      return json(req, { ok: true, build: "scram-api-v20-northwork", sourceSha256: sha256 });
+      return json(req, { ok: true, build: "scram-api-v21-northworktech", sourceSha256: sha256 });
     }
     try {
       await readySchema();
@@ -2869,11 +2869,11 @@ export default {
       }
 
       // Device OTA discovery — points at firmware-latest app image (A/B OTA, not merged USB bin).
-      // Prefer Pages mirror (no GitHub 302 / release-delete race), then the release asset.
+      // Release asset first (always current), then the northwork.app mirror.
       if (req.method === "GET" && path === "/v1/firmware/latest") {
         const manifestUrls = [
-          "https://bighappysmiley.github.io/Pocket/firmware-manifest.json",
-          "https://github.com/bighappysmiley/Pocket/releases/download/firmware-latest/firmware-manifest.json",
+          "https://github.com/NorthworkTech/Pocket/releases/download/firmware-latest/firmware-manifest.json",
+          "https://northwork.app/pocket/firmware-manifest.json",
         ];
         for (const manifestUrl of manifestUrls) {
           try {
@@ -2897,7 +2897,7 @@ export default {
           ok: true,
           build_id: "POCKET-LIVE-unknown",
           version: "firmware-latest",
-          url: "https://github.com/bighappysmiley/Pocket/releases/download/firmware-latest/pocket.bin",
+          url: "https://github.com/NorthworkTech/Pocket/releases/download/firmware-latest/pocket.bin",
           size: 0,
           channel: "stable",
         }, 200, { "cache-control": "public, max-age=30" });
@@ -2910,7 +2910,7 @@ export default {
         const secrets = await loadSttSecrets();
         return json(req, {
           ok: true,
-          build: "scram-api-v20-northwork",
+          build: "scram-api-v21-northworktech",
           providers: {
             openai: Boolean(secrets.openai),
             groq: Boolean(secrets.groq),

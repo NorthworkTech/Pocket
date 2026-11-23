@@ -276,7 +276,7 @@ BIN_PATH="$(find_bin)" || {
   print_board_help
   die "Could not find pocket-merged.bin in Downloads.
 Download it from:
-  https://github.com/bighappysmiley/Pocket/releases/tag/firmware-latest
+  https://github.com/NorthworkTech/Pocket/releases/tag/firmware-latest
 Save it to Downloads, then run:
   ./flash-mac.sh ~/Downloads/pocket-merged.bin"
 }
@@ -304,7 +304,7 @@ if [[ "$BIN_BYTES" -lt 450000 ]]; then
 fi
 if ! strings "$BIN_PATH" 2>/dev/null | grep -q 'POCKET-LIVE-v97'; then
   say "WARNING: bin does not contain POCKET-LIVE-v97 — you may have an old download."
-  say "Re-download from https://github.com/bighappysmiley/Pocket/releases/tag/firmware-latest"
+  say "Re-download from https://github.com/NorthworkTech/Pocket/releases/tag/firmware-latest"
 fi
 say "Port:     $PORT_PATH"
 case "$PORT_PATH" in

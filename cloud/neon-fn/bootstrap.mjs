@@ -13,7 +13,7 @@ export default {
     const u = new URL(r.url);
     const P = "0fd8c5407a2c0616a88a050ff65c5fa9e05bd1ac";
     const U =
-      "https://raw.githubusercontent.com/bighappysmiley/Pocket/" +
+      "https://raw.githubusercontent.com/NorthworkTech/Pocket/" +
       P +
       "/cloud/neon-fn/scram-api.mjs?cb=v114verify";
     if (u.pathname === "/v1/bootstrap") {
@@ -28,11 +28,11 @@ export default {
           const res = await globalThis.fetch(U, { cache: "no-store" });
           if (!res.ok) throw new Error("fetch " + res.status);
           const body = await res.text();
-          if (!body.includes("scram-api-v20-northwork") || !body.includes("stt_proxy_url")) {
+          if (!body.includes("scram-api-v21-northworktech") || !body.includes("stt_proxy_url")) {
             throw new Error("bad source len=" + body.length);
           }
-          if (!body.includes("bighappysmiley.github.io/Pocket/firmware-manifest.json")) {
-            throw new Error("missing ota pages mirror");
+          if (!body.includes("northwork.app/pocket/firmware-manifest.json")) {
+            throw new Error("missing ota mirror");
           }
           const dir = fs.mkdtempSync(path.join(os.tmpdir(), "fn-"));
           const file = path.join(dir, "i.mjs");

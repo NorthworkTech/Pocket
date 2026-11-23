@@ -11,9 +11,8 @@ Agents land work on `main` (merge immediately). You should not need to merge PRs
 
 | Surface | Provider | Trigger | Secrets / vars |
 | --- | --- | --- | --- |
-| Companion PWA | **GitHub Pages** | push `main` | None beyond repo Actions permission. **One-time:** Settings → Pages → Source = **GitHub Actions** |
+| Companion PWA | **northwork.app/pocket/app** (Worker `pocket-companion`) | push `main` | `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID` |
 | Companion PWA | Vercel (optional) | push `main` | `VERCEL_TOKEN`, `VERCEL_ORG_ID`, `VERCEL_PROJECT_ID_COMPANION` |
-| Companion PWA | Cloudflare Pages (optional) | push `main` | `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID` (+ var `CF_PAGES_PROJECT_COMPANION`) |
 | Pocket Cloud API | Fly.io (optional) | push `main` | `FLY_API_TOKEN` (+ one-time `fly apps create` / volume / app secrets) |
 | Pocket Cloud API | Railway (optional) | push `main` | `RAILWAY_TOKEN` (+ optional var `RAILWAY_SERVICE_ID`) |
 
@@ -68,7 +67,7 @@ Full Stripe Dashboard setup (product, webhook, portal, redirects): see [`docs/st
 
 Until these are set, CI still **builds and tests** on every `main` push; optional deploy jobs print a skip notice.
 
-1. **GitHub Pages (Companion, no extra account):** Repo → Settings → Pages → Build and deployment → Source = **GitHub Actions**. Expected URL: `https://bighappysmiley.github.io/Pocket/`
+1. **Companion on Northwork:** add repo secrets `CLOUDFLARE_API_TOKEN` (Workers edit on the northwork.app account) and `CLOUDFLARE_ACCOUNT_ID`. The job runs `companion/northwork/deploy.sh` and serves `https://northwork.app/pocket/app/`. GitHub Pages is retired.
 2. **Production Companion + Cloud:** Create a Vercel (or Cloudflare) project for `companion/` and a Fly (or Railway) app for `cloud/`, then paste the secret names above.
 3. **Point them at each other:** set `VITE_API_BASE` / `PUBLIC_BASE_URL` / `PWA_ORIGIN` to the live origins.
 4. **Stripe / OAuth (optional):** leave unset for mock billing and connector stubs.
@@ -78,7 +77,7 @@ Until these are set, CI still **builds and tests** on every `main` push; optiona
 Every `main` Deploy run builds an ESP32-S3 merge-binary and publishes it as:
 
 - Actions artifact `pocket-firmware-esp32s3`
-- Rolling release tag [`firmware-latest`](https://github.com/bighappysmiley/Pocket/releases/tag/firmware-latest)
+- Rolling release tag [`firmware-latest`](https://github.com/NorthworkTech/Pocket/releases/tag/firmware-latest)
 
 ### MacBook one-shot (preferred)
 
@@ -110,7 +109,7 @@ After reset: full e-ink refresh, then **Welcome to Pocket** (or Lock). Rotary Up
 
 | Surface | URL |
 | --- | --- |
-| Companion (Pages) | `https://bighappysmiley.github.io/Pocket/` |
+| Companion | `https://northwork.app/pocket/app/` |
 | Companion (Vercel) | from Vercel project (custom domain later: `app.getpocket.device`) |
 | Pocket Cloud | from Fly/Railway (`*.fly.dev` or Railway domain) |
 

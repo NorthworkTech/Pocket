@@ -2,9 +2,9 @@
 
 A quieter pocket.
 
-[Pocket Classic](https://bighappysmiley.github.io/Pocket/#shop) is calm e-ink for notes, lists, music, and reading. It works on its own. When you want sync, backup, or linking, [Companion](https://bighappysmiley.github.io/Pocket/get-companion) lives on your phone — not as a desktop web app.
+[Pocket Classic](https://northwork.app/pocket) is calm e-ink for notes, lists, music, and reading. It works on its own. When you want sync, backup, or linking, [Companion](https://northwork.app/pocket/app/get-companion) lives on your phone — not as a desktop web app.
 
-[Site](https://bighappysmiley.github.io/Pocket/) · [Shop](https://bighappysmiley.github.io/Pocket/#shop) · [Download Companion](https://bighappysmiley.github.io/Pocket/get-companion)
+[Site](https://northwork.app/pocket) · [Shop](https://northwork.app/pocket) · [Download Companion](https://northwork.app/pocket/app/get-companion)
 
 ---
 
@@ -12,13 +12,13 @@ A quieter pocket.
 
 Source is here to read. The product is for people who buy and use it as shipped.
 
-Pocket is not a casual alternate-OS playground. Official updates and owner recovery stay on the guided path. Tweaks and extensions go through an approved [developer](https://bighappysmiley.github.io/Pocket/developer) route — not unrestricted flashing.
+Pocket is not a casual alternate-OS playground. Official updates and owner recovery stay on the guided path. Tweaks and extensions go through an approved [developer](https://northwork.app/pocket/app/developer) route — not unrestricted flashing.
 
 ## For owners
 
-Buy a device, then install Companion on your phone. Optional [Pocket Cloud](https://bighappysmiley.github.io/Pocket/) keeps Notes, Lists, Music, and Reading in sync when you want them everywhere; the device stays useful offline without it.
+Buy a device, then install Companion on your phone. Optional [Pocket Cloud](https://northwork.app/pocket) keeps Notes, Lists, Music, and Reading in sync when you want them everywhere; the device stays useful offline without it.
 
-If you need an official firmware package for recovery or update, use the [firmware-latest](https://github.com/bighappysmiley/Pocket/releases/tag/firmware-latest) release — not third-party images.
+If you need an official firmware package for recovery or update, use the [firmware-latest](https://github.com/NorthworkTech/Pocket/releases/tag/firmware-latest) release — not third-party images.
 
 ## In this repository
 
@@ -29,7 +29,7 @@ If you need an official firmware package for recovery or update, use the [firmwa
 | [`cloud/`](cloud/) | Pocket Cloud API |
 | [`packages/shared/`](packages/shared/) | Shared types |
 
-Local setup notes live beside each package. Product direction for Companion, shop, and platform posture is reflected on the [landing site](https://bighappysmiley.github.io/Pocket/).
+Local setup notes live beside each package. Product direction for Companion, shop, and platform posture is reflected on the [product page](https://northwork.app/pocket).
 
 ## License
 

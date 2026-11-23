@@ -48,7 +48,7 @@ export function DeveloperPage() {
         </Link>
         <a
           className="btn btn-ghost"
-          href="https://github.com/bighappysmiley/Pocket"
+          href="https://github.com/NorthworkTech/Pocket"
           target="_blank"
           rel="noreferrer"
         >

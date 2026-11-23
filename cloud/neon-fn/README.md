@@ -83,7 +83,7 @@ this file directly). The bootstrap fetches the real, byte-identical `scram-api.m
 GitHub commit at cold start, writes it to a temp file, and dynamically `import()`s it:
 
 ```js
-const SRC_URL = "https://raw.githubusercontent.com/bighappysmiley/Pocket/<commit-sha>/cloud/neon-fn/scram-api.mjs";
+const SRC_URL = "https://raw.githubusercontent.com/NorthworkTech/Pocket/<commit-sha>/cloud/neon-fn/scram-api.mjs";
 // ...fetch, write to tmp file, import(), forward fetch(req) to it.
 ```
 
