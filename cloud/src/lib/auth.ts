@@ -337,3 +337,29 @@ export function verifyNorthworkPass(
   if (typeof p.email !== "string" || !p.email.includes("@")) return null;
   return { sub: String(p.sub ?? ""), email: p.email, name: typeof p.name === "string" ? p.name : undefined };
 }
+
+/** Verify locally with a shared secret, or ask northwork.app (secret stays on the site). */
+export async function checkNorthworkPass(
+  token: unknown,
+  secret: string,
+  northworkUrl = process.env.NORTHWORK_URL || "https://northwork.app",
+  fetchImpl: typeof fetch = fetch,
+): Promise<{ sub: string; email: string; name?: string } | null> {
+  if (secret) return verifyNorthworkPass(token, secret);
+  if (typeof token !== "string" || token.length > 4096) return null;
+  try {
+    const res = await fetchImpl(`${northworkUrl.replace(/\/$/, "")}/api/integrations/pocket/verify`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "user-agent": "Pocket-Cloud/1.0" },
+      body: JSON.stringify({ token }),
+      signal: AbortSignal.timeout(8000),
+    });
+    if (!res.ok) return null;
+    const data = (await res.json().catch(() => null)) as { ok?: boolean; user?: { id?: string; email?: string; name?: string } } | null;
+    const u = data?.ok ? data.user : undefined;
+    if (!u || typeof u.email !== "string" || !u.email.includes("@")) return null;
+    return { sub: String(u.id ?? ""), email: u.email, name: u.name ?? undefined };
+  } catch {
+    return null;
+  }
+}

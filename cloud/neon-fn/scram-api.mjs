@@ -287,6 +287,29 @@ function verifyNorthworkPass(token) {
   return p;
 }
 
+/** Without a local NORTHWORK_SSO_SECRET, ask northwork.app whether the pass is genuine
+ * (the signing secret then never leaves the Northwork site). */
+async function checkNorthworkPass(token) {
+  if ((process.env.NORTHWORK_SSO_SECRET || "").trim()) return verifyNorthworkPass(token);
+  if (typeof token !== "string" || token.length > 4096) return null;
+  const base = (process.env.NORTHWORK_URL || "https://northwork.app").replace(/\/$/, "");
+  try {
+    const res = await globalThis.fetch(`${base}/api/integrations/pocket/verify`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "user-agent": "Pocket-Cloud/1.0" },
+      body: JSON.stringify({ token }),
+      signal: AbortSignal.timeout(8000),
+    });
+    if (!res.ok) return null;
+    const data = await res.json().catch(() => null);
+    const u = data && data.ok ? data.user : null;
+    if (!u || typeof u.email !== "string" || !u.email.includes("@")) return null;
+    return { sub: String(u.id || ""), email: u.email, name: u.name || "" };
+  } catch {
+    return null;
+  }
+}
+
 function isAdminUser(user) {
   if (!user) return false;
   if (String(user.role || "") === "admin") return true;
@@ -2013,7 +2036,7 @@ export default {
       // "Continue with Northwork": one Northwork account for Pocket too (accounts matched by email).
       if (req.method === "POST" && path === "/v1/auth/northwork") {
         const body = await req.json().catch(() => ({}));
-        const pass = verifyNorthworkPass(body.token);
+        const pass = await checkNorthworkPass(body.token);
         if (!pass) return json(req, { message: "Your Northwork sign-in expired. Please try again." }, 401);
         const email = pass.email.trim().toLowerCase();
         const nowIso = new Date().toISOString();
