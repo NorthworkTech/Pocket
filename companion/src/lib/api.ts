@@ -164,6 +164,28 @@ export const api = {
     if (res.session_token) setSessionToken(res.session_token)
     return res
   },
+  /**
+   * "Continue with Northwork": northwork.app (same origin) hands out a short-lived pass for
+   * the signed-in Northwork account; Pocket Cloud turns it into a Pocket session.
+   * Returns 'signin' when there is no Northwork session yet.
+   */
+  async loginWithNorthwork(): Promise<'ok' | 'signin'> {
+    let res: Response
+    try {
+      res = await fetch('/api/pocket/token', { credentials: 'same-origin', headers: { accept: 'application/json' } })
+    } catch {
+      throw new ApiError("You're offline or northwork.app is unreachable.", 0, { offline: true })
+    }
+    if (res.status === 401) return 'signin'
+    const data = (await res.json().catch(() => ({}))) as { token?: string; error?: string; message?: string }
+    if (!res.ok || !data.token) throw new ApiError(data.message || data.error || "Couldn't reach your Northwork account.", res.status)
+    const out = await request<{ ok: true; session_token?: string }>('/v1/auth/northwork', {
+      method: 'POST',
+      body: { token: data.token },
+    })
+    if (out.session_token) setSessionToken(out.session_token)
+    return 'ok'
+  },
   async logout() {
     try {
       await request<{ ok: true }>('/v1/auth/logout', { method: 'POST' })

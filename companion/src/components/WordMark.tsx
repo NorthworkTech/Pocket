@@ -15,6 +15,7 @@ export function WordMark({ to = '/home' }: { to?: string }) {
     <Link to={to} className="wordmark">
       <PocketMark />
       <span>Pocket</span>
+      <span className="wordmark__by">by Northwork</span>
     </Link>
   )
 }

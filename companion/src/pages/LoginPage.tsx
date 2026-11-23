@@ -1,4 +1,4 @@
-import { type FormEvent, useState } from 'react'
+import { type FormEvent, useEffect, useRef, useState } from 'react'
 import { Link, Navigate, useSearchParams } from 'react-router-dom'
 import { api, getSessionToken, isApiConfigured, isNetworkError } from '../lib/api'
 import { useAuth } from '../lib/auth'
@@ -30,8 +30,80 @@ export function LoginPage() {
       ? `/get-companion?from=${encodeURIComponent(returnTo)}`
       : returnTo
 
+  // On northwork.app, Pocket uses your Northwork account (one sign-in for everything).
+  const onNorthwork =
+    typeof window !== 'undefined' &&
+    (window.location.hostname === 'northwork.app' || params.get('northwork') === '1')
+  const triedSilent = useRef(false)
+  const [useEmail, setUseEmail] = useState(false)
+
+  async function continueWithNorthwork(silent: boolean) {
+    setState('busy')
+    setError(null)
+    try {
+      const r = await api.loginWithNorthwork()
+      if (r === 'signin') {
+        setState('idle')
+        if (!silent) {
+          const back = `${window.location.pathname}${window.location.search}`
+          window.location.href = `/api/auth/login?next=${encodeURIComponent(back)}`
+        }
+        return
+      }
+      await refresh()
+      setState('idle')
+    } catch (err) {
+      setState('error')
+      setError(err instanceof ApiError ? err.message : "Couldn't sign in with Northwork.")
+    }
+  }
+
+  useEffect(() => {
+    if (onNorthwork && !loading && !isAuthenticated && cloudReady && !triedSilent.current) {
+      triedSilent.current = true
+      void continueWithNorthwork(true)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [onNorthwork, loading, isAuthenticated, cloudReady])
+
   if (!loading && isAuthenticated) {
     return <Navigate to={safeReturn} replace />
+  }
+
+  if (onNorthwork && !useEmail) {
+    return (
+      <div className="page stack auth-page">
+        <WordMark to="/" />
+        <div className="stack-sm">
+          <h1>Sign in to Pocket</h1>
+          <p className="muted">
+            Pocket uses your Northwork account — the same one you use on northwork.app and in the Community.
+          </p>
+        </div>
+        <div className="panel stack">
+          <button
+            type="button"
+            className="btn btn-primary btn-block"
+            disabled={state === 'busy'}
+            onClick={() => void continueWithNorthwork(false)}
+          >
+            {state === 'busy' ? 'Signing in…' : 'Continue with Northwork'}
+          </button>
+          {error ? (
+            <p role="alert" className="muted">
+              {error}
+            </p>
+          ) : null}
+          <p className="muted small">
+            New to Northwork? You can create an account on the next screen. Already had a Pocket Cloud
+            account? Use the same email and everything carries over.
+          </p>
+          <button type="button" className="btn btn-ghost btn-block" onClick={() => setUseEmail(true)}>
+            Use email and password instead
+          </button>
+        </div>
+      </div>
+    )
   }
 
   async function onSubmit(e: FormEvent) {
@@ -87,6 +159,16 @@ export function LoginPage() {
           </p>
         ) : null}
       </div>
+
+      {onNorthwork ? null : (
+      <div className="panel" role="note">
+        <p>
+          <strong>Pocket has moved to Northwork.</strong> Companion now lives at{' '}
+          <a href="https://northwork.app/pocket/app/">northwork.app/pocket/app</a> and uses your Northwork
+          account. This address will stop working soon.
+        </p>
+      </div>
+      )}
 
       {!cloudReady || offline ? (
         <div className="panel" role="status">

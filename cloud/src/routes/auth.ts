@@ -16,6 +16,8 @@ import {
   registerWithPassword,
   loginWithPassword,
   verifyEmailToken,
+  verifyNorthworkPass,
+  getOrCreateUser,
 } from "../lib/auth.js";
 import { readSessionToken } from "../middleware/auth.js";
 import { config } from "../config.js";
@@ -49,6 +51,17 @@ authRoutes.post("/login", async (c) => {
     ok: true,
     user: { id: user.id, email: user.email },
   });
+});
+
+/** "Continue with Northwork": a pass signed by northwork.app → Pocket session (matched by email). */
+authRoutes.post("/northwork", async (c) => {
+  const body = await c.req.json().catch(() => ({}));
+  const pass = verifyNorthworkPass(body.token, config.northworkSsoSecret);
+  if (!pass) throw Errors.unauthorized("Your Northwork sign-in expired. Please try again.");
+  const user = getOrCreateUser(pass.email);
+  const session = createSession(user.id);
+  setSessionCookie(c, session.token, session.expiresAt);
+  return c.json({ ok: true, session_token: session.token, user: { id: user.id, email: user.email } });
 });
 
 authRoutes.get("/verify-email", async (c) => {

@@ -243,6 +243,14 @@ function DownloadPanel() {
 }
 
 export function LandingPage() {
+  // On northwork.app the product page is northwork.app/pocket — Companion's root goes straight into the app.
+  if (typeof window !== 'undefined' && window.location.hostname === 'northwork.app') {
+    return <Navigate to="/home" replace />
+  }
+  return <LegacyLandingPage />
+}
+
+function LegacyLandingPage() {
   useDocumentTitle('Pocket')
   const { isAuthenticated, loading } = useAuth()
   const [feature, setFeature] = useState<(typeof FEATURES)[number]['key']>('notes')

@@ -1,0 +1,9 @@
+// Pocket Companion on northwork.app. The northwork.app site Worker (repo bighappysmiley/bighappysmiley,
+// Worker "bighappysmiley") hands /pocket/app/* and /pocket/firmware-manifest.json to this Worker
+// through a service binding (POCKET_APP). Build + deploy: companion/northwork/deploy.sh.
+{
+  "name": "pocket-companion",
+  "main": "../.northwork-worker/worker.mjs",
+  "compatibility_date": "2026-11-01",
+  "workers_dev": false
+}

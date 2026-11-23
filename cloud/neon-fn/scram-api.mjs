@@ -267,6 +267,26 @@ const ADMIN_EMAILS = new Set(
     .filter(Boolean),
 );
 
+/** Northwork sign-in: northwork.app signs a short-lived pass {sub,email,name,aud:"pocket",exp(ms)}
+ * as base64url(json) + "." + base64url(HMAC-SHA256(body, NORTHWORK_SSO_SECRET)). */
+function verifyNorthworkPass(token) {
+  const secret = (process.env.NORTHWORK_SSO_SECRET || "").trim();
+  if (!secret || typeof token !== "string") return null;
+  const [body, sig] = token.split(".");
+  if (!body || !sig) return null;
+  const expect = createHmac("sha256", secret).update(body).digest("base64url");
+  if (!safeEqual(expect, sig)) return null;
+  let p;
+  try {
+    p = JSON.parse(Buffer.from(body, "base64url").toString("utf8"));
+  } catch {
+    return null;
+  }
+  if (!p || p.aud !== "pocket" || typeof p.exp !== "number" || p.exp < Date.now()) return null;
+  if (typeof p.email !== "string" || !p.email.includes("@")) return null;
+  return p;
+}
+
 function isAdminUser(user) {
   if (!user) return false;
   if (String(user.role || "") === "admin") return true;
@@ -1395,7 +1415,7 @@ async function ensureAdminSchema() {
     created_at TIMESTAMPTZ NOT NULL,
     deleted_at TIMESTAMPTZ
   )`);
-  // Pocket Family, Calendar on Today, device backups (scram-api-v19-family).
+  // Pocket Family, Calendar on Today, device backups (scram-api-v20-northwork).
   await query(`ALTER TABLE device_links ADD COLUMN IF NOT EXISTS backup_requested_at TIMESTAMPTZ`);
   await query(`ALTER TABLE cloud_lists ADD COLUMN IF NOT EXISTS family_id TEXT`);
   await query(`CREATE TABLE IF NOT EXISTS families (
@@ -1932,7 +1952,7 @@ export default {
     // Health does not depend on DB schema readiness so it stays useful for diagnosing DB-layer issues.
     if (path === "/health" || path === "/" || path === "/v1/health") {
       const sha256 = await getSelfSourceSha256();
-      return json(req, { ok: true, build: "scram-api-v19-family", sourceSha256: sha256 });
+      return json(req, { ok: true, build: "scram-api-v20-northwork", sourceSha256: sha256 });
     }
     try {
       await readySchema();
@@ -1985,6 +2005,33 @@ export default {
             session_token: token,
             user: { id: user.id, email: user.email, role: user.role || "user", is_admin: isAdminUser(user) },
           },
+          200,
+          { "set-cookie": sessionCookie(token, 30 * 86400) },
+        );
+      }
+
+      // "Continue with Northwork": one Northwork account for Pocket too (accounts matched by email).
+      if (req.method === "POST" && path === "/v1/auth/northwork") {
+        const body = await req.json().catch(() => ({}));
+        const pass = verifyNorthworkPass(body.token);
+        if (!pass) return json(req, { message: "Your Northwork sign-in expired. Please try again." }, 401);
+        const email = pass.email.trim().toLowerCase();
+        const nowIso = new Date().toISOString();
+        let user = (await query(`SELECT * FROM users WHERE email='${esc(email)}'`))[0];
+        if (!user) {
+          const id = newId();
+          await query(`INSERT INTO users (id,email,password_hash,email_verified_at,created_at,trial_consumed,stripe_customer_id,had_subscription) VALUES ('${esc(id)}','${esc(email)}',NULL,'${nowIso}','${nowIso}',0,NULL,0)`);
+          user = (await query(`SELECT * FROM users WHERE id='${esc(id)}'`))[0];
+        }
+        if (user.disabled_at) return json(req, { message: "This account is disabled." }, 403);
+        if (!user.email_verified_at) await query(`UPDATE users SET email_verified_at='${nowIso}' WHERE id='${esc(user.id)}'`);
+        const token = randomToken(32);
+        const expires = new Date(Date.now() + 30 * 86400e3).toISOString();
+        await query(`INSERT INTO sessions (id,user_id,token_hash,created_at,expires_at) VALUES ('${esc(newId())}','${esc(user.id)}','${esc(sha256Hex(token))}','${nowIso}','${expires}')`);
+        await query(`UPDATE users SET last_login_at='${nowIso}' WHERE id='${esc(user.id)}'`);
+        return json(
+          req,
+          { ok: true, session_token: token, user: { id: user.id, email: user.email, role: user.role || "user", is_admin: isAdminUser(user) } },
           200,
           { "set-cookie": sessionCookie(token, 30 * 86400) },
         );
@@ -2840,7 +2887,7 @@ export default {
         const secrets = await loadSttSecrets();
         return json(req, {
           ok: true,
-          build: "scram-api-v19-family",
+          build: "scram-api-v20-northwork",
           providers: {
             openai: Boolean(secrets.openai),
             groq: Boolean(secrets.groq),

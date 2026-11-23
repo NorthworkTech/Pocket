@@ -21,6 +21,7 @@ const defaultCors = [
   "http://localhost:5173",
   "https://app.getpocket.device",
   "https://bighappysmiley.github.io",
+  "https://northwork.app",
 ];
 
 export const config = {
@@ -45,6 +46,8 @@ export const config = {
   sessionTtlDays: envInt("SESSION_TTL_DAYS", 30),
   magicLinkTtlMinutes: envInt("MAGIC_LINK_TTL_MINUTES", 15),
   deviceApiKey: env("DEVICE_API_KEY", "dev-device-api-key"),
+  /** Shared with northwork.app: verifies "Continue with Northwork" passes. Empty = disabled. */
+  northworkSsoSecret: process.env.NORTHWORK_SSO_SECRET || "",
   databasePath: process.env.DATABASE_PATH || "./data/pocket-cloud.sqlite",
   stripeSecretKey: process.env.STRIPE_SECRET_KEY || "",
   stripeWebhookSecret: process.env.STRIPE_WEBHOOK_SECRET || "",

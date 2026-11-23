@@ -113,7 +113,7 @@ export function companionPublicUrl(): string {
     const path = base.endsWith('/') ? base : `${base}/`
     return `${window.location.origin}${path}`
   }
-  return 'https://bighappysmiley.github.io/Pocket/'
+  return 'https://northwork.app/pocket/app/'
 }
 
 /** App routes that must not run as a desktop website app. */

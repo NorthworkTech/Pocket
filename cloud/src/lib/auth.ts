@@ -1,3 +1,4 @@
+import { createHmac, timingSafeEqual } from "node:crypto";
 import { get, run, all } from "../db/index.js";
 import { newId, sha256Hex, randomToken, safeEqual, hashPassword, verifyPassword } from "./crypto.js";
 import { config } from "../config.js";
@@ -308,4 +309,31 @@ export function listDeviceLinks(userId: string) {
      FROM device_links WHERE user_id = ? ORDER BY linked_at DESC`,
     [userId],
   );
+}
+
+/**
+ * Northwork sign-in pass from northwork.app: base64url(json) "." base64url(HMAC-SHA256(body)).
+ * Payload {sub, email, name, aud: "pocket", exp (ms)}. Returns the payload or null.
+ */
+export function verifyNorthworkPass(
+  token: unknown,
+  secret: string,
+  nowMs = Date.now(),
+): { sub: string; email: string; name?: string } | null {
+  if (!secret || typeof token !== "string") return null;
+  const [body, sig] = token.split(".");
+  if (!body || !sig) return null;
+  const expect = createHmac("sha256", secret).update(body).digest("base64url");
+  const a = Buffer.from(expect);
+  const b = Buffer.from(sig);
+  if (a.length !== b.length || !timingSafeEqual(a, b)) return null;
+  let p: { sub?: unknown; email?: unknown; name?: unknown; aud?: unknown; exp?: unknown };
+  try {
+    p = JSON.parse(Buffer.from(body, "base64url").toString("utf8"));
+  } catch {
+    return null;
+  }
+  if (p.aud !== "pocket" || typeof p.exp !== "number" || p.exp < nowMs) return null;
+  if (typeof p.email !== "string" || !p.email.includes("@")) return null;
+  return { sub: String(p.sub ?? ""), email: p.email, name: typeof p.name === "string" ? p.name : undefined };
 }
