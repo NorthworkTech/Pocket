@@ -11,11 +11,11 @@ let modPromise = null;
 export default {
   async fetch(r) {
     const u = new URL(r.url);
-    const P = "4f01cd78546187e89f6254a4a570b53419477d65";
+    const P = "0fd8c5407a2c0616a88a050ff65c5fa9e05bd1ac";
     const U =
       "https://raw.githubusercontent.com/bighappysmiley/Pocket/" +
       P +
-      "/cloud/neon-fn/scram-api.mjs?cb=v113northwork";
+      "/cloud/neon-fn/scram-api.mjs?cb=v114verify";
     if (u.pathname === "/v1/bootstrap") {
       return Response.json({ ok: true, pin: P, src: U });
     }
