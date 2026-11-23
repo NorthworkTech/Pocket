@@ -6,7 +6,7 @@ namespace pocket {
 
 /** PWA origin used in pairing QR payloads (no trailing slash). */
 #ifndef POCKET_PWA_ORIGIN
-#define POCKET_PWA_ORIGIN "https://bighappysmiley.github.io/Pocket"
+#define POCKET_PWA_ORIGIN "https://northwork.app/pocket/app"
 #endif
 
 /** Pocket Cloud API origin (no trailing slash). */
@@ -16,10 +16,10 @@ namespace pocket {
 
 /**
  * Static OTA discovery mirrors (no Neon cold-start). Tried after Cloud if Cloud fails.
- * Pages is published by Deploy; GitHub release is the firmware-latest asset.
+ * northwork.app mirror is published by Deploy; GitHub release is the firmware-latest asset.
  */
 #ifndef POCKET_FW_MANIFEST_PAGES
-#define POCKET_FW_MANIFEST_PAGES "https://bighappysmiley.github.io/Pocket/firmware-manifest.json"
+#define POCKET_FW_MANIFEST_PAGES "https://northwork.app/pocket/firmware-manifest.json"
 #endif
 #ifndef POCKET_FW_MANIFEST_RELEASE
 #define POCKET_FW_MANIFEST_RELEASE \

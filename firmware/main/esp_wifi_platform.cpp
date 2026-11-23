@@ -343,7 +343,7 @@ a.back{display:inline-block;margin-top:1rem;color:#111;font-weight:600}
 <input id="password" type="password" autocomplete="current-password"/>
 <button id="go" type="button">Connect Pocket</button>
 <div class="msg" id="msg">Looking for networks…</div>
-<a class="back" id="returnLink" href="https://bighappysmiley.github.io/Pocket/link">Back to Pocket Companion</a>
+<a class="back" id="returnLink" href="https://northwork.app/pocket/app/link">Back to Pocket Companion</a>
 <script>
 const msg=document.getElementById('msg');
 const sel=document.getElementById('ssid');
@@ -351,7 +351,7 @@ const manual=document.getElementById('ssidManual');
 const params=new URLSearchParams(location.search);
 let phone=params.get('mode')==='phone';
 const ret0=params.get('return')||'';
-const ret=/^https:\/\/[A-Za-z0-9.\-]+(\/[A-Za-z0-9._~\/\-]*)?(\?[A-Za-z0-9._~=&%\-]*)?$/.test(ret0)?ret0:'https://bighappysmiley.github.io/Pocket/link';
+const ret=/^https:\/\/[A-Za-z0-9.\-]+(\/[A-Za-z0-9._~\/\-]*)?(\?[A-Za-z0-9._~=&%\-]*)?$/.test(ret0)?ret0:'https://northwork.app/pocket/app/link';
 document.getElementById('returnLink').href=ret;
 const preSsid=params.get('ssid')||'';
 const prePass=params.get('password')||'';

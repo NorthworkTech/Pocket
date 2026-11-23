@@ -215,6 +215,7 @@ void App::render_settings() {
     std::snprintf(ver, sizeof(ver), "%s (%s)", kOsDisplayName, kConsumerVersion);
     int y = kListTop + 4;
     y = ui::kv(canvas_, y, "Model", kProductName);
+    y = ui::kv(canvas_, y, "Made by", "Northwork");
     y = ui::kv(canvas_, y, "Name", cfg_.device_name);
     y = ui::kv(canvas_, y, "Version", ver);
     y = ui::kv(canvas_, y, "Pocket Cloud", cfg_.cloud_entitled ? "Subscribed" : "Not subscribed");
