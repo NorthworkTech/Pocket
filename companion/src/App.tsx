@@ -7,6 +7,8 @@ import { AuthCallbackPage } from './pages/AuthCallbackPage'
 import { BackupPage } from './pages/BackupPage'
 import { BillingCancelPage, BillingPage, BillingSuccessPage } from './pages/BillingPage'
 import { CalendarPage } from './pages/CalendarPage'
+import { AppsPage } from './pages/AppsPage'
+import { OAuthCallbackPage } from './pages/OAuthCallbackPage'
 import { ConnectorsPage } from './pages/ConnectorsPage'
 import { FamilyPage } from './pages/FamilyPage'
 import { DeviceDetailPage } from './pages/DeviceDetailPage'
@@ -46,6 +48,7 @@ export default function App() {
             <Route path="/" element={<LandingPage />} />
             <Route path="/login" element={<LoginPage />} />
             <Route path="/auth/callback" element={<AuthCallbackPage />} />
+            <Route path="/oauth/:provider/callback" element={<OAuthCallbackPage />} />
             <Route path="/get-companion" element={<PhoneOnlyPage />} />
             <Route path="/developer" element={<DeveloperPage />} />
             <Route path="/developer/" element={<DeveloperPage />} />
@@ -92,6 +95,7 @@ export default function App() {
                 <Route path="/account" element={<AccountPage />} />
                 <Route path="/family" element={<FamilyPage />} />
                 <Route path="/calendar" element={<CalendarPage />} />
+                <Route path="/apps" element={<AppsPage />} />
 
                 <Route element={<RequireEntitlement />}>
                   <Route path="/notes" element={<NotesListPage />} />

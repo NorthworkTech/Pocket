@@ -29,6 +29,8 @@ const spaDirs = [
   'devices',
   'family',
   'calendar',
+  'apps',
+  'oauth/guide/callback',
   'backup',
   'wifi-setup',
   'music',

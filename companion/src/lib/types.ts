@@ -206,3 +206,22 @@ export class ApiError extends Error {
     this.offline = opts?.offline ?? false
   }
 }
+
+/** Pocket apps from northwork.dev (pocket-contract v1.0 §E). */
+export type InstalledApp = {
+  id: string
+  version: string
+  name: string
+  devices: 'all' | string[]
+  auth_connected: boolean
+}
+export type AvailableApp = {
+  id: string
+  version: string
+  name: string
+  summary: string
+  developer: { id: string; name: string }
+  icon_pbm_b64: string
+  auth_type: 'none' | 'oauth2'
+  surfaces: ('app' | 'today')[]
+}

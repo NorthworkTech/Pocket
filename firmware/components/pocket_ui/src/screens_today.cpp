@@ -1,6 +1,7 @@
 /** Today — a calm daily briefing: weather, alarms/timer, what's left on your lists, latest note.
  * Each block is a row; pressing it opens that app. */
 #include "pocket/app.hpp"
+#include <cctype>
 #include "pocket/ui.hpp"
 #include <cstdio>
 #include <ctime>
@@ -109,8 +110,18 @@ void App::render_today() {
     if (!calendar_.empty()) k_meta = "Next 7 days are clear";
   }
 
-  static const char* kSections[kBlocks] = {"CALENDAR", "WEATHER", "CLOCK", "LISTS", "NOTES"};
-  static const Icon kIcons[kBlocks] = {Icon::Calendar, Icon::Weather, Icon::Alarm, Icon::Check, Icon::Notes};
+  const char* kSections[kBlocks] = {"CALENDAR", "WEATHER", "CLOCK", "LISTS", "NOTES"};
+  Icon kIcons[kBlocks] = {Icon::Calendar, Icon::Weather, Icon::Alarm, Icon::Check, Icon::Notes};
+  // An app from Northwork with a Today line takes the last block (Notes stay on Home).
+  std::string app_section;
+  if (const ExtApp* a = today_ext_app()) {
+    app_section = a->name;
+    for (char& ch : app_section) ch = static_cast<char>(std::toupper(static_cast<unsigned char>(ch)));
+    kSections[4] = app_section.c_str();
+    kIcons[4] = Icon::Info;
+    n_line = a->today_line;
+    n_meta = a->feed_title.empty() ? a->name : a->feed_title;
+  }
   const std::string* lines[kBlocks] = {&k_line, &w_line, &c_line, &l_line, &n_line};
   const std::string* metas[kBlocks] = {&k_meta, &w_meta, &c_meta, &l_meta, &n_meta};
   focus_.count = kBlocks;
@@ -144,6 +155,14 @@ void App::handle_today(InputEvent e) {
     maybe_fetch_calendar(true);
     mark_content_dirty();
     return;
+  }
+  if (focus_.index == 4) {
+    if (const ExtApp* a = today_ext_app()) {
+      const int idx = static_cast<int>(a - ext_apps_.data());
+      nav_.pop();
+      open_ext_app(idx);
+      return;
+    }
   }
   if (focus_.index == 3) {
     // Lists live on the Notes app's Lists tab.

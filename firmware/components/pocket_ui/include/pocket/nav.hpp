@@ -64,6 +64,10 @@ enum class ScreenId : uint16_t {
   SettingsStorage,
   SettingsAdvanced,
   OnboardingRestore,
+  /** An app from Northwork (ext_apps.hpp): its feed screens. */
+  ExtApp,
+  /** A long text block from an app, full page. */
+  ExtAppText,
 };
 
 struct NavStack {

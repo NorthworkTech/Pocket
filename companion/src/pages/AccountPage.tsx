@@ -38,6 +38,7 @@ export function AccountPage() {
         <Row icon="device" to="/devices" title="Devices" />
         <Row icon="family" to="/family" title="Pocket Family" detail="Share lists with the people you live with" />
         <Row icon="calendar" to="/calendar" title="Calendar" detail="Your events on Pocket's Today" />
+        <Row icon="sparkle" to="/apps" title="Apps" detail="Apps from Northwork on your Pocket" />
         <Row icon="link" to="/link" title="Link a Pocket" />
       </Group>
 

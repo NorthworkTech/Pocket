@@ -1,3 +1,4 @@
+import type { AvailableApp, InstalledApp } from './types'
 import { ApiError, type BackupMeta, type Book, type CalendarFeed, type DeviceBackup, type Family, type Connector, type ConnectorProvider, type Device, type HomeAppKey, type MeResponse, type MusicTrack, type Note, type PairClaimResult, type PairSession, type PocketList, type RingResult } from './types'
 
 const BUILD_API_BASE = (import.meta.env.VITE_API_BASE as string | undefined)?.replace(/\/$/, '') || ''
@@ -284,6 +285,30 @@ export const api = {
   },
 
   // Calendar on Today
+  listApps() {
+    return request<{ installed: InstalledApp[]; available: AvailableApp[] }>('/v1/apps')
+  },
+  installApp(id: string, returnUrl: string) {
+    return request<{ ok: true; needs_auth: boolean; auth_url?: string; message?: string }>('/v1/apps/install', {
+      method: 'POST',
+      body: { id, devices: 'all', return: returnUrl },
+    })
+  },
+  uninstallApp(id: string) {
+    return request<{ ok: true }>('/v1/apps/uninstall', { method: 'POST', body: { id } })
+  },
+  appAuthStart(id: string, returnUrl: string) {
+    return request<{ auth_url: string }>(`/v1/apps/${encodeURIComponent(id)}/auth/start`, {
+      method: 'POST',
+      body: { return: returnUrl },
+    })
+  },
+  finishAppOAuth(provider: string, params: { code?: string; state?: string; error?: string }) {
+    return request<{ ok: boolean; return_url: string; message?: string }>(
+      `/v1/apps/oauth/${encodeURIComponent(provider)}/callback`,
+      { method: 'POST', body: params },
+    )
+  },
   listCalendarFeeds() {
     return request<{ feeds: CalendarFeed[]; max_feeds: number }>('/v1/calendar/feeds')
   },

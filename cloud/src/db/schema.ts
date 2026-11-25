@@ -237,4 +237,10 @@ CREATE TABLE IF NOT EXISTS mock_checkouts (
   created_at TEXT NOT NULL,
   completed_at TEXT
 );
+
+CREATE TABLE IF NOT EXISTS app_registry (id TEXT PRIMARY KEY, version TEXT NOT NULL, manifest_json TEXT NOT NULL, updated_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS app_installs (user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE, app_id TEXT NOT NULL, devices_json TEXT NOT NULL DEFAULT '"all"', installed_at TEXT NOT NULL, PRIMARY KEY (user_id, app_id));
+CREATE TABLE IF NOT EXISTS app_auth (user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE, provider TEXT NOT NULL, access_token TEXT NOT NULL, refresh_token TEXT, expires_at TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'ok', updated_at TEXT NOT NULL, PRIMARY KEY (user_id, provider));
+CREATE TABLE IF NOT EXISTS app_feeds (user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE, app_id TEXT NOT NULL, feed_json TEXT, fetched_at TEXT NOT NULL, error TEXT, PRIMARY KEY (user_id, app_id));
+CREATE TABLE IF NOT EXISTS app_oauth_states (state TEXT PRIMARY KEY, user_id TEXT NOT NULL, provider TEXT NOT NULL, app_id TEXT NOT NULL, return_url TEXT NOT NULL, verifier TEXT NOT NULL, created_at TEXT NOT NULL);
 `;

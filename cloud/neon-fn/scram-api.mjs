@@ -1419,6 +1419,370 @@ async function resolveWallDevices(userId, devices) {
   return ids.every((d) => set.has(d)) ? ids : null;
 }
 
+// ---- Apps (pocket-contract v1.0 §C–E) -----------------------------------------------
+const APP_MAX_PER_DEVICE = 6; // Home has six free tiles
+const FEED_MAX_BYTES = 16 * 1024;
+const REGISTRY_URL = (process.env.POCKET_REGISTRY_URL || "https://northwork.dev/api/pocket/registry").trim();
+const REGISTRY_EVERY_MS = 10 * 60e3;
+const APP_RETURN_HOSTS = new Set(["northwork.app", "www.northwork.app", "northwork.dev", "www.northwork.dev"]);
+const APP_DEFAULT_RETURN = "https://northwork.app/pocket/app/apps";
+const OAUTH_PROVIDERS = {
+  guide: {
+    issuer: "https://guidelearning.org",
+    clientIdEnv: "GUIDE_CLIENT_ID",
+    secretEnv: "GUIDE_CLIENT_SECRET",
+    redirect: "https://northwork.app/pocket/app/oauth/guide/callback",
+  },
+};
+const oauthDiscovery = new Map();
+
+const strOk = (v, max, min = 1) => typeof v === "string" && v.length >= min && v.length <= max;
+/** Plain text for the 1-bit fonts: no control chars, no astral-plane emoji. */
+const cleanText = (v) => String(v).replace(/[\u0000-\u0008\u000b-\u001f\u007f]/g, "").replace(/[\u{10000}-\u{10FFFF}]/gu, "").trim();
+
+function iconOk(b64) {
+  if (typeof b64 !== "string" || b64.length > 400) return false;
+  const buf = Buffer.from(b64, "base64");
+  const m = buf.subarray(0, 16).toString("latin1").match(/^P4\s+32\s+32\s/);
+  return Boolean(m) && buf.length - m[0].length === 128;
+}
+
+/** pocket-app/1 manifest → normalized, or null when invalid. */
+function parseAppManifest(m) {
+  if (!m || typeof m !== "object" || m.schema !== "pocket-app/1") return null;
+  if (typeof m.id !== "string" || !/^[a-z0-9](?:[a-z0-9.-]{0,62}[a-z0-9])?$/.test(m.id)) return null;
+  if (typeof m.version !== "string" || !/^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/.test(m.version)) return null;
+  if (!strOk(m.name, 20) || (m.summary !== undefined && !strOk(m.summary, 80, 0))) return null;
+  if (!m.developer || !strOk(m.developer.id, 64) || !strOk(m.developer.name, 64)) return null;
+  if (!iconOk(m.icon_pbm_b64)) return null;
+  let dataUrl;
+  try { dataUrl = new URL(m.data_url); } catch { return null; }
+  if (dataUrl.protocol !== "https:") return null;
+  const refresh = Number(m.refresh_minutes ?? 30);
+  if (!Number.isInteger(refresh) || refresh < 15 || refresh > 1440) return null;
+  let auth = { type: "none" };
+  if (m.auth && m.auth.type === "oauth2") {
+    if (!OAUTH_PROVIDERS[m.auth.provider]) return null;
+    const scopes = Array.isArray(m.auth.scopes) ? m.auth.scopes.filter((x) => typeof x === "string" && /^[\w.:-]{1,64}$/.test(x)) : [];
+    auth = { type: "oauth2", provider: m.auth.provider, scopes: scopes.slice(0, 20) };
+  } else if (m.auth && m.auth.type !== "none") {
+    return null;
+  }
+  const surfaces = (Array.isArray(m.surfaces) ? m.surfaces : ["app"]).filter((x) => x === "app" || x === "today");
+  return {
+    schema: "pocket-app/1",
+    id: m.id,
+    version: m.version,
+    name: cleanText(m.name),
+    summary: cleanText(m.summary || ""),
+    developer: { id: String(m.developer.id), name: cleanText(m.developer.name) },
+    icon_pbm_b64: m.icon_pbm_b64,
+    data_url: dataUrl.toString(),
+    refresh_minutes: refresh,
+    auth,
+    surfaces: surfaces.length ? [...new Set(surfaces)] : ["app"],
+    approved_at: typeof m.approved_at === "string" ? m.approved_at : null,
+    review_id: typeof m.review_id === "string" ? m.review_id : null,
+  };
+}
+
+/** pocket-feed/1 → normalized feed, or null (the last good feed is kept). */
+function parseAppFeed(f) {
+  if (!f || typeof f !== "object" || f.schema !== "pocket-feed/1") return null;
+  if (!strOk(f.title, 40)) return null;
+  if (f.today !== undefined && f.today !== null && !strOk(f.today, 40, 0)) return null;
+  if (!Array.isArray(f.screens) || f.screens.length < 1 || f.screens.length > 8) return null;
+  const ids = new Set();
+  for (const sc of f.screens) {
+    if (!sc || typeof sc.id !== "string" || !/^[A-Za-z0-9_-]{1,32}$/.test(sc.id) || ids.has(sc.id)) return null;
+    ids.add(sc.id);
+  }
+  const screens = [];
+  for (const sc of f.screens) {
+    if (!strOk(sc.title, 40) || !Array.isArray(sc.blocks) || sc.blocks.length > 40) return null;
+    const blocks = [];
+    for (const b of sc.blocks) {
+      if (!b || typeof b !== "object") return null;
+      switch (b.type) {
+        case "header":
+          if (!strOk(b.text, 40)) return null;
+          blocks.push({ type: "header", text: cleanText(b.text) });
+          break;
+        case "kv":
+          if (!strOk(b.key, 24) || !strOk(b.value, 40, 0)) return null;
+          blocks.push({ type: "kv", key: cleanText(b.key), value: cleanText(b.value) });
+          break;
+        case "row": {
+          if (!strOk(b.text, 48) || (b.detail !== undefined && !strOk(b.detail, 24, 0))) return null;
+          if (b.go !== undefined && !ids.has(b.go)) return null;
+          const row = { type: "row", text: cleanText(b.text) };
+          if (b.detail) row.detail = cleanText(b.detail);
+          if (b.go) row.go = b.go;
+          blocks.push(row);
+          break;
+        }
+        case "text":
+          if (!strOk(b.text, 600)) return null;
+          blocks.push({ type: "text", text: cleanText(b.text) });
+          break;
+        case "empty":
+          if (!strOk(b.text, 80)) return null;
+          blocks.push({ type: "empty", text: cleanText(b.text) });
+          break;
+        case "divider":
+          blocks.push({ type: "divider" });
+          break;
+        default:
+          break; // unknown block types from newer feeds are skipped
+      }
+    }
+    screens.push({ id: sc.id, title: cleanText(sc.title), blocks });
+  }
+  return {
+    schema: "pocket-feed/1",
+    title: cleanText(f.title),
+    today: f.today ? cleanText(f.today) : "",
+    screens,
+    updated_at: typeof f.updated_at === "string" ? f.updated_at : new Date().toISOString(),
+  };
+}
+
+function appReturnUrl(v) {
+  try {
+    const u = new URL(String(v || ""));
+    if (u.protocol === "https:" && APP_RETURN_HOSTS.has(u.hostname)) return u.toString();
+  } catch {}
+  return APP_DEFAULT_RETURN;
+}
+
+/** Pull approved manifests from northwork.dev at most every 10 minutes (signed). */
+async function maybePollRegistry(force = false) {
+  const secret = (process.env.POCKET_REGISTRY_SECRET || "").trim();
+  if (!secret) return;
+  const last = Number(await getAppSetting("pocket_registry_polled_at")) || 0;
+  if (!force && Date.now() - last < REGISTRY_EVERY_MS) return;
+  await setAppSetting("pocket_registry_polled_at", String(Date.now()), "registry");
+  let raw = "";
+  let sig = "";
+  try {
+    const res = await globalThis.fetch(REGISTRY_URL, {
+      headers: { authorization: `Bearer ${secret}`, accept: "application/json", "user-agent": "Pocket-Cloud/1.0" },
+      signal: AbortSignal.timeout(8000),
+    });
+    if (!res.ok) { console.warn("registry HTTP", res.status); return; }
+    raw = await res.text();
+    sig = (res.headers.get("x-pocket-signature") || "").trim().toLowerCase();
+  } catch (e) {
+    console.warn("registry fetch failed", String(e && e.message || e));
+    return;
+  }
+  const expect = createHmac("sha256", secret).update(raw).digest("hex");
+  if (!sig || !safeEqual(sig, expect)) { console.warn("registry signature mismatch"); return; }
+  let body;
+  try { body = JSON.parse(raw); } catch { return; }
+  const apps = Array.isArray(body.apps) ? body.apps : [];
+  const revoked = new Set((Array.isArray(body.revoked) ? body.revoked : []).map(String));
+  const now = new Date().toISOString();
+  const keep = new Set();
+  for (const m of apps) {
+    const app = parseAppManifest(m);
+    if (!app || revoked.has(app.id) || revoked.has(`${app.id}@${app.version}`)) continue;
+    keep.add(app.id);
+    await query(`DELETE FROM app_registry WHERE id='${esc(app.id)}'`);
+    await query(`INSERT INTO app_registry (id,version,manifest_json,updated_at) VALUES ('${esc(app.id)}','${esc(app.version)}',${sqlStr(JSON.stringify(app))},'${now}')`);
+  }
+  // Anything no longer approved (or revoked) disappears from Pockets on their next check-in.
+  const current = await query(`SELECT id FROM app_registry`);
+  for (const r of current) {
+    if (!keep.has(r.id)) await query(`DELETE FROM app_registry WHERE id='${esc(r.id)}'`);
+  }
+}
+
+async function registryApps() {
+  const rows = await query(`SELECT id, manifest_json FROM app_registry ORDER BY id`);
+  const out = new Map();
+  for (const r of rows) {
+    try { out.set(r.id, JSON.parse(r.manifest_json)); } catch {}
+  }
+  return out;
+}
+
+async function appInstalls(userId) {
+  return query(`SELECT app_id, devices_json, installed_at FROM app_installs WHERE user_id='${esc(userId)}' ORDER BY installed_at`);
+}
+
+async function appAuthRow(userId, provider) {
+  const rows = await query(`SELECT access_token, refresh_token, expires_at, status FROM app_auth WHERE user_id='${esc(userId)}' AND provider='${esc(provider)}'`);
+  return rows[0] || null;
+}
+
+async function oauthConfig(provider) {
+  const p = OAUTH_PROVIDERS[provider];
+  if (!p) return null;
+  const clientId = (process.env[p.clientIdEnv] || "").trim();
+  const secret = (process.env[p.secretEnv] || "").trim();
+  if (!clientId || !secret) return null;
+  let d = oauthDiscovery.get(provider);
+  if (!d || Date.now() - d.at > 3600e3) {
+    try {
+      const res = await globalThis.fetch(`${p.issuer}/.well-known/openid-configuration`, { signal: AbortSignal.timeout(8000) });
+      if (!res.ok) return null;
+      const j = await res.json();
+      if (!j.authorization_endpoint || !j.token_endpoint) return null;
+      d = { at: Date.now(), doc: j };
+      oauthDiscovery.set(provider, d);
+    } catch {
+      return null;
+    }
+  }
+  return { ...p, clientId, secret, doc: d.doc };
+}
+
+/** Start "Log in with <provider>": a one-time state bound to this user, with PKCE. */
+async function appAuthUrl(userId, app, returnUrl) {
+  const cfg = await oauthConfig(app.auth.provider);
+  if (!cfg) return null;
+  const state = randomToken(24);
+  const verifier = randomToken(48);
+  const challenge = createHash("sha256").update(verifier).digest("base64url");
+  await query(`DELETE FROM app_oauth_states WHERE created_at < '${new Date(Date.now() - 3600e3).toISOString()}'`);
+  await query(`INSERT INTO app_oauth_states (state,user_id,provider,app_id,return_url,verifier,created_at) VALUES ('${esc(state)}','${esc(userId)}','${esc(app.auth.provider)}','${esc(app.id)}',${sqlStr(returnUrl)},'${esc(verifier)}','${new Date().toISOString()}')`);
+  const u = new URL(cfg.doc.authorization_endpoint);
+  u.searchParams.set("response_type", "code");
+  u.searchParams.set("client_id", cfg.clientId);
+  u.searchParams.set("redirect_uri", cfg.redirect);
+  u.searchParams.set("scope", (app.auth.scopes.length ? app.auth.scopes : ["openid", "offline_access"]).join(" "));
+  u.searchParams.set("state", state);
+  u.searchParams.set("code_challenge", challenge);
+  u.searchParams.set("code_challenge_method", "S256");
+  return u.toString();
+}
+
+async function oauthTokenRequest(cfg, params) {
+  const methods = Array.isArray(cfg.doc.token_endpoint_auth_methods_supported) ? cfg.doc.token_endpoint_auth_methods_supported : [];
+  const headers = { "content-type": "application/x-www-form-urlencoded", accept: "application/json" };
+  const form = new URLSearchParams(params);
+  if (methods.includes("client_secret_basic") && !methods.includes("client_secret_post")) {
+    headers.authorization = "Basic " + Buffer.from(`${encodeURIComponent(cfg.clientId)}:${encodeURIComponent(cfg.secret)}`).toString("base64");
+  } else {
+    form.set("client_id", cfg.clientId);
+    form.set("client_secret", cfg.secret);
+  }
+  const res = await globalThis.fetch(cfg.doc.token_endpoint, { method: "POST", headers, body: form.toString(), signal: AbortSignal.timeout(8000) });
+  const j = await res.json().catch(() => ({}));
+  return { ok: res.ok, status: res.status, body: j };
+}
+
+async function storeAppTokens(userId, provider, tok) {
+  const expires = new Date(Date.now() + Math.max(60, Number(tok.expires_in) || 3600) * 1000).toISOString();
+  const now = new Date().toISOString();
+  const prev = await appAuthRow(userId, provider);
+  const refresh = tok.refresh_token || prev?.refresh_token || null;
+  await query(`DELETE FROM app_auth WHERE user_id='${esc(userId)}' AND provider='${esc(provider)}'`);
+  await query(`INSERT INTO app_auth (user_id,provider,access_token,refresh_token,expires_at,status,updated_at) VALUES ('${esc(userId)}','${esc(provider)}',${sqlStr(String(tok.access_token))},${sqlNullable(refresh)},'${expires}','ok','${now}')`);
+}
+
+/** A usable access token (refreshing, and storing the rotated refresh token), or null. */
+async function appAccessToken(userId, provider) {
+  const row = await appAuthRow(userId, provider);
+  if (!row || row.status !== "ok") return null;
+  if (Date.parse(row.expires_at) - Date.now() > 60e3) return row.access_token;
+  if (!row.refresh_token) return null;
+  const cfg = await oauthConfig(provider);
+  if (!cfg) return null;
+  try {
+    const r = await oauthTokenRequest(cfg, { grant_type: "refresh_token", refresh_token: row.refresh_token });
+    if (r.ok && r.body.access_token) {
+      await storeAppTokens(userId, provider, r.body);
+      return r.body.access_token;
+    }
+    if (r.body && r.body.error === "invalid_grant") {
+      await query(`UPDATE app_auth SET status='reconnect', updated_at='${new Date().toISOString()}' WHERE user_id='${esc(userId)}' AND provider='${esc(provider)}'`);
+    }
+  } catch {}
+  return null;
+}
+
+/** Opaque, stable per-developer user id (never the email). */
+function appUserId(userId, app) {
+  const key = (process.env.SESSION_SECRET || DEVICE_API_KEY || "pocket").trim();
+  return createHmac("sha256", key).update(`${userId}:${app.developer.id}`).digest("hex").slice(0, 32);
+}
+
+async function fetchAppFeed(app, userId, accessToken) {
+  const headers = { accept: "application/json", "x-pocket-user": appUserId(userId, app), "user-agent": "Pocket-Cloud/1.0" };
+  if (accessToken) headers.authorization = `Bearer ${accessToken}`;
+  try {
+    const res = await globalThis.fetch(app.data_url, { headers, redirect: "error", signal: AbortSignal.timeout(8000) });
+    if (!res.ok) return { error: `HTTP ${res.status}` };
+    const len = Number(res.headers.get("content-length") || 0);
+    if (len > FEED_MAX_BYTES) return { error: "too large" };
+    const raw = await res.text();
+    if (Buffer.byteLength(raw) > FEED_MAX_BYTES) return { error: "too large" };
+    const feed = parseAppFeed(JSON.parse(raw));
+    return feed ? { feed } : { error: "invalid feed" };
+  } catch (e) {
+    return { error: String((e && e.message) || e).slice(0, 120) };
+  }
+}
+
+/** Installed apps for one Pocket, with feeds refreshed when stale. */
+async function deviceAppsPayload(userId, deviceId, { refresh = true } = {}) {
+  const reg = await registryApps();
+  const installs = (await appInstalls(userId)).filter((r) => wallTargets(r, deviceId) && reg.has(r.app_id)).slice(0, APP_MAX_PER_DEVICE);
+  const feeds = new Map((await query(`SELECT app_id, feed_json, fetched_at, error FROM app_feeds WHERE user_id='${esc(userId)}'`)).map((r) => [r.app_id, r]));
+  const out = [];
+  for (const inst of installs) {
+    const app = reg.get(inst.app_id);
+    let status = "ok";
+    let token = null;
+    if (app.auth.type === "oauth2") {
+      const a = await appAuthRow(userId, app.auth.provider);
+      if (!a) status = "connect";
+      else if (a.status !== "ok") status = "reconnect";
+    }
+    const cached = feeds.get(app.id);
+    const stale = !cached || Date.now() - Date.parse(cached.fetched_at) > app.refresh_minutes * 60e3;
+    if (refresh && stale && status === "ok") {
+      if (app.auth.type === "oauth2") {
+        token = await appAccessToken(userId, app.auth.provider);
+        if (!token) {
+          const a = await appAuthRow(userId, app.auth.provider);
+          status = a && a.status !== "ok" ? "reconnect" : "waiting";
+        }
+      }
+      if (status === "ok") {
+        const r = await fetchAppFeed(app, userId, token);
+        const now = new Date().toISOString();
+        const feedJson = r.feed ? JSON.stringify(r.feed) : cached?.feed_json || null;
+        await query(`DELETE FROM app_feeds WHERE user_id='${esc(userId)}' AND app_id='${esc(app.id)}'`);
+        await query(`INSERT INTO app_feeds (user_id,app_id,feed_json,fetched_at,error) VALUES ('${esc(userId)}','${esc(app.id)}',${sqlNullable(feedJson)},'${now}',${sqlNullable(r.error || null)})`);
+        feeds.set(app.id, { app_id: app.id, feed_json: feedJson, fetched_at: now, error: r.error || null });
+      }
+    }
+    const f = feeds.get(app.id);
+    let feed = null;
+    try { feed = f && f.feed_json ? JSON.parse(f.feed_json) : null; } catch {}
+    if (status === "ok" && !feed) status = "waiting";
+    out.push({
+      id: app.id,
+      name: app.name,
+      version: app.version,
+      icon_pbm_b64: app.icon_pbm_b64,
+      surfaces: app.surfaces,
+      status,
+      feed,
+      updated_at: f?.fetched_at || null,
+    });
+  }
+  return out;
+}
+
+function appsRevFor(rows, deviceId, reg) {
+  const parts = rows.filter((r) => wallTargets(r, deviceId) && reg.has(r.app_id)).map((r) => `${r.app_id}@${reg.get(r.app_id).version}`);
+  return createHash("sha256").update(parts.join("|")).digest("hex").slice(0, 16);
+}
+
 /** Devices that would end up with more than 5 wallpapers. */
 async function wallOverLimit(userId, rows, devices, exceptId) {
   const owned = (await query(`SELECT device_id FROM device_links WHERE user_id='${esc(userId)}'`)).map((r) => r.device_id);
@@ -1465,6 +1829,12 @@ async function ensureAdminSchema() {
     created_at TIMESTAMPTZ NOT NULL
   )`);
   await query(`CREATE INDEX IF NOT EXISTS wallpapers_user ON wallpapers(user_id, created_at DESC)`);
+  // Apps (pocket-contract v1.0 §C–E)
+  await query(`CREATE TABLE IF NOT EXISTS app_registry (id TEXT PRIMARY KEY, version TEXT NOT NULL, manifest_json TEXT NOT NULL, updated_at TIMESTAMPTZ NOT NULL)`);
+  await query(`CREATE TABLE IF NOT EXISTS app_installs (user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE, app_id TEXT NOT NULL, devices_json TEXT NOT NULL DEFAULT '"all"', installed_at TIMESTAMPTZ NOT NULL, PRIMARY KEY (user_id, app_id))`);
+  await query(`CREATE TABLE IF NOT EXISTS app_auth (user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE, provider TEXT NOT NULL, access_token TEXT NOT NULL, refresh_token TEXT, expires_at TIMESTAMPTZ NOT NULL, status TEXT NOT NULL DEFAULT 'ok', updated_at TIMESTAMPTZ NOT NULL, PRIMARY KEY (user_id, provider))`);
+  await query(`CREATE TABLE IF NOT EXISTS app_feeds (user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE, app_id TEXT NOT NULL, feed_json TEXT, fetched_at TIMESTAMPTZ NOT NULL, error TEXT, PRIMARY KEY (user_id, app_id))`);
+  await query(`CREATE TABLE IF NOT EXISTS app_oauth_states (state TEXT PRIMARY KEY, user_id TEXT NOT NULL, provider TEXT NOT NULL, app_id TEXT NOT NULL, return_url TEXT NOT NULL, verifier TEXT NOT NULL, created_at TIMESTAMPTZ NOT NULL)`);
   await query(`CREATE TABLE IF NOT EXISTS reading_progress (
     user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     book_id TEXT NOT NULL,
@@ -1570,7 +1940,7 @@ async function ensureAdminSchema() {
     created_at TIMESTAMPTZ NOT NULL,
     deleted_at TIMESTAMPTZ
   )`);
-  // Pocket Family, Calendar on Today, device backups (scram-api-v23-wallpapers).
+  // Pocket Family, Calendar on Today, device backups (scram-api-v24-apps).
   await query(`ALTER TABLE device_links ADD COLUMN IF NOT EXISTS backup_requested_at TIMESTAMPTZ`);
   await query(`ALTER TABLE cloud_lists ADD COLUMN IF NOT EXISTS family_id TEXT`);
   await query(`CREATE TABLE IF NOT EXISTS families (
@@ -2107,7 +2477,7 @@ export default {
     // Health does not depend on DB schema readiness so it stays useful for diagnosing DB-layer issues.
     if (path === "/health" || path === "/" || path === "/v1/health") {
       const sha256 = await getSelfSourceSha256();
-      return json(req, { ok: true, build: "scram-api-v23-wallpapers", sourceSha256: sha256 });
+      return json(req, { ok: true, build: "scram-api-v24-apps", sourceSha256: sha256 });
     }
     try {
       await readySchema();
@@ -2247,6 +2617,110 @@ export default {
         await query(`UPDATE pair_sessions SET status='expired' WHERE device_id='${esc(device_id)}' AND status='pending'`);
         await query(`INSERT INTO pair_sessions (id,device_id,code_hash,code_public_hint,expires_at,created_at,status) VALUES ('${esc(newId())}','${esc(device_id)}','${esc(sha256Hex(code))}','${esc(code.slice(0, 2) + "******")}','${expires.toISOString()}','${now.toISOString()}','pending')`);
         return json(req, { ok: true, expires_at: expires.toISOString() }, 201);
+      }
+
+      // ---- Apps (pocket-contract v1.0 §C–E) ----------------------------------------
+      if (req.method === "GET" && path === "/v1/apps") {
+        const user = await userFromSession(req);
+        if (!user) return json(req, { message: "Sign in to continue." }, 401);
+        await maybePollRegistry();
+        const reg = await registryApps();
+        const installs = await appInstalls(user.id);
+        const installed = [];
+        for (const r of installs) {
+          const app = reg.get(r.app_id);
+          if (!app) continue;
+          let auth_connected = true;
+          if (app.auth.type === "oauth2") {
+            const a = await appAuthRow(user.id, app.auth.provider);
+            auth_connected = Boolean(a && a.status === "ok");
+          }
+          installed.push({ id: app.id, version: app.version, name: app.name, devices: wallDevices(r), auth_connected });
+        }
+        const available = [...reg.values()].map((a) => ({
+          id: a.id, version: a.version, name: a.name, summary: a.summary, developer: a.developer,
+          icon_pbm_b64: a.icon_pbm_b64, auth_type: a.auth.type, surfaces: a.surfaces,
+        }));
+        return json(req, { installed, available });
+      }
+
+      if (req.method === "POST" && (path === "/v1/apps/install" || path === "/v1/apps/uninstall")) {
+        const user = await userFromSession(req);
+        if (!user) return json(req, { message: "Sign in to continue." }, 401);
+        const body = await req.json().catch(() => ({}));
+        const id = typeof body.id === "string" ? body.id : "";
+        if (path === "/v1/apps/uninstall") {
+          await query(`DELETE FROM app_installs WHERE user_id='${esc(user.id)}' AND app_id='${esc(id)}'`);
+          await query(`DELETE FROM app_feeds WHERE user_id='${esc(user.id)}' AND app_id='${esc(id)}'`);
+          return json(req, { ok: true });
+        }
+        await maybePollRegistry();
+        const app = (await registryApps()).get(id);
+        if (!app) return json(req, { message: "That app isn't available.", code: "not_found" }, 404);
+        const devices = await resolveWallDevices(user.id, body.devices);
+        if (!devices) return json(req, { message: "Choose one of your own Pockets.", code: "device_not_yours" }, 403);
+        const others = (await appInstalls(user.id)).filter((r) => r.app_id !== id);
+        const owned = (await query(`SELECT device_id FROM device_links WHERE user_id='${esc(user.id)}'`)).map((r) => r.device_id);
+        const full = (devices === "all" ? owned : devices).filter((d) => others.filter((r) => wallTargets(r, d)).length >= APP_MAX_PER_DEVICE);
+        if (full.length) return json(req, { message: "A Pocket can show 6 apps. Remove one first.", code: "too_many", devices: full }, 409);
+        await query(`DELETE FROM app_installs WHERE user_id='${esc(user.id)}' AND app_id='${esc(id)}'`);
+        await query(`INSERT INTO app_installs (user_id,app_id,devices_json,installed_at) VALUES ('${esc(user.id)}','${esc(id)}',${sqlStr(JSON.stringify(devices))},'${new Date().toISOString()}')`);
+        if (app.auth.type === "oauth2") {
+          const a = await appAuthRow(user.id, app.auth.provider);
+          if (!a || a.status !== "ok") {
+            const auth_url = await appAuthUrl(user.id, app, appReturnUrl(body.return));
+            if (!auth_url) return json(req, { ok: true, needs_auth: true, message: "Sign-in for this app isn't available yet.", code: "auth_unavailable" });
+            return json(req, { ok: true, needs_auth: true, auth_url });
+          }
+        }
+        return json(req, { ok: true, needs_auth: false });
+      }
+
+      const appAuthStart = path.match(/^\/v1\/apps\/([a-z0-9.-]+)\/auth\/start$/);
+      if (appAuthStart && (req.method === "POST" || req.method === "GET")) {
+        const user = await userFromSession(req);
+        if (!user) return json(req, { message: "Sign in to continue." }, 401);
+        const app = (await registryApps()).get(appAuthStart[1]);
+        if (!app || app.auth.type !== "oauth2") return json(req, { message: "That app doesn't need a sign-in.", code: "not_found" }, 404);
+        const body = req.method === "POST" ? await req.json().catch(() => ({})) : {};
+        const auth_url = await appAuthUrl(user.id, app, appReturnUrl(body.return || u.searchParams.get("return")));
+        if (!auth_url) return json(req, { message: "Sign-in for this app isn't available yet.", code: "auth_unavailable" }, 503);
+        return json(req, { auth_url });
+      }
+
+      // OAuth callback relay: northwork.app/pocket/app/oauth/<provider>/callback posts {code, state} here.
+      const appCb = path.match(/^\/v1\/apps\/oauth\/([a-z0-9-]+)\/callback$/);
+      if (req.method === "POST" && appCb) {
+        const provider = appCb[1];
+        const body = await req.json().catch(() => ({}));
+        const state = typeof body.state === "string" ? body.state : "";
+        const rows = state ? await query(`SELECT * FROM app_oauth_states WHERE state='${esc(state)}' AND provider='${esc(provider)}'`) : [];
+        const st = rows[0];
+        if (!st) return json(req, { ok: false, message: "That sign-in link expired. Try again from Pocket.", return_url: APP_DEFAULT_RETURN }, 400);
+        await query(`DELETE FROM app_oauth_states WHERE state='${esc(state)}'`);
+        if (Date.now() - Date.parse(st.created_at) > 3600e3 || typeof body.code !== "string" || !body.code) {
+          return json(req, { ok: false, message: body.error ? "Sign-in was cancelled." : "That sign-in link expired. Try again from Pocket.", return_url: st.return_url }, 400);
+        }
+        const cfg = await oauthConfig(provider);
+        if (!cfg) return json(req, { ok: false, message: "Sign-in isn't available right now.", return_url: st.return_url }, 503);
+        try {
+          const r = await oauthTokenRequest(cfg, { grant_type: "authorization_code", code: body.code, redirect_uri: cfg.redirect, code_verifier: st.verifier });
+          if (!r.ok || !r.body.access_token) return json(req, { ok: false, message: "Sign-in didn't finish. Try again.", return_url: st.return_url }, 400);
+          await storeAppTokens(st.user_id, provider, r.body);
+          await query(`DELETE FROM app_feeds WHERE user_id='${esc(st.user_id)}' AND app_id='${esc(st.app_id)}'`);
+        } catch {
+          return json(req, { ok: false, message: "Sign-in didn't finish. Try again.", return_url: st.return_url }, 502);
+        }
+        return json(req, { ok: true, return_url: st.return_url });
+      }
+
+      if (req.method === "GET" && path === "/v1/device/apps") {
+        const deviceId = u.searchParams.get("device_id") || req.headers.get("x-device-id") || "";
+        const link = await deviceLinkForRequest(req, deviceId, { strict: true });
+        if (!link) return json(req, { message: "Unauthorized.", code: "device_token_required" }, 401);
+        await maybePollRegistry();
+        const apps = await deviceAppsPayload(link.user_id, deviceId);
+        return json(req, { apps });
       }
 
       // ---- Wallpapers (pocket-contract v1.0 §B) --------------------------------------
@@ -2680,8 +3154,13 @@ export default {
           const wl = (await wallpapersForUser(userId)).filter((r) => wallTargets(r, link.device_id)).slice(0, WALL_MAX_PER_DEVICE);
           wallpapers_rev = createHash("sha256").update(wl.map((r) => r.id + ":" + r.sha256 + ":" + r.layout_json).join("|")).digest("hex").slice(0, 16);
         }
+        let apps_rev = null;
+        if ((req.headers.get("x-device-token") || "").trim()) {
+          apps_rev = appsRevFor(await appInstalls(userId), link.device_id, await registryApps());
+        }
         return json(req, {
           wallpapers_rev,
+          apps_rev,
           entitled,
           status: sub?.status || "free",
           trial_ends_at: sub?.trial_ends_at || null,
@@ -3174,7 +3653,7 @@ export default {
         const secrets = await loadSttSecrets();
         return json(req, {
           ok: true,
-          build: "scram-api-v23-wallpapers",
+          build: "scram-api-v24-apps",
           providers: {
             openai: Boolean(secrets.openai),
             groq: Boolean(secrets.groq),

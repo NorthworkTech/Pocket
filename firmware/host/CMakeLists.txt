@@ -35,6 +35,8 @@ set(POCKET_UI_SRCS
   ${POCKET_UI}/src/screens_clock.cpp
   ${POCKET_UI}/src/json_lite.cpp
   ${POCKET_UI}/src/wallpaper.cpp
+  ${POCKET_UI}/src/ext_apps.cpp
+  ${POCKET_UI}/src/screens_ext_apps.cpp
   ${POCKET_UI}/vendor/qrcodegen/qrcodegen.c
 )
 
@@ -222,3 +224,8 @@ add_executable(test_wallpaper ../tests/test_wallpaper.cpp ${POCKET_UI_SRCS})
 target_include_directories(test_wallpaper PRIVATE ${POCKET_UI}/include ${POCKET_UI}/vendor/qrcodegen)
 target_compile_definitions(test_wallpaper PRIVATE POCKET_HOST=1)
 add_test(NAME test_wallpaper COMMAND test_wallpaper)
+
+add_executable(test_ext_apps ../tests/test_ext_apps.cpp ${POCKET_UI_SRCS})
+target_include_directories(test_ext_apps PRIVATE ${POCKET_UI}/include ${POCKET_UI}/vendor/qrcodegen)
+target_compile_definitions(test_ext_apps PRIVATE POCKET_HOST=1)
+add_test(NAME test_ext_apps COMMAND test_ext_apps)

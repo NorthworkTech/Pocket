@@ -87,6 +87,7 @@ void App::boot() {
   reading_load_local();
   calendar_load_cache();
   wallpapers_load();
+  ext_apps_load();
   if (storage_ && storage_->data_ensure_root()) {
     std::string st;
     JsonValue v;
@@ -843,6 +844,14 @@ void App::launch_home_app(HomeApp launch) {
     case HomeApp::Update:
       begin_firmware_update();
       return;
+    case HomeApp::Slot10:
+    case HomeApp::Slot11:
+    case HomeApp::Slot12:
+    case HomeApp::Slot13:
+    case HomeApp::Slot14:
+    case HomeApp::Slot15:
+      open_ext_app(static_cast<int>(launch) - static_cast<int>(HomeApp::Slot10));
+      return;
     default:
       return;
   }
@@ -1030,6 +1039,11 @@ void App::maybe_cloud_attest() {
   // Pending Wi‑Fi from Companion (in-app, no SoftAP hop).
   const std::string pending_ssid = json_str(body, "ssid");
   if (attest_ok) {
+    const std::string arev = attest_root.get_string("apps_rev");
+    if (!arev.empty() && arev != ext_apps_rev_) {
+      ext_apps_rev_seen_ = arev;
+      ext_sync_pending_ = true;
+    }
     const std::string rev = attest_root.get_string("wallpapers_rev");
     if (!rev.empty() && rev != wall_idx_.rev) {
       wall_rev_seen_ = rev;
@@ -1146,6 +1160,16 @@ void App::tick(uint32_t now_ms) {
   if (wall_sync_pending_ && !dirty_ && !display_.busy() &&
       (nav_.current() == ScreenId::Lock || nav_.current() == ScreenId::Home)) {
     wallpapers_sync();
+  }
+  // Apps: new installs on check-in; feeds every 30 min (×4 on battery saver) while idle.
+  if (!dirty_ && !display_.busy() && (nav_.current() == ScreenId::Lock || nav_.current() == ScreenId::Home) &&
+      !cfg_.device_token.empty() && wifi_.connected()) {
+    const uint32_t every = (battery_saver_ ? 4u : 1u) * 30u * 60u * 1000u;
+    const bool periodic = !ext_apps_.empty() && (ext_last_fetch_ms_ == 0 || now_ms_ - ext_last_fetch_ms_ >= every);
+    if (ext_sync_pending_ || periodic) {
+      const size_t before = ext_apps_.size();
+      if (ext_apps_refresh(false) && nav_.current() == ScreenId::Home && before != ext_apps_.size()) mark_content_dirty();
+    }
   }
   maybe_push_reading_progress(false);
   maybe_battery_saver();
@@ -1480,6 +1504,10 @@ void App::handle(InputEvent e) {
     case ScreenId::Today:
       handle_today(e);
       break;
+    case ScreenId::ExtApp:
+    case ScreenId::ExtAppText:
+      handle_ext_app(e);
+      break;
     case ScreenId::OnboardingRestore:
       handle_restore(e);
       break;
@@ -1546,6 +1574,10 @@ void App::render() {
       break;
     case ScreenId::Today:
       render_today();
+      break;
+    case ScreenId::ExtApp:
+    case ScreenId::ExtAppText:
+      render_ext_app();
       break;
     case ScreenId::OnboardingRestore:
       render_restore();

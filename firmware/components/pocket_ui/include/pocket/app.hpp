@@ -6,6 +6,7 @@
 #include "pocket/refresh.hpp"
 #include "pocket/screensaver.hpp"
 #include "pocket/wallpaper.hpp"
+#include "pocket/ext_apps.hpp"
 #include <functional>
 #include <map>
 #include <memory>
@@ -118,6 +119,8 @@ struct PlatformCloud {
   virtual bool post_backup(const std::string& /*device_id*/, const std::string& /*body*/) { return false; }
   /** Latest backup from any of this account's Pockets: {"backup":{…}}. Empty if none/failure. */
   virtual std::string backup_latest_json(const std::string& /*device_id*/) { return {}; }
+  /** Apps from Northwork installed on this Pocket, feeds included: {"apps":[…]}. Empty on failure. */
+  virtual std::string apps_json(const std::string& /*device_id*/) { return {}; }
   /** Wallpapers sent to this Pocket from Northwork: {"wallpapers":[…]}. Empty on failure. */
   virtual std::string wallpapers_json(const std::string& /*device_id*/) { return {}; }
   /** Report reading progress for Companion ("Walden · 42%"). Fire-and-forget. */
@@ -581,6 +584,25 @@ class App {
   std::string lock_flash_;
   uint32_t lock_flash_until_ms_ = 0;
   std::string lock_info_shown_;
+  // ---- Apps from Northwork (ext_apps.hpp) ----
+  std::vector<ExtApp> ext_apps_;
+  std::string ext_apps_rev_;       // apps_rev the list matches
+  std::string ext_apps_rev_seen_;  // last apps_rev from check-in
+  bool ext_sync_pending_ = false;
+  uint32_t ext_last_fetch_ms_ = 0;
+  int ext_app_index_ = 0;
+  std::vector<std::string> ext_screen_stack_;  // screen ids within the open app
+  std::vector<int> ext_focus_stack_;
+  std::string ext_text_;                       // ExtAppText body
+  std::string ext_text_title_;
+  void ext_apps_load();
+  /** Fetch installed apps + feeds; `visible` shows a status line while it works. */
+  bool ext_apps_refresh(bool visible);
+  void open_ext_app(int index);
+  /** First app with a Today line and a ready feed, or nullptr. */
+  const ExtApp* today_ext_app() const;
+  void render_ext_app();
+  void handle_ext_app(InputEvent e);
   // ---- Wallpapers from Northwork (wallpaper.hpp) ----
   WallpaperIndex wall_idx_;
   std::vector<uint8_t> wall_raster_;  // cached image of wall_idx_.selected

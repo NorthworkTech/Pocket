@@ -586,3 +586,18 @@ std::string EspCloud::wallpapers_json(const std::string& device_id) {
   }
   return resp;
 }
+
+std::string EspCloud::apps_json(const std::string& device_id) {
+  if (device_id.empty()) return {};
+  const std::string url = std::string(POCKET_CLOUD_BASE) + "/v1/device/apps?device_id=" + device_id;
+  int status = 0;
+  std::string resp;
+  // Pocket Cloud may refresh several feeds (8 s each) before answering.
+  if (!http_request("GET", url, POCKET_DEVICE_API_KEY, {}, status, resp, 40000, "application/json", "x-device-id",
+                    device_id.c_str()) ||
+      status != 200) {
+    ESP_LOGW(TAG, "apps HTTP %d", status);
+    return {};
+  }
+  return resp;
+}

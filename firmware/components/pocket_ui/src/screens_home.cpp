@@ -142,10 +142,16 @@ void draw_label_wrapped_centered(Canvas& c, int cx, int top_y, int max_w, int ma
   }
 }
 
-int count_home_focusable(const DeviceConfig& cfg, bool has_passes, HomeApp* out, int cap) {
+int count_home_focusable(const DeviceConfig& cfg, bool has_passes, HomeApp* out, int cap, int n_ext) {
   int n = 0;
   for (const HomeApp a : home_order(cfg)) {
     if (n >= cap) break;
+    // Apps from Northwork take the free tiles Slot10.. in install order.
+    const int slot = static_cast<int>(a) - static_cast<int>(HomeApp::Slot10);
+    if (slot >= 0 && slot < kExtAppMax) {
+      if (slot < n_ext) out[n++] = a;
+      continue;
+    }
     if (!home_app_visible(cfg, a)) continue;
     // Never show placeholders on Home: Ledger isn't built yet, and Pass only has
     // something to open once passes exist on the device.
@@ -182,7 +188,7 @@ void App::render_home() {
   canvas_.dotted_hline(kSideMargin, kContentTop + kHomeHeaderH - 22, kContentW, Gray::G0, 3);
 
   HomeApp focusable[kHomeGridSlots];
-  const int n_focus = count_home_focusable(cfg_, !data_.passes.empty(), focusable, kHomeGridSlots);
+  const int n_focus = count_home_focusable(cfg_, !data_.passes.empty(), focusable, kHomeGridSlots, static_cast<int>(ext_apps_.size()));
   focus_.count = std::max(1, n_focus);
   if (focus_.index >= focus_.count) focus_.index = 0;
   const HomeApp focused = n_focus > 0 ? focusable[focus_.index] : HomeApp::Settings;
@@ -200,7 +206,9 @@ void App::render_home() {
     const HomeApp a = focusable[i];
     const bool is_focus = a == focused;
     const int label_i = static_cast<int>(a);
-    const char* label = (label_i >= 0 && label_i < kHomeGridSlots) ? kAppLabels[label_i] : "";
+    const int ext_i = label_i - static_cast<int>(HomeApp::Slot10);
+    const ExtApp* ext = ext_i >= 0 && ext_i < static_cast<int>(ext_apps_.size()) ? &ext_apps_[static_cast<size_t>(ext_i)] : nullptr;
+    const char* label = ext ? ext->name.c_str() : (label_i >= 0 && label_i < kHomeGridSlots) ? kAppLabels[label_i] : "";
 
     const int block_h = icon + label_band_h;
     const int icon_x = cell_x + (cell_w - icon) / 2;
@@ -209,10 +217,12 @@ void App::render_home() {
 
     if (is_focus) {
       canvas_.fill_round_rect(icon_x, icon_y, icon, icon, radius, Gray::G0);
-      draw_app_glyph(canvas_, a, icon_x + icon / 2, icon_y + icon / 2, icon, Gray::G3);
+      if (ext) ext_app_icon(canvas_, *ext, icon_x + icon / 2, icon_y + icon / 2, icon * 52 / 100, Gray::G3);
+      else draw_app_glyph(canvas_, a, icon_x + icon / 2, icon_y + icon / 2, icon, Gray::G3);
     } else {
       canvas_.stroke_round_rect(icon_x, icon_y, icon, icon, radius, Gray::G0, 2, Gray::G3);
-      draw_app_glyph(canvas_, a, icon_x + icon / 2, icon_y + icon / 2, icon, Gray::G0);
+      if (ext) ext_app_icon(canvas_, *ext, icon_x + icon / 2, icon_y + icon / 2, icon * 52 / 100, Gray::G0);
+      else draw_app_glyph(canvas_, a, icon_x + icon / 2, icon_y + icon / 2, icon, Gray::G0);
     }
     const Canvas::TextRole role = is_focus ? Canvas::TextRole::BodyStrong : Canvas::TextRole::Secondary;
     const int lw = canvas_.text_width(label, role);
@@ -242,7 +252,7 @@ bool App::is_home_screen() const { return nav_.current() == ScreenId::Home; }
 void App::apply_home_focus_delta(int delta) {
   if (!is_home_screen() || delta == 0) return;
   HomeApp focusable[kHomeGridSlots];
-  const int n = count_home_focusable(cfg_, !data_.passes.empty(), focusable, kHomeGridSlots);
+  const int n = count_home_focusable(cfg_, !data_.passes.empty(), focusable, kHomeGridSlots, static_cast<int>(ext_apps_.size()));
   focus_.count = std::max(1, n);
   if (focus_.index >= focus_.count) focus_.index = 0;
   const int prev = focus_.index;
@@ -253,7 +263,7 @@ void App::apply_home_focus_delta(int delta) {
 
 void App::handle_home(InputEvent e) {
   HomeApp focusable[kHomeGridSlots];
-  const int n = count_home_focusable(cfg_, !data_.passes.empty(), focusable, kHomeGridSlots);
+  const int n = count_home_focusable(cfg_, !data_.passes.empty(), focusable, kHomeGridSlots, static_cast<int>(ext_apps_.size()));
   focus_.count = std::max(1, n);
   if (e == InputEvent::Up || e == InputEvent::Down) {
     apply_home_focus_delta(e == InputEvent::Up ? -1 : 1);

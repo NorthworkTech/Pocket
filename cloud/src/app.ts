@@ -6,6 +6,7 @@ import { handleError, optionalSession } from "./middleware/auth.js";
 import { authRoutes, meRoutes } from "./routes/auth.js";
 import { pairRoutes, deviceRoutes, deviceTokenRoutes } from "./routes/pair.js";
 import { wallpaperRoutes, deviceWallpaperRoutes } from "./routes/wallpapers.js";
+import { appRoutes, deviceAppRoutes } from "./routes/apps.js";
 import { entitlementRoutes, deviceAttestRoutes } from "./routes/entitlement.js";
 import { billingRoutes } from "./routes/billing.js";
 import { notesRoutes } from "./routes/notes.js";
@@ -64,6 +65,8 @@ export function createApp() {
   app.route("/v1/device", deviceTokenRoutes);
   app.route("/v1/device", deviceWallpaperRoutes);
   app.route("/v1/wallpapers", wallpaperRoutes);
+  app.route("/v1/device", deviceAppRoutes);
+  app.route("/v1/apps", appRoutes);
   app.route("/v1/entitlement", entitlementRoutes);
   app.route("/v1/device", deviceAttestRoutes);
   app.route("/v1/device", deviceSyncRoutes);

@@ -68,6 +68,8 @@ export function Group({ title, footer, children }: { title?: string; footer?: Re
 
 type RowProps = {
   icon?: IconName
+  /** Custom leading visual (e.g. an app's own icon) in place of `icon`. */
+  leading?: ReactNode
   tone?: 'default' | 'accent' | 'danger'
   title: ReactNode
   detail?: ReactNode
@@ -80,10 +82,12 @@ type RowProps = {
 }
 
 /** One row in a Group. Renders as a Link, external anchor, button, or static row. */
-export function Row({ icon, tone = 'default', title, detail, value, to, href, onClick, chevron, disabled }: RowProps) {
+export function Row({ icon, leading, tone = 'default', title, detail, value, to, href, onClick, chevron, disabled }: RowProps) {
   const body = (
     <>
-      {icon ? (
+      {leading ? (
+        <span className={`cell__icon cell__icon--${tone}`}>{leading}</span>
+      ) : icon ? (
         <span className={`cell__icon cell__icon--${tone}`}>
           <Icon name={icon} size={18} stroke={2} />
         </span>
