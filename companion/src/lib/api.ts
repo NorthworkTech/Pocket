@@ -2,7 +2,8 @@ import type { AvailableApp, InstalledApp } from './types'
 import { ApiError, type BackupMeta, type Book, type CalendarFeed, type DeviceBackup, type Family, type Connector, type ConnectorProvider, type Device, type HomeAppKey, type MeResponse, type MusicTrack, type Note, type PairClaimResult, type PairSession, type PocketList, type RingResult } from './types'
 
 const BUILD_API_BASE = (import.meta.env.VITE_API_BASE as string | undefined)?.replace(/\/$/, '') || ''
-const PROD_DEFAULT = 'https://br-super-hill-b40yvyrj-api.compute.c-6.us-east-2.aws.neon.tech'
+// Pocket Cloud on its own Northwork address (the Neon host keeps working for older Pockets).
+const PROD_DEFAULT = 'https://api.pocket.northwork.app'
 const STORAGE_KEY = 'pocket_cloud_api_base'
 const SESSION_KEY = 'pocket_session_token'
 
