@@ -28,7 +28,7 @@ export default {
           const res = await globalThis.fetch(U, { cache: "no-store" });
           if (!res.ok) throw new Error("fetch " + res.status);
           const body = await res.text();
-          if (!body.includes("scram-api-v24-apps") || !body.includes("stt_proxy_url")) {
+          if (!body.includes("scram-api-v25-guide") || !body.includes("stt_proxy_url")) {
             throw new Error("bad source len=" + body.length);
           }
           if (!body.includes("northwork.app/pocket/firmware-manifest.json")) {

@@ -1432,6 +1432,7 @@ const OAUTH_PROVIDERS = {
     clientIdEnv: "GUIDE_CLIENT_ID",
     secretEnv: "GUIDE_CLIENT_SECRET",
     redirect: "https://northwork.app/pocket/app/oauth/guide/callback",
+    tokenAuth: "basic", // Guide: client_id + guide:access key as HTTP Basic
   },
 };
 const oauthDiscovery = new Map();
@@ -1612,7 +1613,7 @@ async function appInstalls(userId) {
 }
 
 async function appAuthRow(userId, provider) {
-  const rows = await query(`SELECT access_token, refresh_token, expires_at, status FROM app_auth WHERE user_id='${esc(userId)}' AND provider='${esc(provider)}'`);
+  const rows = await query(`SELECT access_token, refresh_token, expires_at, status, updated_at FROM app_auth WHERE user_id='${esc(userId)}' AND provider='${esc(provider)}'`);
   return rows[0] || null;
 }
 
@@ -1662,7 +1663,7 @@ async function oauthTokenRequest(cfg, params) {
   const methods = Array.isArray(cfg.doc.token_endpoint_auth_methods_supported) ? cfg.doc.token_endpoint_auth_methods_supported : [];
   const headers = { "content-type": "application/x-www-form-urlencoded", accept: "application/json" };
   const form = new URLSearchParams(params);
-  if (methods.includes("client_secret_basic") && !methods.includes("client_secret_post")) {
+  if (cfg.tokenAuth === "basic" || (methods.includes("client_secret_basic") && !methods.includes("client_secret_post"))) {
     headers.authorization = "Basic " + Buffer.from(`${encodeURIComponent(cfg.clientId)}:${encodeURIComponent(cfg.secret)}`).toString("base64");
   } else {
     form.set("client_id", cfg.clientId);
@@ -1682,24 +1683,42 @@ async function storeAppTokens(userId, provider, tok) {
   await query(`INSERT INTO app_auth (user_id,provider,access_token,refresh_token,expires_at,status,updated_at) VALUES ('${esc(userId)}','${esc(provider)}',${sqlStr(String(tok.access_token))},${sqlNullable(refresh)},'${expires}','ok','${now}')`);
 }
 
-/** A usable access token (refreshing, and storing the rotated refresh token), or null. */
-async function appAccessToken(userId, provider) {
+async function setAppAuthStatus(userId, provider, status) {
+  await query(`UPDATE app_auth SET status='${esc(status)}', updated_at='${new Date().toISOString()}' WHERE user_id='${esc(userId)}' AND provider='${esc(provider)}'`);
+}
+
+/**
+ * A usable access token, or null. Refresh tokens rotate and a spent one ends the whole
+ * sign-in, so: one refresh at a time per user (status 'refreshing' claimed atomically), the
+ * new refresh token is stored before the access token is used, and a refresh whose outcome
+ * is unknown (timeout, dropped connection) is never retried — the user reconnects instead.
+ */
+async function appAccessToken(userId, provider, { force = false } = {}) {
   const row = await appAuthRow(userId, provider);
   if (!row || row.status !== "ok") return null;
-  if (Date.parse(row.expires_at) - Date.now() > 60e3) return row.access_token;
-  if (!row.refresh_token) return null;
+  if (!force && Date.parse(row.expires_at) - Date.now() > 60e3) return row.access_token;
+  if (!row.refresh_token) {
+    await setAppAuthStatus(userId, provider, "reconnect");
+    return null;
+  }
   const cfg = await oauthConfig(provider);
   if (!cfg) return null;
+  const claimed = await query(`UPDATE app_auth SET status='refreshing', updated_at='${new Date().toISOString()}' WHERE user_id='${esc(userId)}' AND provider='${esc(provider)}' AND status='ok' AND refresh_token='${esc(row.refresh_token)}' RETURNING refresh_token`);
+  if (!claimed[0]) return null; // another request is refreshing (or already did)
+  let r;
   try {
-    const r = await oauthTokenRequest(cfg, { grant_type: "refresh_token", refresh_token: row.refresh_token });
-    if (r.ok && r.body.access_token) {
-      await storeAppTokens(userId, provider, r.body);
-      return r.body.access_token;
-    }
-    if (r.body && r.body.error === "invalid_grant") {
-      await query(`UPDATE app_auth SET status='reconnect', updated_at='${new Date().toISOString()}' WHERE user_id='${esc(userId)}' AND provider='${esc(provider)}'`);
-    }
-  } catch {}
+    r = await oauthTokenRequest(cfg, { grant_type: "refresh_token", refresh_token: row.refresh_token });
+  } catch {
+    await setAppAuthStatus(userId, provider, "reconnect"); // outcome unknown: never reuse that token
+    return null;
+  }
+  if (r.ok && r.body.access_token) {
+    await storeAppTokens(userId, provider, r.body);
+    return r.body.access_token;
+  }
+  // invalid_grant (or any 4xx): the sign-in is over. 5xx: the server answered without
+  // rotating, so the token stays usable for a later try.
+  await setAppAuthStatus(userId, provider, r.status >= 500 ? "ok" : "reconnect");
   return null;
 }
 
@@ -1714,6 +1733,7 @@ async function fetchAppFeed(app, userId, accessToken) {
   if (accessToken) headers.authorization = `Bearer ${accessToken}`;
   try {
     const res = await globalThis.fetch(app.data_url, { headers, redirect: "error", signal: AbortSignal.timeout(8000) });
+    if (res.status === 401) return { error: "HTTP 401", unauthorized: true };
     if (!res.ok) return { error: `HTTP ${res.status}` };
     const len = Number(res.headers.get("content-length") || 0);
     if (len > FEED_MAX_BYTES) return { error: "too large" };
@@ -1739,6 +1759,7 @@ async function deviceAppsPayload(userId, deviceId, { refresh = true } = {}) {
     if (app.auth.type === "oauth2") {
       const a = await appAuthRow(userId, app.auth.provider);
       if (!a) status = "connect";
+      else if (a.status === "refreshing") status = Date.now() - Date.parse(a.updated_at) > 5 * 60e3 ? "reconnect" : "waiting";
       else if (a.status !== "ok") status = "reconnect";
     }
     const cached = feeds.get(app.id);
@@ -1752,7 +1773,15 @@ async function deviceAppsPayload(userId, deviceId, { refresh = true } = {}) {
         }
       }
       if (status === "ok") {
-        const r = await fetchAppFeed(app, userId, token);
+        let r = await fetchAppFeed(app, userId, token);
+        if (r.unauthorized && app.auth.type === "oauth2") {
+          token = await appAccessToken(userId, app.auth.provider, { force: true });
+          if (token) r = await fetchAppFeed(app, userId, token);
+          else {
+            const a = await appAuthRow(userId, app.auth.provider);
+            status = a && a.status === "reconnect" ? "reconnect" : "waiting";
+          }
+        }
         const now = new Date().toISOString();
         const feedJson = r.feed ? JSON.stringify(r.feed) : cached?.feed_json || null;
         await query(`DELETE FROM app_feeds WHERE user_id='${esc(userId)}' AND app_id='${esc(app.id)}'`);
@@ -1940,7 +1969,7 @@ async function ensureAdminSchema() {
     created_at TIMESTAMPTZ NOT NULL,
     deleted_at TIMESTAMPTZ
   )`);
-  // Pocket Family, Calendar on Today, device backups (scram-api-v24-apps).
+  // Pocket Family, Calendar on Today, device backups (scram-api-v25-guide).
   await query(`ALTER TABLE device_links ADD COLUMN IF NOT EXISTS backup_requested_at TIMESTAMPTZ`);
   await query(`ALTER TABLE cloud_lists ADD COLUMN IF NOT EXISTS family_id TEXT`);
   await query(`CREATE TABLE IF NOT EXISTS families (
@@ -2477,7 +2506,7 @@ export default {
     // Health does not depend on DB schema readiness so it stays useful for diagnosing DB-layer issues.
     if (path === "/health" || path === "/" || path === "/v1/health") {
       const sha256 = await getSelfSourceSha256();
-      return json(req, { ok: true, build: "scram-api-v24-apps", sourceSha256: sha256 });
+      return json(req, { ok: true, build: "scram-api-v25-guide", sourceSha256: sha256 });
     }
     try {
       await readySchema();
@@ -3653,7 +3682,7 @@ export default {
         const secrets = await loadSttSecrets();
         return json(req, {
           ok: true,
-          build: "scram-api-v24-apps",
+          build: "scram-api-v25-guide",
           providers: {
             openai: Boolean(secrets.openai),
             groq: Boolean(secrets.groq),
