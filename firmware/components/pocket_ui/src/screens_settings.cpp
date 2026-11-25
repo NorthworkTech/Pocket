@@ -264,7 +264,8 @@ void App::render_settings() {
     if (cfg_.idle_lock_s >= 60) std::snprintf(idle, sizeof(idle), "%d min", cfg_.idle_lock_s / 60);
     else std::snprintf(idle, sizeof(idle), "%d sec", cfg_.idle_lock_s);
     std::string saver;
-    if (cfg_.screensaver == kScreensaverPlain) saver = "Plain";
+    if (cfg_.screensaver == kScreensaverWallpaper && wall_selected()) saver = wall_selected()->name;
+    else if (cfg_.screensaver == kScreensaverPlain) saver = "Plain";
     else if (cfg_.screensaver >= 1 && cfg_.screensaver <= kScreensaverCount)
       saver = screensaver_name(cfg_.screensaver - 1);
     else saver = "Rotate";
@@ -756,10 +757,30 @@ void App::handle_settings(InputEvent e) {
         store_.save(cfg_);
         mark_content_dirty();
       } else if (focus_.index == 4) {
-        // Rotate → each piece → Plain → Rotate.
-        if (cfg_.screensaver == kScreensaverPlain) cfg_.screensaver = 0;
-        else if (cfg_.screensaver >= kScreensaverCount) cfg_.screensaver = kScreensaverPlain;
-        else ++cfg_.screensaver;
+        // Rotate → each piece → Plain → each Northwork wallpaper → Rotate.
+        const auto& walls = wall_idx_.items;
+        if (cfg_.screensaver == kScreensaverWallpaper) {
+          size_t i = 0;
+          while (i < walls.size() && walls[i].id != (wall_selected() ? wall_selected()->id : std::string())) ++i;
+          if (i + 1 < walls.size()) {
+            wall_idx_.selected = walls[i + 1].id;
+          } else {
+            cfg_.screensaver = 0;
+          }
+          wallpapers_save();
+        } else if (cfg_.screensaver == kScreensaverPlain) {
+          if (!walls.empty()) {
+            cfg_.screensaver = kScreensaverWallpaper;
+            wall_idx_.selected = walls.front().id;
+            wallpapers_save();
+          } else {
+            cfg_.screensaver = 0;
+          }
+        } else if (cfg_.screensaver >= kScreensaverCount) {
+          cfg_.screensaver = kScreensaverPlain;
+        } else {
+          ++cfg_.screensaver;
+        }
         store_.save(cfg_);
         mark_content_dirty();
       } else if (focus_.index == 5) {

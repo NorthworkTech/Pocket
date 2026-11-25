@@ -1329,6 +1329,105 @@ async function userIdForDeviceKey(req, deviceId) {
   return link?.user_id || null;
 }
 
+// ---- Wallpapers (pocket-contract v1.0 §B) -------------------------------------------
+const WALL_W = 480, WALL_H = 800, WALL_BYTES = (WALL_W / 8) * WALL_H; // 48,000
+const WALL_HEADER = Buffer.from(`P4\n${WALL_W} ${WALL_H}\n`);
+const WALL_MAX_PER_DEVICE = 5;
+
+/** Binary PBM (P4) → canonical 480×800 bytes (header + 48,000), or null. */
+function parseWallPbm(b64) {
+  if (typeof b64 !== "string" || b64.length > 70000) return null;
+  const buf = Buffer.from(b64.replace(/^data:[^,]*,/, ""), "base64");
+  // P4 <ws> width <ws> height <single ws> raster
+  const head = buf.subarray(0, 32).toString("latin1");
+  const m = head.match(/^P4\s+(\d+)\s+(\d+)\s/);
+  if (!m || Number(m[1]) !== WALL_W || Number(m[2]) !== WALL_H) return null;
+  const raster = buf.subarray(m[0].length);
+  if (raster.length !== WALL_BYTES) return null;
+  return Buffer.concat([WALL_HEADER, raster]);
+}
+
+function parseWallLayout(layout) {
+  const out = { clock: null, info: { show: false, ink: "black" } };
+  if (layout == null) return out;
+  if (typeof layout !== "object" || Array.isArray(layout)) return null;
+  const inkOk = (v) => v === undefined || v === "black" || v === "white";
+  if (layout.clock != null) {
+    const c = layout.clock;
+    const n = (v) => Number.isInteger(v);
+    if (typeof c !== "object" || !n(c.x) || !n(c.y) || !n(c.w) || !n(c.h)) return null;
+    if (c.x < 0 || c.y < 0 || c.w < 120 || c.h < 48 || c.x + c.w > WALL_W || c.y + c.h > WALL_H) return null;
+    if (!(c.style === undefined || c.style === "large" || c.style === "small") || !inkOk(c.ink)) return null;
+    out.clock = { x: c.x, y: c.y, w: c.w, h: c.h, style: c.style || "large", ink: c.ink || "black" };
+  }
+  if (layout.info != null) {
+    const i = layout.info;
+    if (typeof i !== "object" || (i.show !== undefined && typeof i.show !== "boolean") || !inkOk(i.ink)) return null;
+    out.info = { show: i.show === true, ink: i.ink || "black" };
+  }
+  return out;
+}
+
+function wallDevices(row) {
+  try {
+    const d = JSON.parse(row.devices_json || '"all"');
+    return d === "all" ? "all" : Array.isArray(d) ? d.map(String) : "all";
+  } catch {
+    return "all";
+  }
+}
+
+function wallLayout(row) {
+  try {
+    return JSON.parse(row.layout_json || "{}");
+  } catch {
+    return { clock: null, info: { show: false, ink: "black" } };
+  }
+}
+
+function serializeWallpaper(req, row) {
+  const origin = new URL(req.url).origin;
+  return {
+    id: row.id,
+    name: row.name,
+    sha256: row.sha256,
+    created_at: row.created_at,
+    devices: wallDevices(row),
+    layout: wallLayout(row),
+    preview_url: `${origin}/v1/wallpapers/${row.id}/image.pbm`,
+  };
+}
+
+async function wallpapersForUser(userId) {
+  return query(
+    `SELECT id, name, sha256, layout_json, devices_json, created_at FROM wallpapers WHERE user_id='${esc(userId)}' ORDER BY created_at DESC`,
+  );
+}
+
+function wallTargets(row, deviceId) {
+  const d = wallDevices(row);
+  return d === "all" || d.includes(deviceId);
+}
+
+/** Which of the user's devices a "devices" value names; null if it names one they don't own. */
+async function resolveWallDevices(userId, devices) {
+  if (devices === "all" || devices === undefined) return "all";
+  if (!Array.isArray(devices) || devices.length === 0 || devices.length > 20) return null;
+  const owned = await query(`SELECT device_id FROM device_links WHERE user_id='${esc(userId)}'`);
+  const set = new Set(owned.map((r) => r.device_id));
+  const ids = [...new Set(devices.map(String))];
+  return ids.every((d) => set.has(d)) ? ids : null;
+}
+
+/** Devices that would end up with more than 5 wallpapers. */
+async function wallOverLimit(userId, rows, devices, exceptId) {
+  const owned = (await query(`SELECT device_id FROM device_links WHERE user_id='${esc(userId)}'`)).map((r) => r.device_id);
+  const targets = devices === "all" ? owned : devices;
+  const others = rows.filter((r) => r.id !== exceptId);
+  if (!targets.length) return others.length >= WALL_MAX_PER_DEVICE ? ["all"] : [];
+  return targets.filter((d) => others.filter((r) => wallTargets(r, d)).length >= WALL_MAX_PER_DEVICE);
+}
+
 async function audit(actorId, action, targetType, targetId, detail) {
   const now = new Date().toISOString();
   const detailText =
@@ -1355,6 +1454,17 @@ async function ensureAdminSchema() {
   // pocket-contract v1.0: per-device token. token_issued_at = when the Pocket itself collected it.
   await query(`ALTER TABLE device_links ADD COLUMN IF NOT EXISTS token_issued_at TIMESTAMPTZ`);
   await query(`ALTER TABLE pair_sessions ADD COLUMN IF NOT EXISTS device_token_once TEXT`);
+  await query(`CREATE TABLE IF NOT EXISTS wallpapers (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    name TEXT NOT NULL,
+    image_b64 TEXT NOT NULL,
+    sha256 TEXT NOT NULL,
+    layout_json TEXT NOT NULL DEFAULT '{}',
+    devices_json TEXT NOT NULL DEFAULT '"all"',
+    created_at TIMESTAMPTZ NOT NULL
+  )`);
+  await query(`CREATE INDEX IF NOT EXISTS wallpapers_user ON wallpapers(user_id, created_at DESC)`);
   await query(`CREATE TABLE IF NOT EXISTS reading_progress (
     user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     book_id TEXT NOT NULL,
@@ -1460,7 +1570,7 @@ async function ensureAdminSchema() {
     created_at TIMESTAMPTZ NOT NULL,
     deleted_at TIMESTAMPTZ
   )`);
-  // Pocket Family, Calendar on Today, device backups (scram-api-v22-devicetoken).
+  // Pocket Family, Calendar on Today, device backups (scram-api-v23-wallpapers).
   await query(`ALTER TABLE device_links ADD COLUMN IF NOT EXISTS backup_requested_at TIMESTAMPTZ`);
   await query(`ALTER TABLE cloud_lists ADD COLUMN IF NOT EXISTS family_id TEXT`);
   await query(`CREATE TABLE IF NOT EXISTS families (
@@ -1997,7 +2107,7 @@ export default {
     // Health does not depend on DB schema readiness so it stays useful for diagnosing DB-layer issues.
     if (path === "/health" || path === "/" || path === "/v1/health") {
       const sha256 = await getSelfSourceSha256();
-      return json(req, { ok: true, build: "scram-api-v22-devicetoken", sourceSha256: sha256 });
+      return json(req, { ok: true, build: "scram-api-v23-wallpapers", sourceSha256: sha256 });
     }
     try {
       await readySchema();
@@ -2137,6 +2247,99 @@ export default {
         await query(`UPDATE pair_sessions SET status='expired' WHERE device_id='${esc(device_id)}' AND status='pending'`);
         await query(`INSERT INTO pair_sessions (id,device_id,code_hash,code_public_hint,expires_at,created_at,status) VALUES ('${esc(newId())}','${esc(device_id)}','${esc(sha256Hex(code))}','${esc(code.slice(0, 2) + "******")}','${expires.toISOString()}','${now.toISOString()}','pending')`);
         return json(req, { ok: true, expires_at: expires.toISOString() }, 201);
+      }
+
+      // ---- Wallpapers (pocket-contract v1.0 §B) --------------------------------------
+      if (path === "/v1/wallpapers" && (req.method === "GET" || req.method === "POST")) {
+        const user = await userFromSession(req);
+        if (!user) return json(req, { message: "Sign in to continue." }, 401);
+        const rows = await wallpapersForUser(user.id);
+        if (req.method === "GET") return json(req, { wallpapers: rows.map((r) => serializeWallpaper(req, r)) });
+        const raw = await req.text();
+        if (raw.length > 80 * 1024) return json(req, { message: "That wallpaper is too large.", code: "too_large" }, 413);
+        let body = {};
+        try { body = JSON.parse(raw || "{}"); } catch { return json(req, { message: "That request wasn't valid JSON." }, 400); }
+        const name = typeof body.name === "string" ? body.name.trim() : "";
+        if (!name || name.length > 40) return json(req, { message: "Give the wallpaper a name (up to 40 characters).", code: "bad_name" }, 400);
+        const pbm = parseWallPbm(body.image_pbm_b64);
+        if (!pbm) return json(req, { message: "The image must be a 480×800 black-and-white PBM (P4).", code: "bad_pbm" }, 400);
+        const layout = parseWallLayout(body.layout);
+        if (!layout) return json(req, { message: "The layout isn't valid.", code: "bad_layout" }, 400);
+        const devices = await resolveWallDevices(user.id, body.devices);
+        if (!devices) return json(req, { message: "Choose one of your own Pockets.", code: "device_not_yours" }, 403);
+        const full = await wallOverLimit(user.id, rows, devices, null);
+        if (full.length) {
+          return json(req, {
+            message: "A Pocket can keep 5 wallpapers. Remove one first.",
+            code: "too_many",
+            devices: full,
+            wallpapers: rows.map((r) => serializeWallpaper(req, r)),
+          }, 409);
+        }
+        const id = "wp_" + newId().replace(/-/g, "").slice(0, 20);
+        const now = new Date().toISOString();
+        const sha = createHash("sha256").update(pbm).digest("hex");
+        await query(`INSERT INTO wallpapers (id,user_id,name,image_b64,sha256,layout_json,devices_json,created_at) VALUES ('${esc(id)}','${esc(user.id)}',${sqlStr(name)},'${pbm.toString("base64")}','${sha}',${sqlStr(JSON.stringify(layout))},${sqlStr(JSON.stringify(devices))},'${now}')`);
+        return json(req, { ok: true, wallpaper: serializeWallpaper(req, { id, name, sha256: sha, layout_json: JSON.stringify(layout), devices_json: JSON.stringify(devices), created_at: now }) }, 201);
+      }
+
+      const wallImg = path.match(/^\/v1\/wallpapers\/([A-Za-z0-9_-]+)\/image\.pbm$/);
+      if (req.method === "GET" && wallImg) {
+        const user = await userFromSession(req);
+        if (!user) return json(req, { message: "Sign in to continue." }, 401);
+        const rows = await query(`SELECT image_b64 FROM wallpapers WHERE id='${esc(wallImg[1])}' AND user_id='${esc(user.id)}'`);
+        if (!rows[0]) return json(req, { message: "That wallpaper wasn't found." }, 404);
+        const bytes = Buffer.from(rows[0].image_b64, "base64");
+        return new Response(bytes, { status: 200, headers: { ...cors(req), "content-type": "image/x-portable-bitmap", "content-length": String(bytes.length), "cache-control": "private, max-age=300" } });
+      }
+
+      const wallOne = path.match(/^\/v1\/wallpapers\/([A-Za-z0-9_-]+)$/);
+      if (wallOne && (req.method === "PATCH" || req.method === "DELETE")) {
+        const user = await userFromSession(req);
+        if (!user) return json(req, { message: "Sign in to continue." }, 401);
+        const rows = await wallpapersForUser(user.id);
+        const row = rows.find((r) => r.id === wallOne[1]);
+        if (!row) return json(req, { message: "That wallpaper wasn't found." }, 404);
+        if (req.method === "DELETE") {
+          await query(`DELETE FROM wallpapers WHERE id='${esc(row.id)}' AND user_id='${esc(user.id)}'`);
+          return json(req, { ok: true });
+        }
+        const body = await req.json().catch(() => ({}));
+        let name = row.name;
+        if (body.name !== undefined) {
+          name = typeof body.name === "string" ? body.name.trim() : "";
+          if (!name || name.length > 40) return json(req, { message: "Give the wallpaper a name (up to 40 characters).", code: "bad_name" }, 400);
+        }
+        let devices = wallDevices(row);
+        if (body.devices !== undefined) {
+          devices = await resolveWallDevices(user.id, body.devices);
+          if (!devices) return json(req, { message: "Choose one of your own Pockets.", code: "device_not_yours" }, 403);
+          const full = await wallOverLimit(user.id, rows, devices, row.id);
+          if (full.length) return json(req, { message: "A Pocket can keep 5 wallpapers. Remove one first.", code: "too_many", devices: full }, 409);
+        }
+        await query(`UPDATE wallpapers SET name=${sqlStr(name)}, devices_json=${sqlStr(JSON.stringify(devices))} WHERE id='${esc(row.id)}'`);
+        return json(req, { ok: true, wallpaper: serializeWallpaper(req, { ...row, name, devices_json: JSON.stringify(devices) }) });
+      }
+
+      // Device side: needs this Pocket's own token (strict).
+      if (req.method === "GET" && path === "/v1/device/wallpapers") {
+        const deviceId = u.searchParams.get("device_id") || req.headers.get("x-device-id") || "";
+        const link = await deviceLinkForRequest(req, deviceId, { strict: true });
+        if (!link) return json(req, { message: "Unauthorized.", code: "device_token_required" }, 401);
+        const rows = (await wallpapersForUser(link.user_id)).filter((r) => wallTargets(r, deviceId)).slice(0, WALL_MAX_PER_DEVICE);
+        return json(req, {
+          wallpapers: rows.map((r) => ({ id: r.id, name: r.name, sha256: r.sha256, created_at: r.created_at, layout: wallLayout(r) })),
+        });
+      }
+      const wallDev = path.match(/^\/v1\/device\/wallpaper\/([A-Za-z0-9_-]+)$/);
+      if (req.method === "GET" && wallDev) {
+        const deviceId = u.searchParams.get("device_id") || req.headers.get("x-device-id") || "";
+        const link = await deviceLinkForRequest(req, deviceId, { strict: true });
+        if (!link) return json(req, { message: "Unauthorized.", code: "device_token_required" }, 401);
+        const rows = await query(`SELECT image_b64, devices_json FROM wallpapers WHERE id='${esc(wallDev[1])}' AND user_id='${esc(link.user_id)}'`);
+        if (!rows[0] || !wallTargets(rows[0], deviceId)) return json(req, { message: "That wallpaper wasn't found." }, 404);
+        const bytes = Buffer.from(rows[0].image_b64, "base64");
+        return new Response(bytes, { status: 200, headers: { ...cors(req), "content-type": "application/octet-stream", "content-length": String(bytes.length) } });
       }
 
       // Per-device token for a Pocket linked before tokens existed. Issued once; after that
@@ -2471,7 +2674,14 @@ export default {
           const queuedMs = Date.parse(link.backup_requested_at);
           backupNow = cleared.length > 0 && Number.isFinite(queuedMs) && Date.now() - queuedMs <= BACKUP_REQUEST_TTL_MS;
         }
+        // Wallpapers: a cheap revision so the Pocket fetches the list only when it changes.
+        let wallpapers_rev = null;
+        if ((req.headers.get("x-device-token") || "").trim()) {
+          const wl = (await wallpapersForUser(userId)).filter((r) => wallTargets(r, link.device_id)).slice(0, WALL_MAX_PER_DEVICE);
+          wallpapers_rev = createHash("sha256").update(wl.map((r) => r.id + ":" + r.sha256 + ":" + r.layout_json).join("|")).digest("hex").slice(0, 16);
+        }
         return json(req, {
+          wallpapers_rev,
           entitled,
           status: sub?.status || "free",
           trial_ends_at: sub?.trial_ends_at || null,
@@ -2964,7 +3174,7 @@ export default {
         const secrets = await loadSttSecrets();
         return json(req, {
           ok: true,
-          build: "scram-api-v22-devicetoken",
+          build: "scram-api-v23-wallpapers",
           providers: {
             openai: Boolean(secrets.openai),
             groq: Boolean(secrets.groq),

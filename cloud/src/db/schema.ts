@@ -212,6 +212,19 @@ CREATE TABLE IF NOT EXISTS device_backups (
 
 CREATE INDEX IF NOT EXISTS idx_device_backups_user_created ON device_backups(user_id, created_at DESC);
 
+CREATE TABLE IF NOT EXISTS wallpapers (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  image_b64 TEXT NOT NULL,
+  sha256 TEXT NOT NULL,
+  layout_json TEXT NOT NULL DEFAULT '{}',
+  devices_json TEXT NOT NULL DEFAULT '"all"',
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_wallpapers_user_created ON wallpapers(user_id, created_at DESC);
+
+
 CREATE TABLE IF NOT EXISTS stripe_events (
   id TEXT PRIMARY KEY,
   received_at TEXT NOT NULL

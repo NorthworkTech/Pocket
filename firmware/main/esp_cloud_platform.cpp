@@ -314,6 +314,10 @@ bool http_get_to_file(const std::string& url, const std::string& device_id, cons
 bool EspCloud::download_to_file(const char* kind, const std::string& device_id, const std::string& id,
                                 const std::string& path, int64_t max_bytes, int64_t* bytes_out) {
   if (device_id.empty() || id.empty()) return false;
+  if (std::strcmp(kind, "wallpaper") == 0) {
+    const std::string wurl = std::string(POCKET_CLOUD_BASE) + "/v1/device/wallpaper/" + id + "?device_id=" + device_id;
+    return http_get_to_file(wurl, device_id, "application/octet-stream,*/*", path, max_bytes, bytes_out);
+  }
   const bool music = std::strcmp(kind, "music") == 0;
   const std::string url = std::string(POCKET_CLOUD_BASE) + (music ? "/v1/music/" : "/v1/books/") + id +
                           (music ? "/audio?device_id=" : "/text?device_id=") + device_id;
@@ -567,4 +571,18 @@ std::string EspCloud::claim_device_token(const std::string& device_id, bool* alr
     return {};
   }
   return json_string_field(resp, "device_token");
+}
+
+std::string EspCloud::wallpapers_json(const std::string& device_id) {
+  if (device_id.empty()) return {};
+  const std::string url = std::string(POCKET_CLOUD_BASE) + "/v1/device/wallpapers?device_id=" + device_id;
+  int status = 0;
+  std::string resp;
+  if (!http_request("GET", url, POCKET_DEVICE_API_KEY, {}, status, resp, 15000, "application/json", "x-device-id",
+                    device_id.c_str()) ||
+      status != 200) {
+    ESP_LOGW(TAG, "wallpapers HTTP %d", status);
+    return {};
+  }
+  return resp;
 }

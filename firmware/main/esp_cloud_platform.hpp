@@ -26,6 +26,7 @@ struct EspCloud : pocket::PlatformCloud {
   std::string calendar_json(const std::string& device_id) override;
   bool post_backup(const std::string& device_id, const std::string& body) override;
   std::string backup_latest_json(const std::string& device_id) override;
+  std::string wallpapers_json(const std::string& device_id) override;
   bool post_reading_progress(const std::string& device_id, const std::string& book_id, int page, int pages,
                              int percent) override;
 

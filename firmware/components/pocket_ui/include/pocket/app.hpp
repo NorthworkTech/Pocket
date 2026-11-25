@@ -5,6 +5,7 @@
 #include "pocket/nav.hpp"
 #include "pocket/refresh.hpp"
 #include "pocket/screensaver.hpp"
+#include "pocket/wallpaper.hpp"
 #include <functional>
 #include <map>
 #include <memory>
@@ -117,6 +118,8 @@ struct PlatformCloud {
   virtual bool post_backup(const std::string& /*device_id*/, const std::string& /*body*/) { return false; }
   /** Latest backup from any of this account's Pockets: {"backup":{…}}. Empty if none/failure. */
   virtual std::string backup_latest_json(const std::string& /*device_id*/) { return {}; }
+  /** Wallpapers sent to this Pocket from Northwork: {"wallpapers":[…]}. Empty on failure. */
+  virtual std::string wallpapers_json(const std::string& /*device_id*/) { return {}; }
   /** Report reading progress for Companion ("Walden · 42%"). Fire-and-forget. */
   virtual bool post_reading_progress(const std::string& /*device_id*/, const std::string& /*book_id*/,
                                      int /*page*/, int /*pages*/, int /*percent*/) {
@@ -578,6 +581,21 @@ class App {
   std::string lock_flash_;
   uint32_t lock_flash_until_ms_ = 0;
   std::string lock_info_shown_;
+  // ---- Wallpapers from Northwork (wallpaper.hpp) ----
+  WallpaperIndex wall_idx_;
+  std::vector<uint8_t> wall_raster_;  // cached image of wall_idx_.selected
+  std::string wall_raster_id_;
+  std::string wall_rev_seen_;  // last wallpapers_rev from attest
+  bool wall_sync_pending_ = false;
+  int wall_clock_shown_ = -1;  // hour*60+minute drawn in the clock box
+  std::string wall_dir() const;
+  void wallpapers_load();
+  void wallpapers_save();
+  /** Fetch the list and any new images; newest new one becomes the lock screen. */
+  void wallpapers_sync();
+  const WallpaperItem* wall_selected() const;
+  bool wall_lock_active();  // screensaver == wallpaper and its image loads
+  void render_wall_lock();
   /** Reading progress waiting to go to Companion. */
   bool reading_progress_dirty_ = false;
   uint32_t last_reading_push_ms_ = 0;

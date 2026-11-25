@@ -22,7 +22,10 @@ export type AppVariables = {
 export type AppEnv = { Variables: AppVariables };
 
 export function readSessionToken(c: Context<AppEnv>): string | undefined {
-  return getCookie(c, config.sessionCookieName) || undefined;
+  // x-pocket-session: server-to-server callers (northwork.app / northwork.dev) and mobile
+  // browsers that block third-party cookies (pocket-contract v1.0 §A).
+  const header = (c.req.header("x-pocket-session") || "").trim();
+  return header || getCookie(c, config.sessionCookieName) || undefined;
 }
 
 export function setSessionCookie(c: Context<AppEnv>, token: string, expiresAt: string): void {

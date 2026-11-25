@@ -8,6 +8,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <ctime>
+#include <sys/stat.h>
 
 namespace pocket {
 
@@ -85,6 +86,7 @@ void App::boot() {
   music_load_local();
   reading_load_local();
   calendar_load_cache();
+  wallpapers_load();
   if (storage_ && storage_->data_ensure_root()) {
     std::string st;
     JsonValue v;
@@ -1027,6 +1029,13 @@ void App::maybe_cloud_attest() {
 
   // Pending Wi‑Fi from Companion (in-app, no SoftAP hop).
   const std::string pending_ssid = json_str(body, "ssid");
+  if (attest_ok) {
+    const std::string rev = attest_root.get_string("wallpapers_rev");
+    if (!rev.empty() && rev != wall_idx_.rev) {
+      wall_rev_seen_ = rev;
+      wall_sync_pending_ = true;
+    }
+  }
   // pending_wifi object nests ssid — look near pending_wifi key
   std::string wifi_ssid;
   std::string wifi_pass;
@@ -1115,10 +1124,17 @@ void App::tick(uint32_t now_ms) {
   // Lock plate: drop an expired capture message; keep the info line current (new day,
   // alarm changed, fresh forecast) with a small plate-only partial — never the art.
   if (nav_.current() == ScreenId::Lock && !dirty_ && !display_.busy()) {
+    const bool wall = wall_lock_active();
     auto plate_dirty = [&]() {
-      if (cfg_.screensaver == kScreensaverPlain) mark_content_dirty();
+      if (wall) mark_region_dirty(0, kCanvasH - 96, kCanvasW, 96);  // wallpaper info pill band
+      else if (cfg_.screensaver == kScreensaverPlain) mark_content_dirty();
       else mark_region_dirty(0, 680, kCanvasW, kCanvasH - 680);
     };
+    if (const WallpaperItem* w = wall ? wall_selected() : nullptr; w && w->clock && clock_.time_valid() && !lock_night_shown_) {
+      int hh = 0, mm = 0, wd = 0, mo = 0, dd = 0;
+      clock_.local_hm(hh, mm, wd, mo, dd);
+      if (hh * 60 + mm != wall_clock_shown_) mark_region_dirty(w->clock_x, w->clock_y, w->clock_w, w->clock_h);
+    }
     if (lock_flash_until_ms_ != 0 && now_ms_ >= lock_flash_until_ms_) {
       lock_flash_until_ms_ = 0;
       plate_dirty();
@@ -1126,6 +1142,10 @@ void App::tick(uint32_t now_ms) {
       last_lock_info_ms_ = now_ms_;
       if (lock_info_line() != lock_info_shown_) plate_dirty();
     }
+  }
+  if (wall_sync_pending_ && !dirty_ && !display_.busy() &&
+      (nav_.current() == ScreenId::Lock || nav_.current() == ScreenId::Home)) {
+    wallpapers_sync();
   }
   maybe_push_reading_progress(false);
   maybe_battery_saver();
@@ -1579,6 +1599,10 @@ void App::render_lock() {
   lock_night_shown_ = quiet_now() && !lock_recording_ && !(now_ms_ < lock_flash_until_ms_);
   if (lock_night_shown_) {
     render_night_face();
+    return;
+  }
+  if (wall_lock_active()) {
+    render_wall_lock();
     return;
   }
   const bool plain = cfg_.screensaver == kScreensaverPlain;
@@ -2108,6 +2132,160 @@ void App::maybe_tick_transient_error() {
   if (dirty_ && try_present(false)) {
     dirty_ = false;
   }
+}
+
+// ---- Wallpapers from Northwork (pocket-contract v1.0 §B) ----------------------------------
+
+namespace {
+bool wall_file_ok(const std::string& path) {
+  struct stat st{};
+  return ::stat(path.c_str(), &st) == 0 && st.st_size > 0;
+}
+}  // namespace
+
+std::string App::wall_dir() const {
+  if (!storage_) return {};
+  const std::string root = storage_->data_root();
+  return root.empty() ? std::string{} : root + "/wallpapers";
+}
+
+void App::wallpapers_load() {
+  const std::string dir = wall_dir();
+  if (dir.empty()) return;
+  std::string st;
+  WallpaperIndex idx;
+  if (read_file_recover(dir + "/index.json", st) && wallpaper_parse_index(st, idx)) wall_idx_ = std::move(idx);
+  if (cfg_.screensaver == kScreensaverWallpaper && !wall_selected()) cfg_.screensaver = 0;
+}
+
+void App::wallpapers_save() {
+  const std::string dir = wall_dir();
+  if (dir.empty() || !storage_->data_ensure_root()) return;
+  ::mkdir(dir.c_str(), 0755);
+  (void)write_file_atomic(dir + "/index.json", wallpaper_index_json(wall_idx_));
+}
+
+const WallpaperItem* App::wall_selected() const {
+  for (const auto& w : wall_idx_.items) {
+    if (w.id == wall_idx_.selected) return &w;
+  }
+  return wall_idx_.items.empty() ? nullptr : &wall_idx_.items.front();
+}
+
+bool App::wall_lock_active() {
+  if (cfg_.screensaver != kScreensaverWallpaper) return false;
+  const WallpaperItem* w = wall_selected();
+  if (!w) return false;
+  if (wall_raster_id_ != w->id) {
+    wall_raster_.clear();
+    wall_raster_id_ = w->id;
+    std::string file;
+    if (!read_file(wall_dir() + "/" + w->id + ".pbm", file) || !wallpaper_raster_from_pbm(file, wall_raster_)) {
+      wall_raster_.clear();
+    }
+  }
+  return wall_raster_.size() == kWallRasterBytes;
+}
+
+void App::render_wall_lock() {
+  const WallpaperItem* w = wall_selected();
+  if (!w) return;
+  wallpaper_blit(canvas_, wall_raster_.data());
+  if (w->clock && clock_.time_valid()) {
+    int hh = 0, mm = 0, wd = 0, mo = 0, dd = 0;
+    clock_.local_hm(hh, mm, wd, mo, dd);
+    wallpaper_draw_clock(canvas_, *w, hh, mm, cfg_.time_format == 24);
+    wall_clock_shown_ = hh * 60 + mm;
+  }
+  // Info pill: a capture in progress or its confirmation always shows; the owner's message
+  // and date · alarm · weather only when the layout asks for them.
+  std::string line;
+  if (lock_recording_) line = "Recording a voice note\xE2\x80\xA6 release to save";
+  else if (now_ms_ < lock_flash_until_ms_ && !lock_flash_.empty()) line = lock_flash_;
+  else if (w->info) {
+    lock_info_shown_ = cfg_.lock_info ? lock_info_line() : std::string();
+    line = cfg_.lock_message;
+    if (!lock_info_shown_.empty()) line += (line.empty() ? "" : " \xC2\xB7 ") + lock_info_shown_;
+  }
+  if (line.empty()) return;
+  const bool white = w->info_white && !lock_recording_ && !(now_ms_ < lock_flash_until_ms_);
+  const Gray ink = white ? Gray::G3 : Gray::G0;
+  const Gray pill = white ? Gray::G0 : Gray::G3;
+  const int tw = std::min(kContentW, canvas_.text_width(line, Canvas::TextRole::Caption));
+  const int th = canvas_.text_height(Canvas::TextRole::Caption);
+  const int pw = tw + 28, ph = th + 16;
+  const int px = (kCanvasW - pw) / 2, py = kCanvasH - 24 - ph;
+  canvas_.fill_round_rect(px, py, pw, ph, ph / 2, pill);
+  canvas_.draw_text_fit(px + 14, py + 8, kContentW, line, Canvas::TextRole::Caption, ink);
+}
+
+void App::wallpapers_sync() {
+  wall_sync_pending_ = false;
+  if (!wifi_.connected() || cfg_.device_id.empty() || cfg_.device_token.empty()) return;
+  const std::string body = cloud_.wallpapers_json(cfg_.device_id);
+  WallpaperIndex fresh;
+  if (body.empty() || !wallpaper_parse_index(body, fresh)) return;
+  const std::string dir = wall_dir();
+  if (dir.empty() || !storage_->data_ensure_root()) return;
+  ::mkdir(dir.c_str(), 0755);
+
+  std::string newest_new;
+  std::vector<WallpaperItem> kept;
+  for (auto& w : fresh.items) {
+    const std::string path = dir + "/" + w.id + ".pbm";
+    bool have = false;
+    for (const auto& old : wall_idx_.items) {
+      if (old.id == w.id && old.sha256 == w.sha256 && wall_file_ok(path)) have = true;
+    }
+    if (!have) {
+      int64_t got = 0;
+      if (!cloud_.download_to_file("wallpaper", cfg_.device_id, w.id, path, kWallMaxFileBytes, &got)) {
+        wall_sync_pending_ = false;  // retried on the next attest that still shows a new rev
+        continue;
+      }
+      std::string file;
+      std::vector<uint8_t> raster;
+      if (!read_file(path, file) || !wallpaper_raster_from_pbm(file, raster)) {
+        std::remove(path.c_str());
+        continue;
+      }
+      bool known = false;
+      for (const auto& old : wall_idx_.items) known = known || old.id == w.id;
+      if (!known && newest_new.empty()) newest_new = w.id;  // list is newest first
+      if (wall_raster_id_ == w.id) wall_raster_id_.clear();  // replaced image: reload
+    }
+    kept.push_back(std::move(w));
+  }
+  // Remove images Northwork no longer sends here.
+  for (const auto& old : wall_idx_.items) {
+    bool still = false;
+    for (const auto& k : kept) still = still || k.id == old.id;
+    if (!still) std::remove((dir + "/" + old.id + ".pbm").c_str());
+  }
+  const bool complete = kept.size() == fresh.items.size();
+  const std::string was_selected = wall_idx_.selected;
+  wall_idx_.items = std::move(kept);
+  if (complete) wall_idx_.rev = wall_rev_seen_;  // a partial download retries next check-in
+  bool face_changed = false;
+  if (!newest_new.empty()) {
+    // A wallpaper just sent from Northwork shows right away (Settings → Display switches back).
+    wall_idx_.selected = newest_new;
+    if (cfg_.screensaver != kScreensaverWallpaper) {
+      cfg_.screensaver = kScreensaverWallpaper;
+      store_.save(cfg_);
+    }
+    face_changed = true;
+  } else if (!wall_selected() || wall_selected()->id != was_selected) {
+    wall_idx_.selected = wall_selected() ? wall_selected()->id : std::string();
+    face_changed = cfg_.screensaver == kScreensaverWallpaper;
+  }
+  if (wall_idx_.items.empty() && cfg_.screensaver == kScreensaverWallpaper) {
+    cfg_.screensaver = 0;
+    store_.save(cfg_);
+    face_changed = true;
+  }
+  wallpapers_save();
+  if (face_changed && nav_.current() == ScreenId::Lock) after_nav(true);
 }
 
 }  // namespace pocket

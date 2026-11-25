@@ -28,6 +28,7 @@ idf_component_register(
     "src/ui.cpp"
     "src/screens_clock.cpp"
     "src/json_lite.cpp"
+    "src/wallpaper.cpp"
     "vendor/qrcodegen/qrcodegen.c"
   INCLUDE_DIRS "include" "vendor/qrcodegen"
 )
