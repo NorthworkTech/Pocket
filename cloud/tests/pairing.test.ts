@@ -6,6 +6,7 @@ import {
   claimPairSession,
   isPairSessionActive,
   PAIR_TTL_MS,
+  issueLegacyDeviceToken,
 } from "../src/lib/pairing.js";
 import { getOrCreateUser } from "../src/lib/auth.js";
 import { generatePairCode, isValidPairCode, PAIR_CODE_ALPHABET } from "../src/lib/crypto.js";
@@ -101,5 +102,37 @@ describe("pairing codes & TTL (Spec Part D §4)", () => {
         "This code has expired. Generate a new one on your Pocket.",
       );
     }
+  });
+});
+
+describe("per-device token (pocket-contract v1.0)", () => {
+  beforeEach(async () => {
+    closeDatabase();
+    await openMemoryDatabase();
+  });
+
+  it("goes to the Pocket once via the pair poll, never in the claim response", async () => {
+    const [pub, claim, create, gen, mk] = [getPairSessionPublic, claimPairSession, createPairSession, generatePairCode, getOrCreateUser];
+    const code = gen();
+    create({ device_id: "device-token-1", code_public: code });
+    const user = mk("token@example.com");
+    claim(code, user.id);
+    // Older firmware (no x-pocket-token) never gets the token and isn't marked issued.
+    expect(pub(code).device_token).toBeUndefined();
+    const first = pub(code, { deliverToken: true });
+    expect(first.status).toBe("claimed");
+    expect(first.device_token).toMatch(/.{20,}/);
+    expect(pub(code, { deliverToken: true }).device_token).toBeUndefined();
+  });
+
+  it("issues a legacy token once for an already-linked Pocket", async () => {
+    const [claim, create, gen, mk] = [claimPairSession, createPairSession, generatePairCode, getOrCreateUser];
+    expect(issueLegacyDeviceToken("nope-device")).toBe("not_linked");
+    const code = gen();
+    create({ device_id: "device-legacy", code_public: code });
+    claim(code, mk("legacy@example.com").id);
+    const r = issueLegacyDeviceToken("device-legacy");
+    expect(r && typeof r === "object" && r.device_token.length).toBeGreaterThan(20);
+    expect(issueLegacyDeviceToken("device-legacy")).toBeNull();
   });
 });

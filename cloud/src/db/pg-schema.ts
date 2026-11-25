@@ -63,6 +63,8 @@ ALTER TABLE device_links ADD COLUMN IF NOT EXISTS sd_present BOOLEAN NOT NULL DE
 ALTER TABLE device_links ADD COLUMN IF NOT EXISTS ring_requested_at TIMESTAMPTZ;
 ALTER TABLE device_links ADD COLUMN IF NOT EXISTS home_order_json TEXT NOT NULL DEFAULT '[]';
 ALTER TABLE device_links ADD COLUMN IF NOT EXISTS backup_requested_at TIMESTAMPTZ;
+ALTER TABLE device_links ADD COLUMN IF NOT EXISTS token_issued_at TIMESTAMPTZ;
+ALTER TABLE pair_sessions ADD COLUMN IF NOT EXISTS device_token_once TEXT;
 
 CREATE TABLE IF NOT EXISTS reading_progress (
   user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,

@@ -64,6 +64,15 @@ function migrateSchema(database: Db): void {
   if (!linkCols.has("backup_requested_at")) {
     database.run("ALTER TABLE device_links ADD COLUMN backup_requested_at TEXT");
   }
+  if (!linkCols.has("token_issued_at")) {
+    database.run("ALTER TABLE device_links ADD COLUMN token_issued_at TEXT");
+  }
+  const pairCols = new Set(
+    allFrom(database, "PRAGMA table_info(pair_sessions)").map((r) => String(r.name)),
+  );
+  if (!pairCols.has("device_token_once")) {
+    database.run("ALTER TABLE pair_sessions ADD COLUMN device_token_once TEXT");
+  }
   const listCols = new Set(
     allFrom(database, "PRAGMA table_info(cloud_lists)").map((r) => String(r.name)),
   );

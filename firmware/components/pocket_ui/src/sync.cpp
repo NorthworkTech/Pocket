@@ -112,6 +112,7 @@ bool App::cloud_sync_possible() const {
 bool App::cloud_sync(bool show_progress) {
   if (!cloud_sync_possible()) {
     if (!cfg_.companion_linked) sync_status_ = "Link Companion to sync notes and lists.";
+    else if (device_token_relink_needed_) sync_status_ = "Link this Pocket again in Companion to keep syncing.";
     else if (!cfg_.cloud_entitled) sync_status_ = "Pocket Cloud keeps notes and lists in sync.";
     else if (!wifi_.connected()) sync_status_ = "Offline \xC2\xB7 changes sync when Wi-Fi is back.";
     return false;

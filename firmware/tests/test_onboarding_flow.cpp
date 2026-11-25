@@ -81,6 +81,14 @@ struct TCloud : PlatformCloud {
     return "XYZW2345";
   }
   std::string pair_status(const std::string&) override { return st; }
+  std::string pair_token = "tok-from-pair";
+  std::string sent_token;
+  std::string take_pair_device_token() override {
+    std::string t;
+    if (st == "claimed") t.swap(pair_token);
+    return t;
+  }
+  void set_device_token(const std::string& t) override { sent_token = t; }
   void refresh_entitlement(DeviceConfig& c) override { c.cloud_entitled = false; }
   std::string stt_transcribe(const std::vector<uint8_t>&) override { return "test"; }
 };
@@ -144,6 +152,9 @@ int main() {
   app.tick(clock.t);
   CHECK(app.screen() == ScreenId::OnboardingPinLength);
   CHECK(app.config().companion_linked);
+  // pocket-contract v1.0: the claim hands this Pocket its own token, kept and used.
+  CHECK(app.config().device_token == "tok-from-pair");
+  CHECK(cloud.sent_token == "tok-from-pair");
 
   // 4 digits
   app.handle(InputEvent::Select);

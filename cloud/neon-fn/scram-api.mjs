@@ -41,7 +41,7 @@ function cors(req) {
     h["access-control-allow-origin"] = o;
     h["access-control-allow-credentials"] = "true";
     // x-pocket-session: bearer alternative — third-party cookies often blocked on mobile Safari / ITP.
-    h["access-control-allow-headers"] = "content-type,authorization,x-device-key,x-pocket-session,x-pcm-rate,x-pcm-encoding,x-device-id";
+    h["access-control-allow-headers"] = "content-type,authorization,x-device-key,x-pocket-session,x-pcm-rate,x-pcm-encoding,x-device-id,x-device-token,x-pocket-token";
     h["access-control-allow-methods"] = "GET,POST,PUT,PATCH,DELETE,OPTIONS";
   }
   return h;
@@ -1299,15 +1299,34 @@ const MUSIC_MAX_BYTES = MUSIC_MAX_SD_BYTES; // cloud accepts up to the SD ceilin
 const BOOK_MAX_BYTES = 20 * 1024 * 1024; // original upload (epub/txt) — text extracted server-side
 const BOOK_MAX_TEXT_BYTES = 4 * 1024 * 1024; // normalized text stored/synced to the device
 
-async function userIdForDeviceKey(req, deviceId) {
+/**
+ * Device auth: the shared build key plus, once this Pocket has been issued one, its own
+ * x-device-token (pocket-contract v1.0). Links whose device never collected a token
+ * (older firmware) keep working on the key alone until it does. `strict` (wallpapers,
+ * apps) always requires the token.
+ */
+async function deviceLinkForRequest(req, deviceId, { strict = false } = {}) {
   const key = (req.headers.get("x-device-key") || "").trim();
   if (!safeEqual(key, DEVICE_API_KEY)) return null;
   const id = String(deviceId || "").trim();
   if (!id) return null;
   const rows = await query(
-    `SELECT user_id FROM device_links WHERE device_id='${esc(id)}' ORDER BY linked_at DESC LIMIT 1`,
+    `SELECT id, user_id, device_token_hash, token_issued_at FROM device_links WHERE device_id='${esc(id)}' ORDER BY linked_at DESC LIMIT 1`,
   );
-  return rows[0]?.user_id || null;
+  const link = rows[0];
+  if (!link) return null;
+  const tok = (req.headers.get("x-device-token") || "").trim();
+  if (tok) {
+    if (!safeEqual(sha256Hex(tok), String(link.device_token_hash || ""))) return null;
+  } else if (strict || link.token_issued_at) {
+    return null;
+  }
+  return link;
+}
+
+async function userIdForDeviceKey(req, deviceId) {
+  const link = await deviceLinkForRequest(req, deviceId);
+  return link?.user_id || null;
 }
 
 async function audit(actorId, action, targetType, targetId, detail) {
@@ -1333,6 +1352,9 @@ async function ensureAdminSchema() {
   await query(`ALTER TABLE device_links ADD COLUMN IF NOT EXISTS brightness_percent INTEGER NOT NULL DEFAULT 50`);
   await query(`ALTER TABLE device_links ADD COLUMN IF NOT EXISTS ring_requested_at TIMESTAMPTZ`);
   await query(`ALTER TABLE device_links ADD COLUMN IF NOT EXISTS home_order_json TEXT NOT NULL DEFAULT '[]'`);
+  // pocket-contract v1.0: per-device token. token_issued_at = when the Pocket itself collected it.
+  await query(`ALTER TABLE device_links ADD COLUMN IF NOT EXISTS token_issued_at TIMESTAMPTZ`);
+  await query(`ALTER TABLE pair_sessions ADD COLUMN IF NOT EXISTS device_token_once TEXT`);
   await query(`CREATE TABLE IF NOT EXISTS reading_progress (
     user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     book_id TEXT NOT NULL,
@@ -1438,7 +1460,7 @@ async function ensureAdminSchema() {
     created_at TIMESTAMPTZ NOT NULL,
     deleted_at TIMESTAMPTZ
   )`);
-  // Pocket Family, Calendar on Today, device backups (scram-api-v21-northworktech).
+  // Pocket Family, Calendar on Today, device backups (scram-api-v22-devicetoken).
   await query(`ALTER TABLE device_links ADD COLUMN IF NOT EXISTS backup_requested_at TIMESTAMPTZ`);
   await query(`ALTER TABLE cloud_lists ADD COLUMN IF NOT EXISTS family_id TEXT`);
   await query(`CREATE TABLE IF NOT EXISTS families (
@@ -1975,7 +1997,7 @@ export default {
     // Health does not depend on DB schema readiness so it stays useful for diagnosing DB-layer issues.
     if (path === "/health" || path === "/" || path === "/v1/health") {
       const sha256 = await getSelfSourceSha256();
-      return json(req, { ok: true, build: "scram-api-v21-northworktech", sourceSha256: sha256 });
+      return json(req, { ok: true, build: "scram-api-v22-devicetoken", sourceSha256: sha256 });
     }
     try {
       await readySchema();
@@ -2117,14 +2139,45 @@ export default {
         return json(req, { ok: true, expires_at: expires.toISOString() }, 201);
       }
 
+      // Per-device token for a Pocket linked before tokens existed. Issued once; after that
+      // only re-pairing in Companion issues a new one.
+      if (req.method === "POST" && path === "/v1/device/token") {
+        const key = (req.headers.get("x-device-key") || "").trim();
+        if (!safeEqual(key, DEVICE_API_KEY)) return json(req, { message: "Unauthorized." }, 401);
+        const body = await req.json().catch(() => ({}));
+        const deviceId = String(body.device_id || req.headers.get("x-device-id") || "").trim();
+        if (!deviceId) return json(req, { message: "Missing device." }, 400);
+        const rows = await query(`SELECT id, token_issued_at FROM device_links WHERE device_id='${esc(deviceId)}' ORDER BY linked_at DESC LIMIT 1`);
+        const link = rows[0];
+        if (!link) return json(req, { message: "This Pocket isn't linked.", code: "not_linked" }, 404);
+        if (link.token_issued_at) {
+          return json(req, { message: "Link this Pocket again in Companion.", code: "token_already_issued" }, 409);
+        }
+        const token = randomToken(32);
+        const now = new Date().toISOString();
+        const upd = await query(`UPDATE device_links SET device_token_hash='${esc(sha256Hex(token))}', token_issued_at='${now}' WHERE id='${esc(link.id)}' AND token_issued_at IS NULL RETURNING id`);
+        if (!upd[0]) return json(req, { message: "Link this Pocket again in Companion.", code: "token_already_issued" }, 409);
+        return json(req, { ok: true, device_token: token });
+      }
+
       const pairMatch = path.match(/^\/v1\/pair\/sessions\/([^/]+)$/);
       if (req.method === "GET" && pairMatch) {
         const code = normalizePairCode(decodeURIComponent(pairMatch[1]));
         if (!isValidPairCode(code)) return json(req, { status: "expired" });
-        const rows = await query(`SELECT status, expires_at FROM pair_sessions WHERE code_hash='${esc(sha256Hex(code))}'`);
+        const rows = await query(`SELECT id, device_id, status, expires_at, device_token_once FROM pair_sessions WHERE code_hash='${esc(sha256Hex(code))}'`);
         const row = rows[0];
         if (!row) return json(req, { status: "expired" });
-        if (row.status === "claimed") return json(req, { status: "claimed", device_label: "Pocket" });
+        if (row.status === "claimed") {
+          // Token-aware firmware (x-pocket-token: 1) collects its own token exactly once.
+          const wants = (req.headers.get("x-pocket-token") || "") === "1";
+          if (wants && row.device_token_once) {
+            const now = new Date().toISOString();
+            await query(`UPDATE pair_sessions SET device_token_once=NULL WHERE id='${esc(row.id)}'`);
+            await query(`UPDATE device_links SET token_issued_at='${now}' WHERE device_id='${esc(row.device_id)}' AND device_token_hash='${esc(sha256Hex(row.device_token_once))}'`);
+            return json(req, { status: "claimed", device_label: "Pocket", device_token: row.device_token_once });
+          }
+          return json(req, { status: "claimed", device_label: "Pocket" });
+        }
         if (row.status !== "pending" || Date.parse(row.expires_at) < Date.now()) return json(req, { status: "expired" });
         return json(req, { status: "pending", device_label: "Pocket" });
       }
@@ -2150,12 +2203,13 @@ export default {
         const now = new Date().toISOString();
         const deviceToken = randomToken(32);
         if (existing) {
-          await query(`UPDATE device_links SET user_id='${esc(user.id)}', device_name='Pocket', linked_at='${now}', device_token_hash='${esc(sha256Hex(deviceToken))}', last_seen_at='${now}' WHERE id='${esc(existing.id)}'`);
+          await query(`UPDATE device_links SET user_id='${esc(user.id)}', device_name='Pocket', linked_at='${now}', device_token_hash='${esc(sha256Hex(deviceToken))}', token_issued_at=NULL, last_seen_at='${now}' WHERE id='${esc(existing.id)}'`);
         } else {
           await query(`INSERT INTO device_links (id,user_id,device_id,device_name,linked_at,last_seen_at,device_token_hash) VALUES ('${esc(newId())}','${esc(user.id)}','${esc(row.device_id)}','Pocket','${now}','${now}','${esc(sha256Hex(deviceToken))}')`);
         }
-        await query(`UPDATE pair_sessions SET status='claimed', claimed_at='${now}', claimed_by_user_id='${esc(user.id)}' WHERE id='${esc(row.id)}'`);
-        return json(req, { device_id: row.device_id, device_name: "Pocket", linked_at: now, device_token: deviceToken });
+        await query(`UPDATE pair_sessions SET status='claimed', claimed_at='${now}', claimed_by_user_id='${esc(user.id)}', device_token_once='${esc(deviceToken)}' WHERE id='${esc(row.id)}'`);
+        // The device token goes only to the Pocket (pair poll), never to the phone.
+        return json(req, { device_id: row.device_id, device_name: "Pocket", linked_at: now });
       }
 
       if (req.method === "GET" && path === "/v1/devices") {
@@ -2910,7 +2964,7 @@ export default {
         const secrets = await loadSttSecrets();
         return json(req, {
           ok: true,
-          build: "scram-api-v21-northworktech",
+          build: "scram-api-v22-devicetoken",
           providers: {
             openai: Boolean(secrets.openai),
             groq: Boolean(secrets.groq),

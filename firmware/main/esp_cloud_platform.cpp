@@ -21,6 +21,14 @@ namespace {
 
 constexpr const char* TAG = "pocket_cloud";
 
+/** This Pocket's own token; sent only to Pocket Cloud (never to redirect targets). */
+std::string g_device_token;
+
+bool is_cloud_url(const std::string& url) {
+  const std::string base = POCKET_CLOUD_BASE;
+  return url.compare(0, base.size(), base) == 0;
+}
+
 struct HttpBuf {
   std::string body;
 };
@@ -65,6 +73,9 @@ bool http_request(const char* method, const std::string& url, const char* auth_b
   if (auth_bearer && auth_bearer[0]) {
     // Neon Functions intercepts Authorization: Bearer (platform auth). Use x-device-key only.
     esp_http_client_set_header(client, "x-device-key", auth_bearer);
+    if (!g_device_token.empty() && is_cloud_url(url)) {
+      esp_http_client_set_header(client, "x-device-token", g_device_token.c_str());
+    }
   }
   if (accept && accept[0]) {
     esp_http_client_set_header(client, "Accept", accept);
@@ -152,11 +163,17 @@ std::string EspCloud::pair_status(const std::string& code) {
   const std::string url = std::string(POCKET_CLOUD_BASE) + "/v1/pair/sessions/" + code;
   int status = 0;
   std::string resp;
-  if (!http_request("GET", url, nullptr, {}, status, resp) || status != 200) {
+  // x-pocket-token: 1 = this firmware collects its own device token after the claim.
+  if (!http_request("GET", url, nullptr, {}, status, resp, 12000, "application/json", "x-pocket-token", "1") ||
+      status != 200) {
     ESP_LOGW(TAG, "pair status HTTP %d", status);
     return "pending";
   }
   const std::string st = json_string_field(resp, "status");
+  if (st == "claimed") {
+    const std::string tok = json_string_field(resp, "device_token");
+    if (!tok.empty()) pair_token_ = tok;
+  }
   if (st == "claimed" || st == "expired" || st == "pending") return st;
   return "pending";
 }
@@ -214,6 +231,8 @@ bool http_get_to_file(const std::string& url, const std::string& device_id, cons
   esp_http_client_set_header(client, "x-device-key", POCKET_DEVICE_API_KEY);
   esp_http_client_set_header(client, "x-device-id", device_id.c_str());
   esp_http_client_set_header(client, "Accept", accept);
+  const bool token_sent = !g_device_token.empty() && is_cloud_url(url);
+  if (token_sent) esp_http_client_set_header(client, "x-device-token", g_device_token.c_str());
 
   int status = 0;
   int64_t length = -1;
@@ -225,6 +244,8 @@ bool http_get_to_file(const std::string& url, const std::string& device_id, cons
     length = esp_http_client_fetch_headers(client);
     status = esp_http_client_get_status_code(client);
     if (status == 301 || status == 302 || status == 303 || status == 307 || status == 308) {
+      // Redirects leave Pocket Cloud (signed storage URLs): don't carry this Pocket's token.
+      if (token_sent) esp_http_client_delete_header(client, "x-device-token");
       esp_http_client_set_redirection(client);
       esp_http_client_close(client);
       continue;
@@ -519,4 +540,31 @@ std::string EspCloud::http_get_text(const std::string& url) {
     return {};
   }
   return resp;
+}
+
+void EspCloud::set_device_token(const std::string& token) { g_device_token = token; }
+
+std::string EspCloud::take_pair_device_token() {
+  std::string t;
+  t.swap(pair_token_);
+  return t;
+}
+
+std::string EspCloud::claim_device_token(const std::string& device_id, bool* already_issued) {
+  if (already_issued) *already_issued = false;
+  if (device_id.empty()) return {};
+  const std::string url = std::string(POCKET_CLOUD_BASE) + "/v1/device/token";
+  const std::string body = "{\"device_id\":\"" + device_id + "\"}";
+  int status = 0;
+  std::string resp;
+  if (!http_request("POST", url, POCKET_DEVICE_API_KEY, body, status, resp, 15000, "application/json",
+                    "x-device-id", device_id.c_str())) {
+    return {};
+  }
+  if (status == 409 && already_issued) *already_issued = true;
+  if (status != 200) {
+    ESP_LOGW(TAG, "device token HTTP %d", status);
+    return {};
+  }
+  return json_string_field(resp, "device_token");
 }

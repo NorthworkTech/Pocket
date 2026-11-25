@@ -48,7 +48,8 @@ CREATE TABLE IF NOT EXISTS pair_sessions (
   created_at TEXT NOT NULL,
   claimed_at TEXT,
   claimed_by_user_id TEXT,
-  status TEXT NOT NULL DEFAULT 'pending'
+  status TEXT NOT NULL DEFAULT 'pending',
+  device_token_once TEXT
 );
 
 CREATE TABLE IF NOT EXISTS device_links (
@@ -62,7 +63,8 @@ CREATE TABLE IF NOT EXISTS device_links (
   sd_present INTEGER NOT NULL DEFAULT 0,
   ring_requested_at TEXT,
   home_order_json TEXT NOT NULL DEFAULT '[]',
-  backup_requested_at TEXT
+  backup_requested_at TEXT,
+  token_issued_at TEXT
 );
 
 CREATE TABLE IF NOT EXISTS subscription_mirrors (

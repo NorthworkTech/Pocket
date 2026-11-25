@@ -75,9 +75,17 @@ export function createPairSession(input: {
   return { id, expires_at: effectiveExpiry.toISOString() };
 }
 
-export function getPairSessionPublic(codeRaw: string): {
+/**
+ * Public pair status. Token-aware firmware passes `deliverToken` (header x-pocket-token: 1)
+ * and collects its own device token exactly once after the claim; it never goes to the phone.
+ */
+export function getPairSessionPublic(
+  codeRaw: string,
+  opts: { deliverToken?: boolean } = {},
+): {
   status: PairStatus;
   device_label?: string;
+  device_token?: string;
 } {
   const code = normalizePairCode(codeRaw);
   if (!isValidPairCode(code)) {
@@ -89,6 +97,16 @@ export function getPairSessionPublic(codeRaw: string): {
   if (!row) return { status: "expired" };
 
   if (row.status === "claimed") {
+    const once = (row as PairSessionRow & { device_token_once?: string | null }).device_token_once;
+    if (opts.deliverToken && once) {
+      run(`UPDATE pair_sessions SET device_token_once = NULL WHERE id = ?`, [row.id]);
+      run(`UPDATE device_links SET token_issued_at = ? WHERE device_id = ? AND device_token_hash = ?`, [
+        new Date().toISOString(),
+        row.device_id,
+        sha256Hex(once),
+      ]);
+      return { status: "claimed", device_label: "Pocket", device_token: once };
+    }
     return { status: "claimed", device_label: "Pocket" };
   }
 
@@ -136,7 +154,7 @@ export function claimPairSession(
 
   if (existingLink) {
     run(
-      `UPDATE device_links SET user_id = ?, device_name = ?, linked_at = ?, device_token_hash = ?, last_seen_at = ? WHERE id = ?`,
+      `UPDATE device_links SET user_id = ?, device_name = ?, linked_at = ?, device_token_hash = ?, token_issued_at = NULL, last_seen_at = ? WHERE id = ?`,
       [userId, deviceName, now, sha256Hex(deviceToken), now, existingLink.id],
     );
   } else {
@@ -149,8 +167,8 @@ export function claimPairSession(
   }
 
   run(
-    `UPDATE pair_sessions SET status = 'claimed', claimed_at = ?, claimed_by_user_id = ? WHERE id = ?`,
-    [now, userId, row.id],
+    `UPDATE pair_sessions SET status = 'claimed', claimed_at = ?, claimed_by_user_id = ?, device_token_once = ? WHERE id = ?`,
+    [now, userId, deviceToken, row.id],
   );
 
   return {
@@ -164,4 +182,24 @@ export function claimPairSession(
 /** True if a pending session is still within TTL (for tests). */
 export function isPairSessionActive(expiresAtIso: string, nowMs = Date.now()): boolean {
   return Date.parse(expiresAtIso) > nowMs;
+}
+
+/**
+ * Per-device token for a Pocket linked before tokens existed: issued once (first come);
+ * afterwards only re-pairing issues a new one. Returns null when already issued.
+ */
+export function issueLegacyDeviceToken(deviceId: string): { device_token: string } | "not_linked" | null {
+  const link = get<{ id: string; token_issued_at: string | null }>(
+    "SELECT id, token_issued_at FROM device_links WHERE device_id = ?",
+    [deviceId],
+  );
+  if (!link) return "not_linked";
+  if (link.token_issued_at) return null;
+  const token = randomToken(32);
+  run(`UPDATE device_links SET device_token_hash = ?, token_issued_at = ? WHERE id = ? AND token_issued_at IS NULL`, [
+    sha256Hex(token),
+    new Date().toISOString(),
+    link.id,
+  ]);
+  return { device_token: token };
 }

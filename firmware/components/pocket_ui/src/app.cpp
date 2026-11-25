@@ -46,6 +46,7 @@ void App::set_build_id(std::string_view id) {
 
 void App::boot() {
   cfg_ = store_.load();
+  cloud_.set_device_token(cfg_.device_token);
   if (!cfg_.fw_build_id.empty()) {
     // Keep flashed identity over any stale NVS version string.
   } else if (!cfg_.fw_version.empty() && cfg_.fw_version.rfind("POCKET-LIVE", 0) == 0) {
@@ -869,12 +870,28 @@ void App::apply_cloud_offline_grace() {
   }
 }
 
+void App::ensure_device_token() {
+  if (device_token_attempted_ || !cfg_.device_token.empty()) return;
+  if (!cfg_.companion_linked || !wifi_.connected() || cfg_.device_id.empty()) return;
+  device_token_attempted_ = true;  // once per boot; a failure just retries next boot
+  bool already = false;
+  const std::string tok = cloud_.claim_device_token(cfg_.device_id, &already);
+  if (!tok.empty()) {
+    cfg_.device_token = tok;
+    cloud_.set_device_token(tok);
+    store_.save(cfg_);
+  } else if (already) {
+    device_token_relink_needed_ = true;
+  }
+}
+
 void App::maybe_cloud_attest() {
   if (!cfg_.onboarding_complete || !cfg_.companion_linked) return;
   if (!wifi_.connected() || cfg_.device_id.empty()) {
     apply_cloud_offline_grace();
     return;
   }
+  ensure_device_token();
   // ~20s so Companion “Online” / rename stay fresh after reconnect.
   // While locked nobody is looking: check in every 10 min instead of every 20 s
   // (still picks up remote lock / Wi-Fi hand-offs, at a fraction of the radio time).
@@ -1174,6 +1191,13 @@ void App::tick(uint32_t now_ms) {
       if (st == "claimed") {
         pair_status_ = "claimed";
         cfg_.companion_linked = true;
+        // A fresh link brings this Pocket its own token (older links collect one later).
+        const std::string tok = cloud_.take_pair_device_token();
+        if (!tok.empty()) {
+          cfg_.device_token = tok;
+          cloud_.set_device_token(tok);
+          device_token_relink_needed_ = false;
+        }
         store_.save(cfg_);
         play_sound(SoundId::Success);
         // Companion required: advance as soon as linked (no Skip path).

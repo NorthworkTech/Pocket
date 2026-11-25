@@ -5,6 +5,9 @@
 struct EspCloud : pocket::PlatformCloud {
   std::string create_pair_session(const std::string& device_id) override;
   std::string pair_status(const std::string& code) override;
+  void set_device_token(const std::string& token) override;
+  std::string take_pair_device_token() override;
+  std::string claim_device_token(const std::string& device_id, bool* already_issued) override;
   void refresh_entitlement(pocket::DeviceConfig&) override {}
   std::string stt_transcribe(const std::vector<uint8_t>& pcm) override;
   std::string music_list_json(const std::string& device_id, bool sd_present = false) override;
@@ -28,5 +31,6 @@ struct EspCloud : pocket::PlatformCloud {
 
  private:
   int sd_present_ = -1;
+  std::string pair_token_;
   std::string last_error_;
 };

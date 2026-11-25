@@ -64,6 +64,18 @@ struct PlatformCloud {
   /** Mint pairing session; returns plaintext code for QR display. */
   virtual std::string create_pair_session(const std::string& device_id) = 0;
   virtual std::string pair_status(const std::string& code) = 0;  // pending|claimed|expired
+  /** This Pocket's own token (pocket-contract v1.0), sent as x-device-token on Cloud calls. */
+  virtual void set_device_token(const std::string& /*token*/) {}
+  /** Token handed to this Pocket by the last "claimed" pair poll (once); empty if none. */
+  virtual std::string take_pair_device_token() { return {}; }
+  /**
+   * Collect a token for a Pocket linked before tokens existed. Returns the token, or empty;
+   * *already_issued = true when Cloud says only re-linking in Companion can issue a new one.
+   */
+  virtual std::string claim_device_token(const std::string& /*device_id*/, bool* already_issued) {
+    if (already_issued) *already_issued = false;
+    return {};
+  }
   virtual void refresh_entitlement(DeviceConfig& cfg) = 0;
   virtual std::string stt_transcribe(const std::vector<uint8_t>& pcm) = 0;
   /** List music library metadata JSON (id/title/filename/size). Empty on failure. */
@@ -500,6 +512,10 @@ class App {
   /** Push local note/list changes and adopt the merged result. Blocking; true on success. */
   bool cloud_sync(bool show_progress);
   void maybe_cloud_sync();
+  /** Linked Pocket without its own token (older firmware): collect one, once per boot. */
+  void ensure_device_token();
+  bool device_token_attempted_ = false;
+  bool device_token_relink_needed_ = false;
   bool sd_present() { return storage_ && storage_->present(); }
   // ---- 2.2 features ----
   /** Inside configured quiet hours (clicks/chimes muted; alarms still ring). */

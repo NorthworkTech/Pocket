@@ -2,7 +2,12 @@ import { Hono } from "hono";
 import type { AppEnv } from "../middleware/auth.js";
 import { requireSession } from "../middleware/auth.js";
 import { verifyDeviceApiKey } from "../lib/auth.js";
-import { createPairSession, getPairSessionPublic, claimPairSession } from "../lib/pairing.js";
+import {
+  createPairSession,
+  getPairSessionPublic,
+  claimPairSession,
+  issueLegacyDeviceToken,
+} from "../lib/pairing.js";
 import { Errors } from "../lib/errors.js";
 import { get, run, all } from "../db/index.js";
 import { parseHomeOrder, readHomeOrder } from "../lib/device-features.js";
@@ -24,7 +29,7 @@ pairRoutes.post("/sessions", async (c) => {
 
 pairRoutes.get("/sessions/:code", async (c) => {
   const code = c.req.param("code");
-  const result = getPairSessionPublic(code);
+  const result = getPairSessionPublic(code, { deliverToken: c.req.header("x-pocket-token") === "1" });
   return c.json(result);
 });
 
@@ -33,13 +38,26 @@ pairRoutes.post("/claim", requireSession, async (c) => {
   const body = await c.req.json().catch(() => ({}));
   const code = typeof body.code === "string" ? body.code : "";
   const result = claimPairSession(code, user.id);
-  // device_token returned once for device to poll/fetch — PWA may ignore
+  // The device token goes only to the Pocket (pair poll), never to the phone.
   return c.json({
     device_id: result.device_id,
     device_name: result.device_name,
     linked_at: result.linked_at,
-    device_token: result.device_token,
   });
+});
+
+/** POST /v1/device/token — a Pocket linked before tokens existed collects one, once. */
+export const deviceTokenRoutes = new Hono<AppEnv>();
+deviceTokenRoutes.post("/token", async (c) => {
+  const auth = c.req.header("x-device-key") || c.req.header("authorization");
+  if (!verifyDeviceApiKey(auth)) throw Errors.unauthorized();
+  const body = await c.req.json().catch(() => ({}));
+  const deviceId = String(body.device_id || c.req.header("x-device-id") || "").trim();
+  if (!deviceId) throw Errors.badRequest("Missing device.");
+  const r = issueLegacyDeviceToken(deviceId);
+  if (r === "not_linked") return c.json({ message: "This Pocket isn't linked.", code: "not_linked" }, 404);
+  if (!r) return c.json({ message: "Link this Pocket again in Companion.", code: "token_already_issued" }, 409);
+  return c.json({ ok: true, device_token: r.device_token });
 });
 
 export const deviceRoutes = new Hono<AppEnv>();

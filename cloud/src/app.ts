@@ -4,7 +4,7 @@ import { config } from "./config.js";
 import type { AppEnv } from "./middleware/auth.js";
 import { handleError, optionalSession } from "./middleware/auth.js";
 import { authRoutes, meRoutes } from "./routes/auth.js";
-import { pairRoutes, deviceRoutes } from "./routes/pair.js";
+import { pairRoutes, deviceRoutes, deviceTokenRoutes } from "./routes/pair.js";
 import { entitlementRoutes, deviceAttestRoutes } from "./routes/entitlement.js";
 import { billingRoutes } from "./routes/billing.js";
 import { notesRoutes } from "./routes/notes.js";
@@ -36,6 +36,9 @@ export function createApp() {
         "Authorization",
         "X-Device-Token",
         "X-Device-Key",
+        "X-Device-Id",
+        "X-Pocket-Token",
+        "X-Pocket-Session",
         "Stripe-Signature",
       ],
       allowMethods: ["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
@@ -57,6 +60,7 @@ export function createApp() {
   app.route("/v1/me", meRoutes);
   app.route("/v1/pair", pairRoutes);
   app.route("/v1/devices", deviceRoutes);
+  app.route("/v1/device", deviceTokenRoutes);
   app.route("/v1/entitlement", entitlementRoutes);
   app.route("/v1/device", deviceAttestRoutes);
   app.route("/v1/device", deviceSyncRoutes);
